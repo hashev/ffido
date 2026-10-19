@@ -99,7 +99,9 @@ std::expected<std::vector<UuePart>, ApiError> UueService::Parts(std::string_view
     }
     meta = std::move(*parsed);
   }
-  auto [part, total] = Numbering(message.subject);
+  const auto numbering = Numbering(message.subject);
+  uint32_t part = numbering.first;
+  uint32_t total = numbering.second;
   if (meta) {
     part = meta->part;
     total = meta->total;

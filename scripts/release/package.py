@@ -120,6 +120,8 @@ def relink(stage, build, deps):
         raise ValueError('Missing dependency legal/source bundle; run dependencies.sh')
     shutil.copytree(prefix, stage/'share/ffido/legal', dirs_exist_ok=True)
     scripts = ['#!/bin/sh', 'set -eu', 'cd "$(dirname "$0")"', 'mkdir -p bin']
+    if platform.system() == 'Darwin':
+        scripts.append('export SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"')
     for name in ('fidoback', 'ffido-admin', 'ffido-hpt-auth'):
         link = build/f'apps/backend/CMakeFiles/{name}.dir/link.txt'
         tokens = shlex.split(link.read_text())

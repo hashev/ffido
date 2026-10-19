@@ -16,6 +16,9 @@
 Используйте совместимый C++23 compiler, SDK и архитектуру из BUILD.json.
 Для Linux также нужен patchelf; macOS использует штатные install_name_tool/codesign.
 `CXX=/путь/к/c++ sh relink.sh` создаёт новые бинарники в relink/bin.
+На macOS скрипт выбирает SDK через `xcrun --sdk macosx --show-sdk-path`;
+при нескольких Xcode задайте `DEVELOPER_DIR` для нужной установки. Это позволяет
+использовать прямой путь `CXX` к clang++ без зависимости от исходного SDK-каталога.
 Относительные runtime paths рассчитаны на сохранение структуры пакета.
 
 Для изменения Husky распакуйте исходники huskylib, smapi, fidoconf из legal/ в

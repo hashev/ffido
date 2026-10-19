@@ -1,6 +1,8 @@
 import importlib.util
 import json
 import pathlib
+import os
+import subprocess
 import shutil
 import tempfile
 import unittest
@@ -200,7 +202,6 @@ class PackagingGateTest(unittest.TestCase):
                 module.package('client', 'macos', 'arm64', {}, root/'out', root/'build', root/'deps')
 
     def test_public_apk_requires_complete_abis_and_matching_permanent_certificate(self):
-        import os
         import zipfile
         module = load('package')
         with tempfile.TemporaryDirectory() as tmp:
@@ -267,6 +268,22 @@ class RelinkRegressionTest(unittest.TestCase):
             self.assertEqual(len(list(relink.glob('*.dylib'))), 1)
             self.assertEqual((relink/'relink.sh').read_text().count('read-only.2.4.dylib'), 6)
             self.assertIn('@loader_path/../../../../lib/read-only.2.dylib', (relink/'relink.sh').read_text())
+            tools = root/'tools'
+            tools.mkdir()
+            compiler = tools/'compiler'
+            compiler.write_text('#!/bin/sh\ntest "$SDKROOT" = "$FFIDO_TEST_SDK" || exit 9\necho linked >> "$FFIDO_TEST_LINK_TRACE"\n')
+            (tools/'xcrun').write_text('#!/bin/sh\ntest "$*" = "--sdk macosx --show-sdk-path" || exit 8\nprintf "%s\\n" "$FFIDO_TEST_SDK"\n')
+            for name in ['install_name_tool', 'codesign']:
+                (tools/name).write_text('#!/bin/sh\nexit 0\n')
+            for command in tools.iterdir():
+                command.chmod(0o755)
+            trace = root/'linked.txt'
+            environment = {**os.environ, 'PATH': str(tools)+os.pathsep+os.environ['PATH'],
+                           'CXX': str(compiler), 'SDKROOT': '/original-sdk-is-unavailable',
+                           'FFIDO_TEST_SDK': str(root/'selected SDK'), 'FFIDO_TEST_LINK_TRACE': str(trace)}
+            subprocess.run(['sh', str(relink/'relink.sh')], env=environment, check=True)
+            self.assertEqual(trace.read_text().splitlines(), ['linked']*3)
+
 
 
 class LegalGateTest(unittest.TestCase):
