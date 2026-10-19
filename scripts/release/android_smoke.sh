@@ -4,8 +4,16 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 SDK="${ANDROID_HOME:?Android SDK is required}"
 IMAGE='system-images;android-35;google_apis;x86_64'
-"$SDK/cmdline-tools/latest/bin/sdkmanager" 'emulator' "$IMAGE" > "$RUNNER_TEMP/android-sdk-smoke.log" 2>&1
-echo no | "$SDK/cmdline-tools/latest/bin/avdmanager" create avd --force --name ffido-smoke --package "$IMAGE"
+export ANDROID_USER_HOME="$RUNNER_TEMP/ffido-android"
+export ANDROID_AVD_HOME="$ANDROID_USER_HOME/avd"
+mkdir -p "$ANDROID_AVD_HOME"
+if ! "$SDK/cmdline-tools/latest/bin/sdkmanager" 'emulator' "$IMAGE" > "$RUNNER_TEMP/android-sdk-smoke.log" 2>&1; then
+  tail -80 "$RUNNER_TEMP/android-sdk-smoke.log"
+  exit 1
+fi
+echo no | "$SDK/cmdline-tools/latest/bin/avdmanager" create avd --force --name ffido-smoke --package "$IMAGE" --path "$ANDROID_AVD_HOME/ffido-smoke.avd"
+"$SDK/cmdline-tools/latest/bin/avdmanager" list avd
+test -f "$ANDROID_AVD_HOME/ffido-smoke.ini"
 sudo chmod a+rw /dev/kvm
 "$SDK/emulator/emulator" -avd ffido-smoke -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect > "$RUNNER_TEMP/ffido-emulator.log" 2>&1 &
 EMULATOR_PID=$!

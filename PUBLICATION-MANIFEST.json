@@ -530,7 +530,7 @@
     "tools/proto/pubspec.lock": "551847b056c5675380b62802585d07395b860d8d4a626fc113ecf53f163c5cd4",
     "tools/proto/pubspec.yaml": "fa52ba348a7f892fd26ddeba9b9d9946b990f8d52464e49f04a112bc29386ebb",
     "scripts/release/smoke.py": "3e7a7fd012b2d41c0363b7e271b0772738ec41016514ef8331bfa55a5b2262d8",
-    "scripts/release/android_smoke.sh": "b013d9e108d1b04345959e7526c5ff0934e622ae0e4481855c8165b3b7323579"
+    "scripts/release/android_smoke.sh": "633257bd99586276f77f01e0e3090ac12ad2abc6bebe119206fedd4aed3cf124"
   },
   "machine_reference_review": [
     "apps/backend/README.md",
