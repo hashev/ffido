@@ -1,0 +1,4 @@
+#!/usr/bin/env sh
+set -eu
+cd "$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+exec dart run protoc_plugin:protoc_plugin "$@"

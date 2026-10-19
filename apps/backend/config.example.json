@@ -1,0 +1,46 @@
+{
+  "auth": {
+    "hpt_config_path": "/etc/ftn/config",
+    "session_key_path": "./data/session.key",
+    "owner_addresses": []
+  },
+  "server": {
+    "ip": "127.0.0.1",
+    "port": 8080,
+    "thread_num": 8,
+    "rpc_timeout_ms": 5000,
+    "shutdown_timeout_ms": 10000,
+    "tls_certificate": "./certs/server.pem",
+    "tls_private_key": "./certs/server-key.pem"
+  },
+  "ftn": {
+    "areacfg_path": "./ftn/areas.cfg",
+    "jam_base_path": "./ftn/jam",
+    "default_encoding": "cp866",
+    "path_mappings": [],
+    "coordination_lock": "./data/hpt.lock"
+  },
+  "database": {
+    "metadata_path": "./data/metadata.db"
+  },
+  "logging": {
+    "level": "info"
+  },
+  "point_mail": {
+    "enabled": false,
+    "ingress_areas": [],
+    "egress_area": "",
+    "points": []
+  },
+  "uue": {
+    "max_file_bytes": 1048576,
+    "part_body_bytes": 32768,
+    "max_parts": 128,
+    "chunk_bytes": 65536,
+    "user_quota_bytes": 8388608,
+    "global_quota_bytes": 67108864,
+    "upload_ttl_seconds": 86400,
+    "preview_pixels": 16000000,
+    "preview_dimension": 8192
+  }
+}

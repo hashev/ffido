@@ -1,0 +1,3 @@
+Checks: '-*,clang-analyzer-*,bugprone-sizeof-container,bugprone-signed-char-misuse,bugprone-misplaced-widening-cast,bugprone-unused-return-value'
+WarningsAsErrors: '*'
+HeaderFilterRegex: '.*/apps/backend/(include|src)/.*'

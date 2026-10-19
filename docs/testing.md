@@ -1,0 +1,741 @@
+# Локальные проверки FFIDO
+
+Команды выполняются из корня монорепозитория. Зависимости клиента устанавливаются из `apps/frontend`; существующие версии не обновляются через `pub upgrade`.
+
+## Исправление отображения JAM-сообщений, 15 октября 2026
+
+CR/CRLF преобразуются в LF только в API-представлении; исходные JAM-тексты и writer не переписываются. При отсутствии OADDRESS адрес отправителя извлекается из корректного FTN MSGID; явный OADDRESS имеет приоритет. REPLY не интерпретируется как адрес получателя. Это также позволяет отвечать на старые эхосообщения без OADDRESS. Непредставленный адрес в UI обозначается явно, без пустых угловых скобок. Полный текст сохраняет абзацы, цитаты и отступы и отображается контрастным моноширинным шрифтом; список использует ограниченное превью.
+
+Проверены 191 backend-тест (включая установленный HPT), 191 тест под ASan/UBSan, 124 Flutter-теста, flutter analyze и clang-tidy/format двух изменённых C++-файлов. macOS release пересобран. На тестовой копии nino.046.local нативный gRPC подтвердил многострочное тело и адрес отправителя из MSGID. Рабочие JAM-файлы сверены с manifest и не изменены. Предыдущие показатели покрытия ниже относятся к миграции 12 октября; для этого исправления покрытие повторно не измерялось.
+
+## Текущее состояние итоговых проверок
+
+После завершения миграции 12 октября backend содержал 189 CTest-тестов, Flutter — 123 теста. Исторические результаты и исправленные сбои ниже относятся к отдельным этапам реализации.
+
+| Проверка | macOS | Linux (`amster2`, изолированный контейнер) |
+|---|---|---|
+| Обычная сборка и 189 CTest-тестов | Пройдены | Пройдены, GCC 14 |
+| ASan/UBSan с инструментированными protobuf/gRPC/Abseil | Пройдены, 189 тестов | Пройдены с Clang 19: полный CTest и отдельно HPT/права от UID 1000 |
+| TSan с инструментированными protobuf/gRPC/Abseil | Пройдены, 189 тестов | Пройдены, 189 тестов; проверки HPT и прав дополнительно пройдены от UID 1000 |
+| HPT и общая координационная блокировка | Пройдены на временных базах | Пройдены на временных базах |
+
+На Linux также прошли десять повторов 36 конкурентных/сигнальных/recovery-тестов и 25 повторов трёх регрессий жизненного цикла gRPC. TSan не использует подавления обнаруженных гонок. Для Linux ASan/UBSan используется Clang 19: GCC 14 не смог собрать инструментированную Abseil из-за ошибки constexpr; подробности ниже.
+
+Итоговое покрытие: backend — 93,59% строк и 85,27% ветвей; критические JAM/auth/idempotence/recovery-компоненты — 96,11% строк и 90,03% ветвей; Flutter — 90,92% строк. Пороговые проверки пройдены. `./build.sh check`, native TLS RPC и браузерный gRPC-Web через Envoy с реальным HPT пройдены.
+
+Release-сборки Web, macOS и Android пройдены. iOS не собран из-за отсутствующего SDK требуемой версии; Flutter desktop для Windows и Linux в доступной среде не проверен. Ручные проверки интерфейса установленных приложений на устройствах не выполнялись. Эти ограничения не следует считать пройденными проверками.
+
+## Сохранение адреса получателя и персональные экраны, 16 октября 2026
+
+SMAPI при перезаписи эхописьма может удалить DADDRESS/OADDRESS. Если DADDRESS отсутствует, backend читает адрес из исходного `header_append` **committed** операции SQLite по точному совпадению conference/generation/message_number/FTN MsgID. Адрес из текущего JAM имеет приоритет. Чтение не переписывает JAM и не выводит адрес из REPLY или текущего профиля. Существующие v4 журналы поддерживаются без миграции. Поэтому SQLite operations нужно сохранять вместе с копиями баз. После pack/перенумерации или замены файлов совпадение может отсутствовать: резервный адрес не переносится на новую идентичность автоматически.
+
+В клиенте кнопки закладок доступны в карточках конференций и в разделе закладок; ошибка сохраняет прежнее состояние. История/закладки загружаются при открытии вкладки, список и счётчики обновляются при возврате из чтения с сохранением поиска. Регрессии покрыты `acceptance_regressions_test.dart`, ServicesTest и реальным HPT process-test с `FFIDO_TEST_HPT` (только временные базы). Проверка исправленной сборки: 194/194 backend с HPT, 194/194 ASan/UBSan, 131/131 Flutter, analyze/format/clang-tidy и macOS release; целевой ручной повтор и доказательства — в [manual-test-results.md](manual-test-results.md).
+
+## Backend
+
+```sh
+cmake -S . -B build/backend -DCMAKE_BUILD_TYPE=Debug
+cmake --build build/backend --parallel 4
+ctest --test-dir build/backend --output-on-failure
+ctest --test-dir build/backend --parallel 4 --repeat until-fail:10 --output-on-failure
+```
+
+Временные JAM/SQLite/config-файлы каждого теста располагаются в отдельном `mkdtemp`-каталоге и удаляются после теста. Тесты не обращаются к реальным FTN-базам.
+
+Для ASan и UBSan:
+
+```sh
+JOBS=4 scripts/build_sanitizer_dependencies.sh asan-ubsan
+SANITIZER_DEPENDENCIES_PREFIX="$PWD/build/asan-ubsan-dependencies/prefix" ./build.sh asan-ubsan
+```
+
+Для TSan:
+
+```sh
+JOBS=4 scripts/build_sanitizer_dependencies.sh tsan
+SANITIZER_DEPENDENCIES_PREFIX="$PWD/build/tsan-dependencies/prefix" ./build.sh tsan
+```
+
+Основная библиотека, сервер и тесты используют одинаковые флаги инструментирования. ASan/UBSan и TSan требуют разных build-directory; одновременное включение запрещено при configure. Поддерживаются Clang/GCC; другие компиляторы с этими опциями отклоняются явно.
+
+## Покрытие
+
+Backend использует Clang source-based coverage. Нужны соответствующие компилятору `llvm-profdata` и `llvm-cov`; для AppleClang скрипт выбирает инструменты Xcode через `xcrun`, для другого Clang сначала ищет рядом с компилятором.
+
+```sh
+cmake -S . -B build/backend-coverage -DCMAKE_BUILD_TYPE=Debug -DFIDOBACK_ENABLE_COVERAGE=ON
+cmake --build build/backend-coverage --parallel 4
+python3 scripts/backend_coverage.py
+python3 scripts/frontend_coverage.py
+```
+
+Backend-скрипт принимает `--build-dir`, запускает CTest, очищает только предыдущие raw-профили своего отчёта и создаёт `coverage/backend.json`, `backend.txt`, `html/`, `unmeasured.txt` внутри build-directory. В отчёт входят mappings тестового executable и сервера: невызванный сервисный код учитывается с нулевым покрытием. Учитываются только `apps/backend/src` и `include`, без tests/third_party/tmp/системных заголовков. Заголовки только с декларациями могут отсутствовать в mapping; они перечисляются отдельно, без искусственного процента.
+
+Frontend-скрипт запускает `flutter test --no-pub --coverage` из `apps/frontend` и создаёт `coverage/summary.json`. Учитывается собственный `lib/`, исключаются generated protobuf-файлы. Отсутствующие mappings перечисляются как unmeasured, а не считаются пройденными. Оба отчёта — локальные сборочные файлы, в Git их не добавлять.
+
+## Baseline до миграции API, 12 октября 2026
+
+Среда: macOS, AppleClang 21, Flutter 3.41.6/Dart 3.11.4. Обычная, ASan/UBSan и TSan сборки прошли по 55 тестов; обычный набор также прошёл десять параллельных повторов. Flutter: 139 тестов.
+
+| Компонент | Строки | Ветви |
+|---|---:|---:|
+| Backend | 833/2446 — 34,06% | 160/526 — 30,42% |
+| Flutter | 572/954 — 59,96% | Flutter LCOV не измеряет ветви |
+
+Backend: нулевое покрытие `main.cpp`, `http/router.cpp`, `service/{conference_service,message_service}.cpp`, `domain/{bookmark,pagination,profile}.cpp`, `include/SquishMessageBase.h`. JAM: 57,29% строк; SQLite: 76,24%. Flutter: `pages/message_screen.dart`, `repositories/message_repository.dart`, `models/api_response.dart` не покрыты; `lib/conference_repository.dart` — старый репозиторий с mock-данными, отсутствует в coverage mapping; его строки не входят в измеренный знаменатель Flutter.
+
+Это baseline существующих тестов, а не доказательство безопасности многопользовательского режима. На этапе baseline HPT-конкуренция, сбои многофайловой записи, Linux и новые gRPC/gRPC-Web не проверялись; последующие результаты приведены ниже. После расширения тестов отчёты и матрица проверок должны быть обновлены.
+
+При полном warnings-check выявляются существовавшие предупреждения: неиспользуемые `NowIso8601`/`user_id`, игнорирование `nodiscard` в SQLite-тестах; также остаётся CMake CMP0135 при загрузке SQLite. Они не подавлены флагами.
+
+## Подготовленные зависимости gRPC
+
+`cmake/deps.cmake` сохраняет прежние FetchContent-версии и требует экспортированные CMake targets для gRPC 1.84.0 и protobuf 36.2.0. `protoc` этой поставки сообщает `libprotoc 36.2`. Пути к Cellar не прописываются; нестандартный префикс задаётся через CMAKE_PREFIX_PATH. Отсутствующая или другая версия приводит к явной ошибке configure.
+
+Dart-генератор изолирован в `tools/proto`, зафиксирован как protoc_plugin 25.1.0 вместе с lock-файлом. Подготовка:
+
+```sh
+cd tools/proto
+dart pub get
+```
+
+`tools/proto/protoc-gen-dart` можно передать protoc через `--plugin=protoc-gen-dart=...`. Совместимый набор для будущего клиента: grpc 5.1.0 и protobuf 6.1.0. Генерация маленького RPC, его C++ линковка и Dart protobuf round-trip проверены на macOS. На Linux также проверены генерация, C++ линковка и настоящий localhost Echo RPC с русским текстом. FFIDO-контракт включён в общую сборку; контрактные тесты и воспроизводимая генерация описаны ниже.
+
+
+## Linux через ssh amster2, 12 октября 2026
+
+Проверка выполняется в отдельном временном контейнере Debian 13, GCC 14.2.0/CMake 3.31.6 на x86_64. В контейнер передаются только исходники и тестовые зависимости; реальные FTN/SQLite/config.json не используются. Системные пакеты хоста и работающие службы не изменяются. Это окружение проверки, Docker не является частью сборки или поставки FFIDO.
+
+Для ускорения использованы Linux-пакеты Homebrew gRPC 1.84.0/protobuf 36.2 с проверкой опубликованных SHA-256. CMake получает префиксы окружения через CMAKE_PREFIX_PATH; исходники FFIDO не содержат Cellar-путей. Исполняемые файлы пакетов адаптированы к системному ELF loader внутри временного контейнера. Изначальная сборка этих зависимостей из исходников остановлена после успешной проверки готового набора.
+
+Пройдено: корневые configure/build; 55 CTest, десять повторов каждого теста с parallel 4; generated C++ RPC с настоящим localhost client/server вызовом и Unicode. Логи сохранены локально в build/linux-reports/. Дополнительно GCC выявил существовавшую проверку порта >65535 после сужения к uint16_t в AppConfig.cpp; на этом этапе она ещё не была исправлена; текущая реализация проверяет диапазон до сужения.
+
+Sanitizer-проверки и совместимость SMAPI locks подтверждены ниже. На этом историческом этапе конкурентная запись backend/HPT и crash recovery ещё не проверялись; текущие результаты приведены ниже.
+
+## Генерация общего контракта
+
+Источник — contracts/ffido/v1/ffido.proto; ffido_contracts генерирует C++ и descriptor в build-directory. Смена proto запускает генерацию и пересборку потребителей, проверено изменением mtime и повторной сборкой. Dart-файлы находятся в apps/frontend/lib/api/generated; Empty/Timestamp используются из protobuf runtime, без дублирующих generated-классов.
+
+```sh
+(cd tools/proto && dart pub get --enforce-lockfile)
+tools/proto/generate.sh
+tools/proto/generate.sh --check
+```
+
+Генератор проверяет protoc 36.2; режим --check сравнивает результат с сохранёнными файлами. Повторная генерация идентична. Пять контрактных тестов C++ и пять Flutter-тестов проверяют Unicode/Timestamp/Empty/ошибки полей/неизвестные enum. C++ также проверяет RPC surface и отсутствие доверенной личности в CreateMessageRequest. Полный набор теперь содержит 60 CTest и 144 Flutter-теста; Flutter analyze без замечаний. На Linux прошли 60 CTest (обычный режим, десять повторов), ASan/UBSan и TSan по 60 тестов. На этом историческом этапе проверялись storage и контракт; переключение server/client было выполнено позже.
+
+## Совместимость SMAPI locks
+
+Отдельный процесс apps/backend/tests/support/smapi_lock_probe.c использует установленную SMAPI, а scripts/check_smapi_locks.py создаёт собственную временную JAM-базу. Проверяются оба направления конфликта POSIX/SMAPI, read/write lock байта 0 длины 1, доступ к соседнему байту и освобождение lock. Sleep не используется как доказательство синхронизации; handshake и процессы имеют timeout. Helper отказывается продолжать при haveshare=0.
+
+```sh
+# SMAPI_PREFIX — префикс установленного Husky, например /usr/local.
+# Для поставки без установленного smapi/version.h добавьте её исходный каталог.
+cc -D__UNIX__ -I"$SMAPI_PREFIX/include" ${SMAPI_VERSION_INCLUDE_DIR:+-I"$SMAPI_VERSION_INCLUDE_DIR"} \
+  apps/backend/tests/support/smapi_lock_probe.c \
+  "$SMAPI_PREFIX/lib/libsmapi.a" "$SMAPI_PREFIX/lib/libhusky.a" -lm \
+  -o build/smapi_lock_probe
+python3 scripts/check_smapi_locks.py build/smapi_lock_probe
+```
+
+Подтверждено на macOS: hpt/mac 1.9 2024-03-02, SMAPI 2.5.2 (runtime 2/0x252, date 2022-01-23), haveshare=1. На Linux amster2: hpt/lnx 1.9.0-cur 17-02-17, SMAPI 2.5.0 (runtime 2/0x250, date 11-09-15), haveshare=1. Пользователь подтвердил, что Linux-образ содержит используемую сборку HPT. Проверка выполнялась на искусственных базах с соответствующими библиотеками; рабочие базы и HPT-конфигурации не изменялись.
+
+На этом этапе результат подтверждал только совместимый протокол блокировки; владелец дескрипторов, process mutex и journal/recovery были реализованы и проверены позже. HPT pack/replacement требуют окна обслуживания; сторонний writer, игнорирующий locking, несовместим. При смене сборки или режима sharing проверку нужно повторить.
+
+### JAM ownership и обслуживание pack
+
+`JamCatalog` открывает разрешённые файлы до начала RPC и объединяет hard-link
+aliases по физическому `.jhr`, проверяя совпадение companion files. `JamAccess`
+удерживает этот owner, process mutex и первый байт `.jhr` до окончания работы.
+Парсер использует borrowed descriptors с `pread/pwrite`: представления не
+открывают, не дублируют и не закрывают файлы. Read lock — `F_RDLCK`, write —
+`F_WRLCK`; ожидание ограничено deadline и stop token, интервал backoff ≤10 ms.
+Instance lock использует отдельный `flock`-файл, который нельзя удалять при
+работающем backend: unlink создал бы второй независимый lock inode.
+
+Каждый запрос перечитывает base header/index под lock и повторно проверяет
+путь относительно открытого корня. Замена любого JAM companion file даёт
+`ChangedBase`; backend не переключается на другой inode во время запроса.
+Generation включает физический header identity, DateCreated и BaseMsgNum;
+обычный append не меняет generation. HPT pack/replacement выполняется только
+в окне обслуживания: остановить backend/HPT, сделать согласованную копию,
+упаковать, затем заново открыть каталог. Переписывание существующего inode с
+сохранением идентичности/DateCreated/BaseMsgNum не поддерживается как online
+операция. Полный migration/recovery workflow проверен на следующих этапах (см. ниже).
+
+Подтверждено: 98 тестов ASan/UBSan Linux после parser/SQLite fixes; bounded
+libFuzzer Clang 19 — 10 000 итераций, без crash/UB. Новый ownership/locking
+слой дополнительно проверяется после этих изменений; прежние результаты
+не считаются проверкой ещё не включённых изменений.
+
+### Durable append и quarantine
+
+Перед изменением JAM SQLite сохраняет operation intent с user/operation ID,
+payload digest, FTN MsgID, generation, исходными размерами и точными байтами
+append/base header. SQLite WAL работает с `synchronous=FULL`. Writer публикует
+текст → fsync `.jdt`, заголовок/subfields → fsync `.jhr`, index → fsync `.jdx`,
+base header → fsync `.jhr`, затем подтверждает operation journal. После durable
+intent commit не прерывается отключением клиента. Любая ошибка исключает
+успешный ответ и блокирует новые представления базы до recovery.
+
+Recovery под эксклюзивным lock сравнивает identity/generation, base header и
+каждый surviving suffix с точным intent. Полностью записанный append повторно
+синхронизируется и подтверждается. Неполный append откатывается только если
+весь хвост доказуемо принадлежит операции. Чужие байты, большие размеры,
+изменённый base header или generation дают persistent quarantine без truncate.
+
+При quarantine остановите backend/HPT, сохраните согласованные копии всех
+четырёх JAM-файлов и SQLite вместе с WAL/SHM до их закрытия. Сопоставьте
+незавершённую запись `operations` с сохранёнными файлами; установите происхождение
+каждого хвоста и проверьте сообщения через SMAPI/HPT на копии. Рабочая база
+остаётся закрытой для записи. Автоматического снятия quarantine или удаления
+неизвестного хвоста нет: согласованную восстановленную копию вводят в отдельном
+окне обслуживания с проверкой generation и всех подтверждённых сообщений.
+Не удаляйте operation journal и не заменяйте отдельный JAM companion file
+слепым восстановлением — это может потерять поздние сообщения HPT.
+
+Подтверждены artificial-fixture проверки: short writes, ENOSPC, fsync failure
+на каждом этапе; `_exit` процесса после каждого из восьми write/fsync boundaries;
+повторное открытие SQLite/catalog; quarantine после полного чужого append,
+неизвестного хвоста и смены generation. Это не тест физического отключения питания.
+
+### Выявленное ограничение SMAPI cached close
+
+`scripts/check_smapi_cached_header.py` вместе с режимом `cached-close` SMAPI
+helper воспроизводит устаревший base-header write на изолированной базе.
+Последовательность: SMAPI открывает базу с одним сообщением и меняет highwater;
+другой процесс публикует второе сообщение; SMAPI закрывает прежнее открытие.
+Результат на **обеих установленных сборках**, macOS 2.5.2 и Linux 2.5.0:
+`ActiveMsgs before=2, after=1, physical slots=2`, причём closing process
+завершается даже при чужом exclusive first-byte lock. В исходной SMAPI
+`JamCloseArea` вызывает `Jam_WriteHdrInfo` с кешированным `HdrInfo` без
+дополнительного lock/refresh. Совместимость byte locks сама по себе не
+подтверждает безопасность полной конкурентной работы с HPT.
+
+Пользователь выбрал обязательный общий wrapper. Реализованы отдельные shared
+leases FFIDO и exclusive flock через exec HPT; byte locks остаются вторым
+уровнем. Concurrent HPT round-trip прошёл отдельную приёмку на Linux и macOS. Рабочие
+FTN-файлы при воспроизведении не использовались.
+
+Защищённый повтор `check_smapi_cached_header.py --protected` прошёл на обеих
+установленных SMAPI: wrapper не допускает backend shared lease между SMAPI
+open и cached close; после завершения HPT выполняется append, итоговый
+`ActiveMsgs=2`, два физических слота. Это подтверждает исправление выявленного
+cached-close сценария; полный HPT scan/export round-trip также прошёл на обеих ОС (см. ниже).
+
+### Сквозная приёмка native / Web / HPT
+
+Прошёл `scripts/check_acceptance.py` с production TLS backend, настоящим
+Dart gRPC-клиентом, Chrome и Envoy 1.39.3. Два пользователя вызывают все 13 RPC:
+профиль, conference/message lists, чтение с изолированной прочитанностью,
+закладки/история и их timestamps, thread/reply, повтор с прежним operation_id.
+Русские строки сохраняются, Empty и binary error trailers обрабатываются,
+чужой HTTPS Origin отклоняется. На общей искусственной JAM-базе остаются
+ровно четыре сообщения; установленный HPT экспортирует все четыре с Unicode,
+FTN MsgID и двумя REPLY. Токены и TLS material существуют только во временном
+каталоге; доверие ОС не меняется. Chrome использует pin только временного
+сертификата fixture; native клиент проверяет отдельную временную CA.
+
+Воспроизводимая команда после сборки backend и JS harness:
+
+```sh
+(cd apps/frontend && dart compile js tool/web_acceptance.dart -o ../../build/web-acceptance.js)
+python3 scripts/check_acceptance.py \
+  --envoy /absolute/path/envoy \
+  --chrome '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' \
+  --hpt /absolute/path/hpt
+```
+
+Отчёт последнего успешного полного сценария:
+`build/native-browser-hpt-acceptance.log`. ProcessTest HPT round-trip отдельно
+проверяет BaseMsgNum=42, UTF-8/cp866, 22 сообщения, десять HPT scan рядом с
+backend reads/writes и повторными RPC. Прошёл на macOS HPT/SMAPI 2.5.2 и на
+amster2 HPT/SMAPI 2.5.0; `build/linux-reports/hpt-roundtrip.log`. Требуется
+`FFIDO_TEST_HPT=/absolute/path/hpt`, иначе optional test явно SKIP.
+`scan -w` нужен из-за обнаруженного SMAPI high-water поведения при BaseMsgNum != 1;
+Sent attribute не допускает повторного экспорта отправленных сообщений.
+
+### Матрица платформ клиента
+
+| Платформа | Release build | RPC smoke |
+|---|---|---|
+| Web | прошёл | Chrome → Envoy → TLS backend, все 13 RPC |
+| macOS | прошёл | native Dart TLS harness, все 13 RPC; установленный app отдельно не запускался |
+| Android | APK release прошёл | устройство/эмулятор не предоставлены, запуск APK не проверен |
+| iOS | недоступен: установленному Xcode не хватает SDK iOS 26.5 | не проверен |
+| Linux desktop | toolchain Flutter desktop в проверочной среде отсутствует | не проверен |
+| Windows | Windows host/toolchain отсутствует | не проверен |
+
+Android release содержит INTERNET, macOS Release sandbox — network client.
+Native/web каналы выбираются условным импортом. Отказ недоверенному TLS
+сертификату проверен настоящим gRPC client/server тестом; permissive callback
+в production коде отсутствует. Успешная компиляция не считается проверкой
+запущенного приложения на устройстве.
+
+### Соответствие сценариям delta-specs
+
+Таблица связывает каждый сценарий с проверкой. Названия test suites относятся
+к CTest, клиентские файлы — к `apps/frontend/test/`. Недоступные платформы
+перечислены отдельно выше; они не считаются прошедшими smoke.
+
+| Delta spec и сценарии | Проверка |
+|---|---|
+| api-transport: Нет тела ответа; Русский текст без charset; Согласованные клиенты | `acceptance_flow.dart` через native и Web, Contract tests, ApiClient all typed RPCs |
+| api-transport: Ошибка авторизации; Ошибки полей | GrpcTest, ApiClient status/field violations tests, browser acceptance trailers |
+| api-transport: HTML вместо JSON ошибки | Chrome HTML upstream negative case в `check_acceptance.py` |
+| api-transport: Неизвестный серверный статус; Некорректное успешное тело; Отмена и deadline | ApiClient tests: raw status 99, malformed protobuf, cancellation/session/deadline с именем RPC |
+| api-transport: Старый маршрут | production backend содержит только gRPC service; HTTP routers/legacy bindings удалены, контракт содержит 13 RPC |
+| api-transport: Превышение лимита; Некорректная пагинация | GrpcTest.TlsTrustAndResourceLimitsAreEnforced, ServicesTest.DeletedSlotsAndExtremePageBoundsKeepRealCounters |
+| conference-browsing: Другой размер страницы; Повреждённый кеш; Сеть недоступна при обновлении | `repositories/conference_repository_test.dart`: schema/TTL/page-limit/fallback |
+| conference-browsing: Смена пользователя или сервера; Требуется авторизация; Запрос отменён | repository и MainScreen tests: epoch, late response, cancellation, no auth fallback |
+| jam-storage: Имя и файл различаются; Выход за разрешённый каталог | JamCatalog mapping/traversal/symlink/replacement tests |
+| jam-storage: HPT держит блокировку; Конкурирующие отправки; Несколько операций backend | JamLock/JamAccess/Coordination suites, concurrent ServicesTest и ProcessTest.HptRoundTripAndConcurrentExportWithSharedWrapper |
+| jam-storage: Удалённая запись в середине | JamWriteIntegrationTest.DeletedPhysicalSlotsKeepNumbersWithNonunitBase, SmapiDeletedMarkersAndHeaderFlagsDoNotReuseSlots |
+| jam-storage: Огромная длина; Усечённый индекс | JamWriteIntegrationTest bounded/truncated/oversized cases, 10 000 bounded fuzz iterations |
+| jam-storage: Сбой каждого этапа | JamRecoveryTest ENOSPC/short-write/fsync/process-exit matrix, recovery retry/quarantine tests |
+| jam-storage: Русский текст HPT; Отправка через backend | actual HPT round-trip UTF-8/cp866/MsgID/REPLY на Linux/macOS и native/browser HPT export |
+| jam-storage: SMAPI закрывает кешированную базу | `check_smapi_cached_header.py --protected` на обеих установленных SMAPI |
+| jam-storage: Timeout wrapper или backend | HptWrapper, Coordination, JamLock и ProcessTest external lock wait |
+| message-access: Поиск и последняя страница; Детали конференции | ServicesTest.EmptyFilterAndPaginationTotals, SearchCountsDatesAndConferenceSortsAreConsistent |
+| message-access: Одинаковые номера в разных базах; Повторное чтение | SQLiteStoreTest.ReadKeySeparatesUserConferenceAndGeneration, ServicesTest.ReadHistoryCountersAndBookmarksArePersonal |
+| message-access: Несуществующий родитель | ServicesTest.ReplyUsesParentSenderAndRejectsMissingParent |
+| message-access: Ответ потерян | ServicesTest.IdempotencyHandlesConcurrentRepeatLostResponseAndDifferentUser, IdempotencySurvivesActualMetadataReopen; native/browser same-operation retry |
+| message-access: Циклическая цепочка | ServicesTest.ThreadBranchPaginationMissingParentCyclesAndDeletedNodes |
+| message-access: Ошибка отправки | Compose/widget/repository tests сохраняют draft/operation ID; backend fault/recovery не сообщает успех |
+| user-identity: Действующий токен; Недействительный доступ; Попытка подмены | AuthServiceTest, GrpcTest auth-before-mutation и assigned sender tests |
+| user-identity: Два пользователя | native/browser acceptance, ServicesTest personal data isolation |
+| user-identity: Выход | ApiClient session/cancel tests, settings/profile/personal screens/widget tests |
+| user-identity: Старые номера без generation; Повтор и сбой миграции | SQLiteMigration.BacksUpEveryLegacyReadWithoutReassigningNumbers, BackupCollisionRollsBackWholeMigration |
+| platform-runtime: Производственная сеть; Остальные нативные платформы; Web release | platform matrix выше: сетевые permissions и три release builds; RPC только в перечисленных проверенных средах |
+| platform-runtime: Недоверенный сертификат | GrpcTest.TlsTrustAndResourceLimitsAreEnforced |
+
+Browser acceptance дополнительно проверяет HTML gateway response как
+контролируемую ошибку `GetProfile`, без HTML в публичной диагностике.
+
+### Окно миграции и резервная копия
+
+1. Остановите backend и все HPT jobs, убедитесь, что никто не обращается к базам.
+   Нельзя получать согласованную копию независимым копированием companions
+   во время записи. Не удаляйте lock-файлы для обхода работающего процесса.
+2. Сохраните конфигурацию, SQLite и все `.jhr/.jdt/.jdx/.jlr` каждой базы
+   в отдельный каталог. Если SQLite ещё открыт, его WAL/SHM являются частью
+   состояния; проще дождаться закрытия всех соединений. Для закрытой SQLite
+   можно сделать самостоятельный snapshot стандартным backup API:
+
+   ```sh
+   python3 - /absolute/path/metadata.db /absolute/path/backup/metadata.db <<'PY'
+   import pathlib, sqlite3, sys
+   source, target = map(pathlib.Path, sys.argv[1:])
+   if not source.is_file() or target.exists():
+       raise SystemExit('Source missing or backup already exists')
+   with sqlite3.connect(source.as_uri()+'?mode=ro', uri=True) as incoming:
+       with sqlite3.connect(target) as outgoing:
+           incoming.backup(outgoing)
+           if outgoing.execute('PRAGMA integrity_check').fetchone()[0] != 'ok':
+               raise SystemExit('Backup integrity check failed')
+   PY
+   ```
+
+3. Сначала работайте с копией, отдельным config и lock, отдельными TLS ports.
+   `ffido-admin provision` открывает metadata store и выполняет ту же migration,
+   что backend. Проверьте `PRAGMA user_version=4`, наличие всех старых строк в
+   `read_status_legacy_backup`, пустую новую `read_status`, сохранённые
+   bookmarks/history. Выдавайте рабочие токены только после проверки копии.
+4. Проверьте wrapper и реальную установленную SMAPI, запустите backend,
+   native/Web клиент и HPT export на копии. Production HPT schedules должны
+   вызывать wrapper с тем же coordination path. Самостоятельный HPT в обход
+   wrapper делает гарантию целостности недействительной.
+5. После проверки примените конфигурацию в окне обслуживания и одновременно
+   переключите клиенты на gRPC. При pack/replacement остановите backend,
+   сохраните новый согласованный backup и перезапустите каталог: generation
+   изменится, старые персональные ссылки не будут приложены к другим номерам.
+6. Для отката остановите процессы и восстановите согласованные данные из копии
+   в отдельную staging-папку. Если после backup были новые подтверждённые
+   сообщения, слепое восстановление старых JAM потеряет их; сначала сопоставьте
+   MsgID и сохраните новые записи. Quarantine требует ручного расследования,
+   автоматического снятия через config/admin нет.
+
+Миграция на искусственной legacy SQLite проверена тестами сохранения всех
+backup-строк, bookmarks/history, нового read state, повторного запуска и
+rollback при конфликте backup. Durable recovery проверен отдельными
+process/fault tests; тестирование не изменяет реальные FTN-файлы.
+
+### Текущее покрытие после gRPC/JAM миграции
+
+Отчёт включает core, production server и `ffido-admin`; CTest запускается
+с `FFIDO_TEST_HPT`, поэтому optional HPT round-trip не пропускается. Generated,
+third_party и test code исключены; production ошибки остаются в знаменателе.
+
+| Область | Строки | Ветви | Gate |
+|---|---|---|---|
+| Backend | 3795/4055 = 93,59% | 1853/2173 = 85,27% | 90% / 85% — прошёл |
+| JAM/auth/idempotency/recovery | 2124/2210 = 96,11% | 1111/1234 = 90,03% | 95% / 90% — прошёл |
+| Flutter | 1151/1266 = 90,92% | не измеряются | 90% — прошёл |
+
+Для повторения: `FFIDO_TEST_HPT=/absolute/path/hpt ./build.sh coverage`.
+HTML/JSON backend reports находятся в `build/backend-coverage/coverage/`,
+Flutter LCOV/summary — `apps/frontend/coverage/`. Gate проверяет реальные
+covered/count, возвращает ненулевой exit code при нарушении. Baseline выше
+сохранён для сравнения; старые количества тестов относятся к этапам внедрения.
+Текущий набор: 188 CTest и 123 Flutter tests.
+
+SQLite allocation fault tests используют документированный allocator API,
+по одному отказу в prepare/bind/step/transaction и 350 позициям startup.
+Lookaside отключается только внутри fault test и возвращается к зафиксированному
+дефолту bundled SQLite; production настройки не меняются. I/O adapters дают
+контролируемые короткие чтения/записи, EINTR, ENOSPC, fstat/read/truncate/fsync
+failures. Проверки требуют отсутствия ложного успеха и сохранения подтверждённых
+данных; после снятия отказа проверяется recovery и integrity_check.
+OpenSSL provider failures проверяются отдельным exec, без изменения provider
+state родительского тестового процесса.
+
+Список `unmeasured.txt` перечисляет 16 заголовков без coverage mapping:
+большинство содержат declarations/POD; `SquishMessageBase.h` не включён в
+активную JAM-only сборку. Во Flutter отсутствуют executable lines в
+`api_constants.dart`; web-only channel дополнительно проверен browser acceptance,
+его исполнение не добавляется искусственно в Flutter LCOV. Непокрытые guards
+для недоступных/невозможных состояний остаются в отчёте: например, неверная
+длина результата SHA256, gmtime failure для uint32 timestamp на 64-bit OS,
+ошибка системной настройки сигналов. Blanket exclusions и suppressions нет.
+
+### TSan и согласованные зависимости
+
+У protobuf generated messages поле `PROTOBUF_TSAN_DECLARE_MEMBER` зависит от
+sanitizer compilation. Смешивание generated/core TSan с обычным protobuf runtime
+может менять layout и приводить к падению `CheckHasBitConsistency`, поэтому
+это не подтверждённый TSan-прогон. Не отключайте sanitizer macro и не подавляйте
+сообщения. Все три runtime — protobuf, gRPC, Abseil — собираются теми же версиями
+с TSan. OpenSSL 3 используется для сборки исходников gRPC 1.84 (его исходники
+несовместимы с const API OpenSSL 4); это отдельная тестовая сборка в `build/`,
+обычные проектные версии и установленные пакеты не меняются.
+
+```sh
+JOBS=4 scripts/build_sanitizer_dependencies.sh tsan
+SANITIZER_DEPENDENCIES_PREFIX="$PWD/build/tsan-dependencies/prefix" ./build.sh tsan
+```
+
+Требуются существующие package dependencies c-ares/re2/zlib и OpenSSL 3.
+`SANITIZER_OPENSSL_ROOT` меняет путь к OpenSSL, `SANITIZER_BUILD_DIR` — workspace сборки.
+Зависимости не устанавливаются глобально. `sanitizer_cache.py` проверяет наличие
+memory instrumentation выбранного sanitizer в трёх библиотеках и записывает точные CMake
+package paths. Без такого prefix `build.sh tsan` останавливается с ясной ошибкой,
+а не запускает заведомо несовместимую смесь библиотек.
+
+После итогового review добавлен регрессионный сценарий неопределённой отправки:
+INTERNAL/UNKNOWN/DATA_LOSS и неизвестный status могут прийти после durable intent.
+Клиент сохраняет прежние operation_id/payload и блокирует редактирование до
+подтверждения; subsequent quarantine rejection не снимает это состояние.
+Definite validation rejection до записи по-прежнему позволяет исправить draft.
+Все шесть новых widget-сценариев прошли; всего 123 Flutter tests.
+
+Предыдущий ASan/UBSan до финального исправления instrumentation contract:
+188 CTest macOS прошли с actual HPT; Linux 188 CTest прошли
+(два optional/permission tests root-прогон явно SKIP). Оба пропущенных случая
+отдельно прошли direct GTest от UID 1000: HPT round-trip и настоящие read-only
+permissions. Отчёты: `build/current-asan-command.log`,
+`build/linux-reports/current-asan-tests.log`,
+`build/linux-reports/current-asan-hpt-permissions.log`.
+
+Итоговый `./build.sh check` после исправления неопределённой отправки прошёл:
+59 C++ files / 30 translation units, генерация контрактов без изменений,
+Flutter analyze без замечаний и все 123 tests. Release Web и native/browser/HPT
+acceptance также прошли. Логи: `build/current-final-check.log`,
+`build/final-web-release.log`, `build/final-native-browser-hpt-acceptance.log`.
+
+При финальном CMake review исправлен `ffido_contracts`: generated C++ target
+теперь получает те же sanitizer/coverage flags, что core и tests. Это обязательно
+для одинакового protobuf layout под TSan; инструментирование только потребителей
+недостаточно. Generated исходники остаются исключёнными из итогового покрытия.
+
+Полный повтор coverage после инструментирования C++ contract прошёл (188 CTest,
+123 Flutter tests); критический порог остаётся выполнен без новых исключений.
+Текущий отчёт: `build/final-contracts-coverage-repeat.log`.
+
+TSan macOS с согласованными protobuf 36.2/gRPC 1.84.0/Abseil 20260817.0
+и инструментированным generated C++ contract: все 188 CTest прошли с HPT,
+без TSan suppressions (67,63 с). Отчёт:
+`build/final-instrumented-tsan-command.log`.
+
+Для ASan/UBSan применяется такая же отдельная подготовка runtime; protobuf
+36.2 включает `PROTOBUF_MESSAGE_GLOBALS` под ASan, поэтому обычный release
+runtime нельзя смешивать с инструментированным generated C++ contract.
+Флаги instrumentation отделены от строгих warnings собственного кода;
+`gtest_list_tests` имеет discovery timeout 30 с для первого старта этих библиотек.
+
+Финальная Linux TSan matrix выявила гонку выхода startup fixtures: OpenSSL
+atexit cleanup освобождал rwlock параллельно с trailing TLS cleanup EventEngine.
+Одного `grpc_is_initialized()` оказалось недостаточно. `GrpcRuntime` удерживает
+EventEngine до закрытия всех channels/servers, ждёт release references с deadline
+и уничтожает engine на вызывающем потоке; destructor engine joins workers.
+То же владение используется production main. Regression охватывает deadline,
+живой reference, repeated shutdown и 25 повторов двух ранее падавших процессов.
+
+После владения EventEngine: TSan macOS все 189 tests passed (113,27 с);
+Linux — 25 повторов каждого shutdown regression и все 189 CTest прошли
+(41,04 с, read-only test root SKIP проверяется отдельно UID 1000).
+HPT был включён в оба полных прогона. Отчёты:
+`build/final-instrumented-tsan-command.log`,
+`build/linux-reports/final-tsan-race-regression.log`.
+
+Финальный coverage с `GrpcRuntime` прошёл: 189 CTest, 123 Flutter tests,
+backend 3795/4055 lines (93,59%), 1853/2173 branches (85,27%),
+critical 2124/2210 lines (96,11%), 1111/1234 branches (90,03%).
+Отчёт `build/final-runtime-coverage.log`; новые guard/error branches
+остались в знаменателе. Непройденных coverage gates нет.
+
+Linux GCC 14 ASan/UBSan runtime dependencies: Abseil 20260817.0 не собирается
+с обоими sanitizers из-за constexpr comparison function pointer в
+`hash_policy_traits.h:158`; это ошибка компиляции, не OOM. Full ASan/UBSan
+matrix выполняется установленным Clang 19 с теми же pinned libraries;
+обычная и TSan Linux matrix остаются GCC 14. Dependency optimization -O1
+используется в отдельной диагностической сборке, core — Debug. Никакие
+sanitizers/checks не отключены, installed toolchain не меняется.
+
+Финальный macOS ASan/UBSan с согласованными instrumented runtimes и
+`GrpcRuntime`: все 189 CTest прошли с HPT (24,00 с). Public dependency script
+с pinned tags, install RPATH и nm memory-instrumentation validation также
+успешно завершён. Отчёты: `build/final-instrumented-asan-command.log`,
+`build/mac-instrumented-asan-dependencies-resumed.log`.
+Обычная Linux сборка: 189 CTest прошли (30,51 с), 36 конкурентных/lock/signal
+сценариев по 10 повторов прошли (78,62 с), HPT включён.
+Отчёт `build/linux-reports/final-normal-command.log`.
+
+Release builds текущего Flutter-клиента после последнего исправления retry:
+Web прошёл, macOS `fido.app` 42,7 MB и Android `app-release.apk` 49,9 MB
+успешно собраны. Отчёты: `build/final-web-release.log`,
+`build/final-macos-release.log`, `build/final-android-release.log`.
+Device/UI acceptance packaged apps не заявляется как пройденный;
+iOS SDK и Windows/Linux Flutter desktop ограничения указаны в matrix выше.
+
+## Финальная Linux ASan/UBSan-проверка с Clang 19
+
+Инструментированные Abseil 20260817.0, protobuf 36.2 и gRPC 1.84 собраны публичным `scripts/build_sanitizer_dependencies.sh` в изолированном контейнере `amster2`. Core и сгенерированный контракт используют те же флаги. CTest завершился без ошибок: 189 зарегистрированных тестов, 38,30 с; read-only permissions пропущен при root и затем успешно выполнен вместе с HPT от UID 1000 (2 теста, 3,43 с). Отдельный запуск актуального JAM parser fuzzer с этим набором библиотек прошёл 10 000 итераций под ASan/UBSan за 5 с.
+
+Первый запуск обнаружил ODR violation до начала тестов: gRPC 1.84 включал `descriptor.upb_minitable.c` одновременно в `libgrpc` и `libupb_descriptor_lib`. `scripts/grpc_shared_dependencies.cmake` исключает повторную компиляцию descriptor в трёх gRPC runtime-targets и добавляет зависимость на единственную библиотеку descriptor. Это изменение графа сборки, а не подавление диагностики: ASan ODR detection остаётся включённым, версии и исходники зависимостей не изменены. Повторный запуск успешно завершился. Та же конфигурация повторно проверена на macOS: ASan/UBSan — 189 тестов, 26,28 с; TSan — 189 тестов, 92,61 с.
+
+Локальные журналы: `build/linux-reports/final-asan-clang-command.log`, `final-asan-clang-hpt-permissions.log`, `final-matched-fuzz.log`. Журналы, инструментированные библиотеки и тестовые данные исключены из Git.
+
+После исправления дублирующего descriptor Linux TSan также повторно прошёл полный CTest: 189 зарегистрированных тестов, 76,65 с, без сообщений TSan. Пропущенная от root проверка прав вместе с HPT дополнительно прошла от UID 1000: 2 теста, 4,66 с. Журналы: `build/linux-reports/final-deduplicated-tsan-command.log` и `final-deduplicated-tsan-hpt-permissions.log`. Финальный `./build.sh check` повторно прошёл C++ formatting/clang-tidy, генерацию контрактов, Dart formatting/analyze и все 123 Flutter-теста.
+
+## Авторизация HPT и независимые сессии (17 октября 2026)
+
+Общий `ffido.v1.Ffido` теперь включает Login, RestoreSession и Logout.
+Login принимает имя, FTN-адрес и пароль HPT без Bearer; остальные RPC используют
+внутреннюю сессию. Ошибки полей типизированы, неизвестный адрес и неверный пароль
+возвращают одинаковый UNAUTHENTICATED, превышение попыток — RESOURCE_EXHAUSTED.
+Пароль не передаётся в metadata или URL. Ручная выдача токена удалена из CLI и UI.
+
+Миграция SQLite v5 транзакционно нормализует адреса, сохраняет прежние user_id
+и личные данные, отклоняет дубли и отзывает legacy-токены. AuthService-тесты
+проверяют два устройства, независимый выход, конкурирующие первые входы,
+сохранение имени, перезапуск, истечение, смену/удаление пароля, замену ключа,
+отсутствие пароля/секрета сессии в SQLite и проверку прав ключа.
+`GrpcTest.HptLoginTwoDevicesShareServerDataAndLogoutIsIndependent` проверяет
+вход через TLS и общие письма, прочитанность, историю, закладки и независимый
+Logout. `HptAuth` проверяет Include/условия HPT, пустой SessionPwd, наследование,
+исключение виртуальных линков, закрытую диагностику, сбой и таймаут помощника.
+
+Нативный и браузерный acceptance harness теперь получают сессии настоящим Login
+из искусственных HPT-линков; старый `ffido-admin provision` не используется.
+Секреты тестовых конфигураций находятся только во временном приватном каталоге.
+
+Итоговые результаты этого изменения: 210/210 backend-тестов с
+`FFIDO_TEST_HPT=/Users/yurik/ftn/usr/bin/hpt`, 141/141 Flutter-тестов,
+`flutter analyze --no-pub` без замечаний, проверки clang-format/clang-tidy,
+формата Dart, воспроизводимости generated proto и OpenSpec strict пройдены.
+Web, macOS и Android release собраны. Для нативного release после integration
+используется обычный `flutter build ... --release` с штатной перегенерацией
+плагинов; `--no-pub` может сохранить регистрацию dev-плагина integration_test
+от предыдущего отладочного запуска в установленной версии Flutter.
+
+Повторить реальный прогон двух клиентов с уже запущенным Android-эмулятором:
+
+```sh
+python3 scripts/check_two_devices.py --android emulator-5554
+```
+
+Сценарий использует Android bridge `10.0.2.2`, действительную цепочку тестового
+CA и отдельные запуски приложений без удаления их данных. После успешного
+прогона обе тестовые сессии отзываются и удаляются из хранилищ. Детальные этапы
+и ограничения записаны в `docs/manual-test-results.md`. Физический Android и
+публичный VPS этим прогоном не проверены; iOS/Linux/Windows недоступны здесь.
+
+## Отображение путей FTN и KOI8-R — 19 октября 2026
+
+Change `configure-ftn-path-mappings-and-koi8-r` проверяется только на синтетических
+конфигах и временных JAM. Рабочие `hpt.cfg`, `areas.cfg`, JAM и Docker Compose
+ноды amster2 не менялись. Пример конфигурации, UID/GID, общий lock и команды сборки
+адаптера приведены в `apps/backend/README.md`.
+
+Проверки охватывают границы префикса, вложенные правила без каскадов, HPT basedir,
+условия и относительные/вложенные include, циклы, лимиты, приватность ошибок,
+соответствие areacfg активному include, каталог с `-p`, inode/dev-сверку,
+JAM-корень и симлинки. Проверены provisioning и полный почтовый цикл с mapping.
+Отдельный helper без адаптера проверяет явный отказ mapped-режима и прежнюю загрузку.
+
+KOI8-R проверяется фиксированными байтовыми эталонами тела/темы/имён, приоритетом
+CHRS CP866/UTF-8, fallback IBMPC/отсутствующего CHRS, отсутствием перезаписи истории,
+публикациями/ответами gRPC и отказом непредставимых символов без мутации JAM.
+UUE проходит загрузку, публикацию, сборку и проверку SHA-256. Установленный HPT
+через SMAPI читает/экспортирует синтетические KOI8-R-письма; сырые байты сравниваются
+до и после scan/pack, проверяются пакет и повторное чтение API.
+
+Docker bind-mount-проверка выполнена на amster2 с отдельными временными файлами
+и одноразовыми контейнерами `fido:120`: shared lease на хосте блокирует exclusive
+в контейнере, а exclusive в контейнере блокирует wrapper на хосте до timeout.
+Воспроизведение на машине с Docker и образом с `sh`/`flock`:
+
+```sh
+FFIDO_TEST_DOCKER_IMAGE=fido:120 python3 scripts/test_hpt_wrapper.py scripts/run_hpt.py
+```
+
+Без переменной Docker-проверка явно отмечается как невыполненная; обычные проверки
+wrapper продолжают работать без Docker. Успешный bind mount не доказывает безопасность
+фонового `exec -d` или наследование fd через Docker exec. Полный point_mail `--cycle`
+требует одной среды выполнения HPT и admin, как описано в README.
+
+Для локальной macOS-сборки потребовалось задать
+`DEVELOPER_DIR=/Library/Developer/CommandLineTools`: выбранный по умолчанию Xcode
+требовал принятия лицензии. Системный выбор developer directory не менялся.
+Существующее предупреждение `test_process.cpp` о неиспользованном nodiscard-результате
+в тесте остановки процесса не относится к изменению; проверки не отключались.
+
+На macOS итоговая Debug-сборка прошла **350/350 CTest** с
+`FFIDO_TEST_HPT=/Users/yurik/ftn/usr/bin/hpt`. Форматирование изменённых участков,
+clang-tidy всех затронутых translation units и `openspec validate --strict` прошли.
+
+Первый полный Linux-прогон от UID 1000 дал **344/350**, без пропусков.
+Шесть ошибок имели общую причину: установленная в тестовом контейнере Husky
+отвергала `Route nopack`. Прямой контроль показал одинаковый отказ у helper
+с адаптером и без него; обычную маршрутизацию оба читали. Падали
+`HptAuth.ExposesEffectiveMailTransportWithoutInventingOwnPointAka`,
+`HptRoutingFixtures`, `PointMailboxProvision`, `PointMailboxCycle` и два mapped-варианта.
+
+Для устранения причины в контейнере `ffido-check-dG62Kh` собран отдельный
+статический комплект Husky в
+`/tmp/ffido-path-mapping-20261019/husky-test/prefix`. Использованы исходники
+из тех же ревизий, что и в успешном локальном окружении:
+
+| Компонент | Ревизия |
+| --- | --- |
+| huskylib | `d3c0c1c3b643d7fce45f82d6c8378802e85d9205` |
+| smapi | `c2fc9ecb0dd1ec8909e9e9709bfdd0031d5b9bf2` |
+| fidoconf | `62c963a6f078905660f2c0b3a6929383823190c5` |
+| areafix | `cd178f92e01d73b39bfc00b4d6359efd543dd990` |
+| hpt | `c2a91d64cee0e6cd357376d30c9285ee3f9c624f` |
+
+В сборку переданы чистые Git-снимки, без локальных изменений CMakeLists.txt.
+Компоненты собираются в порядке таблицы с `BUILD_SHARED_LIBS=OFF`,
+`CMAKE_INSTALL_LIBDIR=lib`, `CMAKE_INSTALL_PREFIX=<prefix>`,
+`CMAKE_PREFIX_PATH=<prefix>` и `CMAKE_C_FLAGS=-I<prefix>/include`.
+Параметры `husky_LIB`, `smapi_LIB`, `fidoconfig_LIB`, `areafix_LIB` явно указывают
+на соответствующие `.a` в `<prefix>/lib`. CMake запускается из каталога исходников
+каждого компонента: upstream получает дату сборки через `git log`.
+Системные `/usr/local` и зависимости рабочего тоссера не заменялись.
+
+При повторном конфигурировании FFIDO нужно заменить также закэшированные пути,
+а не только `FFIDO_HUSKY_ROOT`. После установки согласованного комплекта:
+
+```sh
+# husky_src — каталог с исходниками компонентов из таблицы; prefix — их установка.
+cmake -S . -B build/backend \
+  -DFFIDO_HUSKY_ROOT="$prefix" \
+  -DFFIDO_FIDOCONFIG_INCLUDE="$prefix/include" \
+  -DFFIDO_FIDOCONFIG_LIBRARY="$prefix/lib/libfidoconfig.a" \
+  -DFFIDO_HUSKY_LIBRARY="$prefix/lib/libhusky.a" \
+  -DFFIDO_SMAPI_INCLUDE="$prefix/include" \
+  -DFFIDO_SMAPI_LIBRARY="$prefix/lib/libsmapi.a" \
+  -DFFIDO_SMAPI_VERSION_INCLUDE="$husky_src/smapi/smapi" \
+  -DFFIDO_FIDOCONFIG_SOURCE="$husky_src/fidoconf"
+cmake --build build/backend --parallel 1
+FFIDO_TEST_HPT="$prefix/bin/hpt" ctest --test-dir build/backend --output-on-failure
+```
+
+Linux-контейнер ограничен 2,5 GB RAM: сборка с четырьмя GCC-процессами
+завершалась OOM, поэтому используется `--parallel 1`. Тесты запускаются после
+полного завершения сборки, от UID 1000; прогоны, пересёкшиеся с перелинковкой,
+не используются как итоговые результаты. Исходные предупреждения upstream Husky
+о `strncpy`, fallthrough и `mktemp` не скрывались и не исправлялись в рамках этой
+проверки. Тесты и безопасные требования point_mail не ослаблялись.
+
+Шесть исходных ошибок после смены тестовых зависимостей: **6/6 успешно**,
+6,29 секунды. Заключительный полный Linux-прогон от UID 1000 с настоящим HPT:
+**350/350 успешно, 0 ошибок, 0 пропусков**, 123,03 секунды. Итоговый macOS-прогон
+предыдущего этапа: **350/350 успешно**, 66,43 секунды; после исправления Linux
+код FFIDO и тесты не менялись.
+
+Рабочая нода в `/home/yurik/fido`, её конфигурации, базы и контейнеры не менялись.
+Все новые установки и сборки находятся в `/tmp/ffido-path-mapping-20261019`
+тестового контейнера; на хост передавались только временные исходные архивы и
+сценарии в `/tmp`. Команд к рабочему тоссеру не выполнялось.
+Журналы сборок, точные команды, проверка статической линковки и полный результат
+сохранены локально в `build/backend/ftn-path-mapping-reports/` (исключено из Git),
+включая `ffido-linux-all-fixed.log` и `linux-husky-linkage.txt`.
+
+## Подготовка публичного репозитория — 19 октября 2026
+
+Change `prepare-github-publication-and-releases`: владелец выбрал MIT, новую
+публичную историю без прежней `.git`, ID `io.github.hashev.ffido` и unsigned desktop.
+Рабочая нода amster2 не использовалась и не менялась. Пустой `hashev/ffido` уже
+настроен; исходники, commits и workflows пока не загружались.
+
+Проверки реализации подготовки:
+
+- 17 unittest для экспорта, исключения runtime/истории/секретов, governance,
+  версий, неполных/смешанных пакетов, draft/resume, отказа подмены публичного
+  релиза, release-сертификата APK, трёх ABI, вложенного MIT notice, read-only dylib
+  runtime-имени перелинкованной библиотеки и обязательных legal gates — успешно.
+- actionlint 1.7.11: три workflow без ошибок; shell syntax и Ruby Podfile — успешно.
+- Локальные ссылки README/CONTRIBUTING/publication guide проверены; OpenSpec strict
+  и whitespace-check прошли.
+- C++ format/clang-tidy: 99 файлов / 51 translation unit успешно. Для штатного
+  formatter исправлен только порядок двух includes в test_hpt_auth.cpp.
+- Из отдельного проверочного экспорта: Flutter pub get с lock enforcement,
+  analyze без замечаний, 230 тестов успешно; два существующих теста skipped.
+  CMake Debug build и полный CTest с настоящим HPT: **350/350**, без пропусков,
+  109,16 секунды. Использованы установленные закреплённые зависимости, новый bootstrap release-deps проверен отдельно (см. ниже).
+- Android release build и macOS arm64 release build из экспорта успешны.
+  MacOS baseline проекта/Pods — 15, архитектура каждого пакета соответствует
+  native runner. Штатная release-перегенерация Flutter обязательна: --no-pub
+  после тестов сохранял регистрацию dev-плагина integration_test.
+- Созданы локальные validation APK и DMG. APK содержит три ABI и собственный
+  MIT notice, но имеет debug-подпись и **не допускается к публичному выпуску**.
+  DMG прошёл checksum, mount, проверку bundle ID, arm64 и ad-hoc codesign.
+  Local-validation metadata имеет нулевой SHA и не обозначает публичный commit.
+
+Локальные пакеты и журналы собираются в исключённом из Git
+`build/publication-validation/`. Исторические предупреждения Flutter plugins и
+upstream зависимостей не отключались. Homebrew runtime-библиотеки на этой машине
+имеют minimum macOS 26: упаковщик вычисляет реальный максимум minos, а не обещает
+macOS 15 по строковой метке. CI на macOS 15 должен подтвердить свой реальный baseline.
+
+На этой машине нет Windows/Linux desktop и Intel macOS runner. Их package builds,
+полная матрица GitHub Actions, реальные правила первого PR, запуск распакованных
+пакетов на всех ОС и публичные anonymous downloads остаются непроверенными.
+Постоянный Android release-key ещё не предоставлен. FFIDO_PUBLICATION_READY
+остаётся false; workflow не выдаёт debug APK за публичный релиз.
+
+Дополнительно bootstrap release-deps собрал из зафиксированных commit SHA
+Abseil, Protobuf, gRPC, grpc-proto и весь тестовый Husky. После переключения
+CMake cache на новый prefix backend пересобран и прошёл **350/350**, без пропусков,
+59,59 секунды. Текущий Linux/macOS CI использует именно этот bootstrap, но
+его запуск на GitHub ещё не выполнялся. Полные upstream warning logs сохраняются
+в сжатом CI-артефакте, а не отключаются.
+
+Собран и распакован validation server tar.gz macOS arm64 (Debug). Проверены
+отсутствие ссылок на Homebrew/рабочие пути в runtime dependencies, загрузка
+сервера до ожидаемого отказа на отсутствующем конфиге, исходные архивы и лицензии,
+вложенные объектные файлы, успешная перелинковка трёх бинарников и загрузка
+перелинкованного сервера. Первый холодный старт ждал проверки ad-hoc подписей
+в dyld около 13 секунд; повторный быстрый запуск корректен. Это не был deadlock
+в gRPC. Для smoke используется 30-секундный бюджет старта.
+
+Серверный validation-пакет требует macOS 26.0 из-за локальных библиотек;
+клиентский DMG сообщает macOS 15.0. Это локальные результаты, не доказательство
+работы server Release на macOS 15. Пересборка/проверка всей release-матрицы
+остаётся обязательной до объявления публичного набора готовым.
+
+Release environment разрешает master/v* без ручного approval; через GitHub API
+проверены active tag rulesets (stable creation владельцем, update/delete v*
+запрещены). Master пока нельзя назначить default в пустом репозитории. Секреты
+Android не добавлялись, публикация выключена.

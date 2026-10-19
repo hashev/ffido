@@ -1,0 +1,29 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cmake *)",
+      "Bash(make *)",
+      "Bash(clang++ *)",
+      "Bash(rm *)",
+      "Bash(mkdir *)",
+      "Bash(cp *)",
+      "Bash(grep *)",
+      "Bash(./fidoback_tests)",
+      "Bash(cat)",
+      "Bash(struct *)",
+      "Bash(uint32_t *)",
+      "Bash(uint16_t *)",
+      "Bash(std::array)",
+      "Bash(})",
+      "Bash(int *)",
+      "Bash(squishframeheader)",
+      "Bash(std::cout)",
+      "Bash(return *)",
+      "Bash(eof)",
+      "Bash(/tmp/check_squish_size)",
+      "Bash(ctest *)",
+      "Bash(sed *)"
+    ]
+  },
+  "$version": 3
+}

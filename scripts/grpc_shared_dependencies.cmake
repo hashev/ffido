@@ -1,0 +1,20 @@
+# gRPC 1.84 compiles the descriptor minitable both into libgrpc and into
+# libupb_descriptor_lib. Keep a single definition in shared sanitizer builds.
+function(ffido_grpc_descriptor_definition)
+  if(NOT BUILD_SHARED_LIBS OR NOT TARGET upb_descriptor_lib)
+    return()
+  endif()
+  set(descriptor src/core/ext/upb-gen/google/protobuf/descriptor.upb_minitable.c)
+  foreach(runtime grpc grpc_unsecure grpc_authorization_provider)
+    if(TARGET ${runtime})
+      get_target_property(sources ${runtime} SOURCES)
+      if(descriptor IN_LIST sources)
+        list(REMOVE_ITEM sources ${descriptor})
+        set_property(TARGET ${runtime} PROPERTY SOURCES ${sources})
+        target_link_libraries(${runtime} upb_descriptor_lib)
+      endif()
+    endif()
+  endforeach()
+endfunction()
+
+cmake_language(DEFER CALL ffido_grpc_descriptor_definition)

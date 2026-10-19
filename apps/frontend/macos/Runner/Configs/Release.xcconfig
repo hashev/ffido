@@ -1,0 +1,5 @@
+#include "../../Flutter/Flutter-Release.xcconfig"
+#include "Warnings.xcconfig"
+
+// The aggregate Flutter Assemble target also inherits this project configuration.
+ARCHS = $(NATIVE_ARCH_ACTUAL)
