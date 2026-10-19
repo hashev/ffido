@@ -513,7 +513,7 @@
     "scripts/release/dependencies.sh": "56d0b9cb89223e5e2a45a3d879674fff3d8958b75eb18a9e97a8c67864468dd3",
     "scripts/release/dependency_record.py": "cd79ba687819b5ce16ad9b8ba3c7aa62cb5aa9ccec7345102a4f8ed369c71776",
     "scripts/release/export.py": "05f773c87386b5b702667ec65d3b35efa72e0d9a495e0d99b6f62225fd8df0c0",
-    "scripts/release/package.py": "3cdb399f43b67b1afdd39010ae5170d681b9eb402c7f05407982e81f1b075775",
+    "scripts/release/package.py": "efc8ed7cfc7204cb96d222dbb05bbce469e05dd3c7a6d0087f5b667fd8cb6acf",
     "scripts/release/publish.py": "37292f17fa43320c62029a60403a35bcd5944e84885d6c726f0033537a4e5d90",
     "scripts/release/settings.json": "f354a0b4de6a0688e3bb6af90139ff65c1e0ee38eee7278a9d80a2283c6d902e",
     "scripts/release/test_release.py": "a5fe25d5900557f68b46e37b03181e22865dc19cdede39592ae5e357997d2c57",

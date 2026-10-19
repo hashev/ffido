@@ -13,7 +13,8 @@ import subprocess
 import tarfile
 import tempfile
 import zipfile
-from urllib.parse import unquote, urlparse
+from urllib.parse import urlparse
+from urllib.request import url2pathname
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 
@@ -34,7 +35,9 @@ def licenses(stage, frontend=True):
     if config.exists():
         for entry in json.loads(config.read_text())['packages']:
             uri = entry['rootUri']
-            path = pathlib.Path(unquote(urlparse(uri).path)) if uri.startswith('file:') else config.parent/uri
+            path = pathlib.Path(url2pathname(urlparse(uri).path)) if uri.startswith('file:') else config.parent/uri
+            if not path.is_dir():
+                raise ValueError('Dependency license directory unavailable: '+entry['name'])
             for name in ('LICENSE', 'COPYING', 'LICENSE.md', 'LICENSE.txt'):
                 if (path/name).is_file():
                     shutil.copy2(path/name, legal/(entry['name']+'-'+name))
