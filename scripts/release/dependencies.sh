@@ -29,6 +29,10 @@ clone grpc https://github.com/grpc/grpc.git 3252a89f10d8e92997862167ca7d095ecda8
 git -C "$WORK/grpc" submodule update --init --depth 1 third_party/grpc-proto
 export CMAKE_PREFIX_PATH="$PREFIX:${CMAKE_PREFIX_PATH:-}"
 common=(-DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=23 -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DBUILD_SHARED_LIBS=OFF -DCMAKE_INSTALL_LIBDIR=lib -DCMAKE_INSTALL_PREFIX="$PREFIX")
+if [[ "$(uname -s)" == Darwin ]]; then
+  # Keep CMake's implicit system include paths aligned with the selected SDK.
+  common+=(-DCMAKE_OSX_SYSROOT="$(xcrun --show-sdk-path)")
+fi
 build_install() {
   local name="$1"; shift
   (cd "$WORK/$name"; cmake -S . -B "$WORK/$name-build" "${common[@]}" "$@")
