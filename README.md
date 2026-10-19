@@ -222,7 +222,9 @@ macOS поддерживает независимые профили:
 Flutter 3.41.6; Java 17/Android SDK для Android, Visual Studio C++ для Windows,
 Xcode для macOS, GTK/libsecret development packages для Linux. Backend требует
 CMake, C++23 compiler, Python 3, OpenSSL, c-ares, RE2, zlib и согласованные
-Protobuf 36.2/gRPC 1.84/Husky.
+Protobuf 36.2/gRPC 1.84/Husky. Для backend на macOS нужен Xcode 26 или новее:
+Xcode 16 ещё не предоставляет стандартный `std::stop_token`. CI использует
+установленный Xcode 26.3; при нескольких Xcode выберите его через `DEVELOPER_DIR`.
 
 ```sh
 # Из корня, Linux/macOS; зависимости устанавливаются только в build/release-deps.

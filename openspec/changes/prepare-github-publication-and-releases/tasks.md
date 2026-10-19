@@ -12,7 +12,7 @@
 
 - [x] 2.1 Добавить в `scripts/` обычную сборку закреплённых gRPC/Protobuf/Husky для Linux/macOS в отдельный prefix, переиспользовав существующие команды без смены версий; проверить чистую конфигурацию root CMake с адаптером и настоящим HPT, задокументировать параметры и кеш-ключи.
 - [x] 2.2 Создать `.github/workflows/ci.yml` и общий workflow проверок с зафиксированными Actions SHA/toolchains: Flutter analyze/test, C++ build/CTest, формат/static checks и generated proto; проверить синтаксис workflow и вызовы существующих скриптов без release secrets.
-- [ ] 2.3 Добавить обязательную матрицу Flutter release builds macOS arm64/x86_64, Windows x86_64, Linux x86_64 и Android universal, используя явные runner labels; проверить выходные файлы и архитектуры, устранить конкретные ошибки платформ без попутных upgrades.
+- [x] 2.3 Добавить обязательную матрицу Flutter release builds macOS arm64/x86_64, Windows x86_64, Linux x86_64 и Android universal, используя явные runner labels; проверить выходные файлы и архитектуры, устранить конкретные ошибки платформ без попутных upgrades.
 - [x] 2.4 Включить HPT/SMAPI и mapping/KOI8/point-mail fixtures на Linux/macOS, непривилегированные permissions tests и контроль неожиданных skips; убедиться на синтетических данных, что отсутствие HPT становится ошибкой обязательного CI, а не успехом.
 - [x] 2.5 Создать итоговый check `ci-required`, проверяющий все обязательные jobs при success/failure/cancelled/skipped; проверить эти четыре случая и описать регистрацию имени check в ruleset в `docs/github-publication.md`.
 
@@ -20,8 +20,8 @@
 
 - [x] 3.1 Подготовить `scripts/` packaging manifest с компонентом/версией/SHA/OS/arch/min OS и SHA-256; проверить однозначные имена, полный ожидаемый набор и обнаружение отсутствующего/чужого файла.
 - [ ] 3.2 Настроить staging backend через root CMake install-компонент `ffido`, необходимые runtime-зависимости, legal files и safe config; распаковка Linux/macOS tar.gz должна запускать сервер/admin/helper/wrapper без каталогов разработчика, проверка `ldd`/`otool` фиксируется в отчёте.
-- [ ] 3.3 Подготовить DMG клиента macOS для двух архитектур с корректными bundle paths и явным signing/notarization status; проверить состав, архитектуру и запуск после копирования из образа; документировать установку и сохранение профилей.
-- [ ] 3.4 Подготовить Windows ZIP со всеми DLL/assets и Linux tar.gz с desktop launcher; проверить зависимости и запуск из нового каталога, описать внешние prerequisites и минимальные ОС в `README.md`.
+- [x] 3.3 Подготовить DMG клиента macOS для двух архитектур с корректными bundle paths и явным signing/notarization status; проверить состав, архитектуру и запуск после копирования из образа; документировать установку и сохранение профилей.
+- [x] 3.4 Подготовить Windows ZIP со всеми DLL/assets и Linux tar.gz с desktop launcher; проверить зависимости и запуск из нового каталога, описать внешние prerequisites и минимальные ОС в `README.md`.
 - [x] 3.5 Параметризовать утверждаемые application IDs в `apps/frontend/` без молчаливой смены существующих профилей; после решения владельца проверить отображаемое имя, Android update identity и доступ к существующим данным либо документировать выбранную отдельную установку.
 - [x] 3.6 Разделить Android CI/debug и публичную release-подпись в `apps/frontend/android/`; добавить проверку постоянного signing certificate и возрастающего versionCode. Отсутствующий ключ должен блокировать публичный APK; инструкция резервирования и secrets — в `docs/github-publication.md`.
 - [x] 3.7 Реализовать выбранный unsigned desktop mode с явным ad-hoc статусом macOS и отказом от fallback при запросе ненастроенного signed mode; проверить отрицательный сценарий, отсутствие ключей в пакетах и документировать штатную установку без глобального отключения защиты ОС.

@@ -28,7 +28,8 @@ public:
   std::expected<void, domain::ApiError> ConfigureAuth(HptCredentials credentials, std::string_view key) {
     return auth_.Configure(std::move(credentials), key);
   }
-#define FFIDO_RPC(name, request, response) grpc::Status name(grpc::ServerContext*, const request*, response*) override;
+#define FFIDO_RPC(name, request, response) \
+  grpc::Status name(grpc::ServerContext* context, const request* input, response* output) override;
   FFIDO_RPC(Login, ffido::v1::LoginRequest, ffido::v1::LoginResponse)
   FFIDO_RPC(RestoreSession, google::protobuf::Empty, ffido::v1::SessionInfo)
   FFIDO_RPC(Logout, google::protobuf::Empty, google::protobuf::Empty)
@@ -55,8 +56,9 @@ public:
   FFIDO_RPC(GetUueSendStatus, ffido::v1::UueOperationReference, ffido::v1::UueSendStatus)
 #undef FFIDO_RPC
 private:
-  grpc::Status Dispatch(grpc::ServerContext*,
-                        const std::function<std::expected<void, domain::ApiError>(const storage::AuthenticatedUser&)>&);
+  grpc::Status Dispatch(
+      grpc::ServerContext* context,
+      const std::function<std::expected<void, domain::ApiError>(const storage::AuthenticatedUser&)>& operation);
   std::shared_ptr<storage::IMetadataStore> metadata_;
   AuthService auth_;
   struct Attempts {

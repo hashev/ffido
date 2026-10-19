@@ -113,7 +113,9 @@ OS/arch вариантах, backend build/CTest/HPT/static checks/proto на т�
 `check_ctest.py` запрещает отсутствующий HPT и skipped tests. amster2 не используется.
 
 Матрица использует Flutter 3.41.6, Java 17, Ubuntu 24.04, Windows 2022 runner,
-macOS 15 arm64 и macos-15-intel. Actions закреплены полными commit SHA.
+macOS 15 arm64 и macos-15-intel. Backend выбирает установленный Xcode 26.3
+для стандартного `std::stop_token`; deployment target остаётся macOS 15.
+Actions закреплены полными commit SHA.
 Кеш dependency prefix привязан к runner/архитектуре, fingerprint compiler/SDK/внешних библиотек и содержимому builder scripts.
 При смене компилятора/образа сбросьте кеш; не переиспользуйте несовместимые объекты.
 
