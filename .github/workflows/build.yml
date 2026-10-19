@@ -7,6 +7,8 @@ on:
         default: ''
 permissions:
   contents: read
+env:
+  PYTHONUTF8: '1'
 jobs:
   release-tools:
     runs-on: ubuntu-24.04
@@ -47,7 +49,7 @@ jobs:
           channel: stable
           cache: true
       - if: matrix.os == 'linux'
-        run: sudo apt-get update && sudo apt-get install -y ninja-build libgtk-3-dev libsecret-1-dev libjsoncpp-dev
+        run: sudo apt-get update && sudo apt-get install -y ninja-build libgtk-3-dev libsecret-1-dev libjsoncpp-dev xvfb
       - run: python scripts/release/build_identity.py
         env:
           IDENTITY_JSON: ${{ inputs.identity }}
@@ -72,6 +74,8 @@ jobs:
           TARGET: ${{ matrix.os }}
           ARCH: ${{ matrix.arch }}
         run: python scripts/release/package.py client "$TARGET" "$ARCH" --identity build/identity.json
+      - name: Smoke packaged client
+        run: python scripts/release/smoke.py client-${{ matrix.os }}-${{ matrix.arch }}
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: client-${{ matrix.os }}-${{ matrix.arch }}
@@ -160,6 +164,8 @@ jobs:
           TARGET: ${{ matrix.os }}
           ARCH: ${{ matrix.arch }}
         run: python3 scripts/release/package.py server "$TARGET" "$ARCH" --identity build/identity.json
+      - name: Smoke packaged server and TLS client
+        run: python3 scripts/release/smoke.py server-${{ matrix.os }}-${{ matrix.arch }}
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: server-${{ matrix.os }}-${{ matrix.arch }}

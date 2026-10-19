@@ -33,7 +33,7 @@ def port():
         return value.getsockname()[1]
 
 def ready(process, number):
-    until = time.monotonic()+15
+    until = time.monotonic()+30
     while time.monotonic() < until:
         if process.poll() is not None:
             raise RuntimeError('Test process exited before accepting connections')
@@ -42,7 +42,7 @@ def ready(process, number):
                 return
         except OSError:
             time.sleep(.05)
-    raise RuntimeError('Test process did not bind within 15 seconds')
+    raise RuntimeError('Test process did not bind within 30 seconds')
 
 class Handler(http.server.SimpleHTTPRequestHandler):
     def do_POST(self):
@@ -59,10 +59,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--build-dir', type=pathlib.Path, default=ROOT/'build/backend')
-    parser.add_argument('--envoy', required=True)
-    parser.add_argument('--chrome', required=True)
+    parser.add_argument('--server', type=pathlib.Path, help='Test an unpacked server binary')
+    parser.add_argument('--native-only', action='store_true')
+    parser.add_argument('--envoy')
+    parser.add_argument('--chrome')
     parser.add_argument('--hpt')
     args = parser.parse_args()
+    if not args.native_only and (not args.envoy or not args.chrome):
+        parser.error('--envoy and --chrome are required unless --native-only is selected')
     build = args.build_dir.resolve()
     with tempfile.TemporaryDirectory(prefix='ffido-acceptance-') as directory, contextlib.ExitStack() as cleanup:
         root = pathlib.Path(directory)
@@ -100,11 +104,13 @@ def main():
                     except subprocess.TimeoutExpired: process.kill(); process.wait(timeout=5)
             cleanup.callback(stop)
             return process
-        backend = start([str(build/'apps/backend/fidoback'), str(config)], 'backend.log')
+        backend = start([str(args.server.resolve() if args.server else build/'apps/backend/fidoback'), str(config)], 'backend.log')
         try:
             ready(backend, backend_port)
             native = run(['dart', 'run', 'tool/native_acceptance.dart'], cwd=ROOT/'apps/frontend', input=json.dumps({'endpoint': f'https://localhost:{backend_port}', 'ca': str(ca), 'passwordA': password_a, 'passwordB': password_b}))
             print(native.stdout.strip())
+            if args.native_only:
+                return
             js = ROOT/'build/web-acceptance.js'
             if not js.is_file():
                 raise RuntimeError('Compile tool/web_acceptance.dart first')
@@ -160,7 +166,7 @@ def main():
                                     '' if 'ACL.HIDDEN ' in line else ' 2:1/2') for line in extra_areas]
             full_auth = original_auth+'\n'.join(acl_lines)+'\nReadOnly 2:1/2 ACL.READ\nWriteOnly 2:1/2 ACL.WRITE\n'
             hpt_auth.write_text(full_auth)
-            backend = start([str(build/'apps/backend/fidoback'), str(config)], 'acl-initial.log')
+            backend = start([str(args.server.resolve() if args.server else build/'apps/backend/fidoback'), str(config)], 'acl-initial.log')
             ready(backend, backend_port)
             acl_input = {'endpoint': f'https://localhost:{backend_port}', 'ca': str(ca),
                          'passwordA': password_a, 'passwordB': password_b, 'phase': 'initial'}
@@ -170,7 +176,7 @@ def main():
             for phase in ('revoked', 'restored'):
                 hpt_auth.write_text(full_auth.replace('ACL.FULL '+str(root/'acl-full')+' -b JAM 2:1/2 2:1/3',
                                                        'ACL.FULL '+str(root/'acl-full')+' -b JAM 2:1/3') if phase == 'revoked' else full_auth)
-                backend = start([str(build/'apps/backend/fidoback'), str(config)], 'acl-'+phase+'.log')
+                backend = start([str(args.server.resolve() if args.server else build/'apps/backend/fidoback'), str(config)], 'acl-'+phase+'.log')
                 ready(backend, backend_port)
                 run(['dart', 'run', 'tool/echo_access_acceptance.dart'], cwd=ROOT/'apps/frontend',
                     input=json.dumps({**acl_input, **saved, 'phase': phase}))

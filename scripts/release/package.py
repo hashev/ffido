@@ -18,7 +18,9 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 
 def run(*args):
-    return subprocess.check_output(list(map(str, args)), text=True)
+    command = list(map(str, args))
+    command[0] = shutil.which(command[0]) or command[0]
+    return subprocess.check_output(command, text=True)
 
 
 def licenses(stage, frontend=True):
