@@ -107,7 +107,15 @@ def main():
         backend = start([str(args.server.resolve() if args.server else build/'apps/backend/fidoback'), str(config)], 'backend.log')
         try:
             ready(backend, backend_port)
-            native = run(['dart', 'run', 'tool/native_acceptance.dart'], cwd=ROOT/'apps/frontend', input=json.dumps({'endpoint': f'https://localhost:{backend_port}', 'ca': str(ca), 'passwordA': password_a, 'passwordB': password_b}))
+            # The fixture listens on IPv4; localhost may resolve to ::1 on CI.
+            native_host = '127.0.0.1' if args.native_only else 'localhost'
+            tls = ssl.create_default_context(cafile=str(ca))
+            tls.set_alpn_protocols(['h2'])
+            with socket.create_connection(('127.0.0.1', backend_port), timeout=10) as transport:
+                with tls.wrap_socket(transport, server_hostname=native_host) as connection:
+                    assert connection.selected_alpn_protocol() == 'h2'
+            print('PASS: certificate verification and HTTP/2 ALPN on the configured loopback address')
+            native = run(['dart', 'run', 'tool/native_acceptance.dart'], cwd=ROOT/'apps/frontend', input=json.dumps({'endpoint': f'https://{native_host}:{backend_port}', 'ca': str(ca), 'passwordA': password_a, 'passwordB': password_b}))
             print(native.stdout.strip())
             if args.native_only:
                 return

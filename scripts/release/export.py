@@ -30,6 +30,9 @@ def excluded(path):
                              '.env', 'GoogleService-Info.plist', 'google-services.json', 'Generated.xcconfig',
                              'flutter_export_environment.sh', '.last_build_id', 'GeneratedPluginRegistrant.java',
                              'gradlew', 'gradlew.bat', 'gradle-wrapper.jar'}
+            or path.as_posix() in {'apps/frontend/ios/Flutter/Flutter.podspec',
+                                      'apps/frontend/ios/Runner/GeneratedPluginRegistrant.h',
+                                      'apps/frontend/ios/Runner/GeneratedPluginRegistrant.m'}
             or path.name.endswith(('-wal', '-shm')))
 
 

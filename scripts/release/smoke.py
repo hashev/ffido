@@ -84,6 +84,9 @@ def smoke(row, packages):
                     print(output)
                 else:
                     run('otool', '-L', binary)
+                relink = stage/'share/ffido/relink'
+                run('sh', relink/'relink.sh')
+                run(relink/'bin/ffido-admin', '--help', timeout=30)
                 run(stage/'bin/ffido-admin', '--help', timeout=30)
                 run(sys.executable, ROOT/'scripts/test_admin.py', stage/'bin/ffido-admin')
                 run(sys.executable, ROOT/'scripts/test_hpt_wrapper.py', stage/'bin/ffido-run-hpt')

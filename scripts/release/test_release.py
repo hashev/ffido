@@ -33,6 +33,11 @@ class ExportTest(unittest.TestCase):
     def test_exports_uncommitted_code_without_history_or_runtime(self):
         for name in ['config.json', 'messages.jhr', 'metadata.db', 'metadata.db-wal']:
             (self.source/'apps/backend'/name).write_text('private')
+        for name in ['Flutter/Flutter.podspec', 'Runner/GeneratedPluginRegistrant.h',
+                     'Runner/GeneratedPluginRegistrant.m']:
+            generated = self.source/'apps/frontend/ios'/name
+            generated.parent.mkdir(parents=True, exist_ok=True)
+            generated.write_text('generated cache')
         (self.source/'.git').mkdir()
         (self.source/'.git/config').write_text('old history')
         out = self.root/'output'
