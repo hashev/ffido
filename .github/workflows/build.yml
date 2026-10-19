@@ -76,6 +76,9 @@ jobs:
         run: python scripts/release/package.py client "$TARGET" "$ARCH" --identity build/identity.json
       - name: Smoke packaged client
         run: python scripts/release/smoke.py client-${{ matrix.os }}-${{ matrix.arch }}
+      - name: Install and launch Android APK
+        if: matrix.os == 'android'
+        run: bash scripts/release/android_smoke.sh
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: client-${{ matrix.os }}-${{ matrix.arch }}

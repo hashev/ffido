@@ -202,7 +202,7 @@ def verify_legal(stage, component, os_name):
             if notice != expected:
                 raise ValueError('APK lacks the authoritative MIT notice')
         elif not any(p.read_bytes() == expected for p in stage.rglob('LICENSE')
-                     if str(p).endswith('assets/legal/LICENSE')):
+                     if p.as_posix().endswith('assets/legal/LICENSE')):
             raise ValueError('Desktop client lacks its embedded MIT notice')
 
 

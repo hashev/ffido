@@ -4,7 +4,7 @@
   "files": {
     ".clang-format": "a8beff20b29595c367828848bced4604fe0b4e5538d744178c894bc4c8cca736",
     ".clang-tidy": "03836195c97470bd0109d23d427e897ac0eb7abd86b986701a33d558c5554b78",
-    ".github/workflows/build.yml": "f5928ca7564ebb8606a45b32f115e90b98746701c08fca5137ef6c7973a6e421",
+    ".github/workflows/build.yml": "eacb87ed5f13fbc5b9463b9c7bb072aab1862dd4b8fc944147aa2d8de06603c7",
     ".github/workflows/ci.yml": "e2f7621d9a79b47de7f52f32029c405cf32c62060c78851820c22dbb434b36f1",
     ".github/workflows/release.yml": "127c4409885c7618989b119ac6b552a11c0a7da3e3bc22c9a9d3fa4a1b55a354",
     ".gitignore": "b72620eba086e4eb23323a284b13f140402d855280cf7a19fb1f850874f67c14",
@@ -513,7 +513,7 @@
     "scripts/release/dependencies.sh": "56d0b9cb89223e5e2a45a3d879674fff3d8958b75eb18a9e97a8c67864468dd3",
     "scripts/release/dependency_record.py": "cd79ba687819b5ce16ad9b8ba3c7aa62cb5aa9ccec7345102a4f8ed369c71776",
     "scripts/release/export.py": "05f773c87386b5b702667ec65d3b35efa72e0d9a495e0d99b6f62225fd8df0c0",
-    "scripts/release/package.py": "29ae3fd1a1d10e12481704acf2396a67b69b5d24891a62c759afddd49146d734",
+    "scripts/release/package.py": "3cdb399f43b67b1afdd39010ae5170d681b9eb402c7f05407982e81f1b075775",
     "scripts/release/publish.py": "37292f17fa43320c62029a60403a35bcd5944e84885d6c726f0033537a4e5d90",
     "scripts/release/settings.json": "f354a0b4de6a0688e3bb6af90139ff65c1e0ee38eee7278a9d80a2283c6d902e",
     "scripts/release/test_release.py": "a5fe25d5900557f68b46e37b03181e22865dc19cdede39592ae5e357997d2c57",
@@ -529,7 +529,8 @@
     "tools/proto/protoc-gen-dart": "400c4c7657b363b35e31da209854f07f1086dbeb58ed63b448590bc790b2ac6c",
     "tools/proto/pubspec.lock": "551847b056c5675380b62802585d07395b860d8d4a626fc113ecf53f163c5cd4",
     "tools/proto/pubspec.yaml": "fa52ba348a7f892fd26ddeba9b9d9946b990f8d52464e49f04a112bc29386ebb",
-    "scripts/release/smoke.py": "3e7a7fd012b2d41c0363b7e271b0772738ec41016514ef8331bfa55a5b2262d8"
+    "scripts/release/smoke.py": "3e7a7fd012b2d41c0363b7e271b0772738ec41016514ef8331bfa55a5b2262d8",
+    "scripts/release/android_smoke.sh": "b013d9e108d1b04345959e7526c5ff0934e622ae0e4481855c8165b3b7323579"
   },
   "machine_reference_review": [
     "apps/backend/README.md",
