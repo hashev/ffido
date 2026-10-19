@@ -33,7 +33,7 @@ def excluded(path):
             or path.as_posix() in {'apps/frontend/ios/Flutter/Flutter.podspec',
                                       'apps/frontend/ios/Runner/GeneratedPluginRegistrant.h',
                                       'apps/frontend/ios/Runner/GeneratedPluginRegistrant.m'}
-            or path.name.endswith(('-wal', '-shm')))
+            or path.name.endswith(('-wal', '-shm', '-journal')))
 
 
 def scan(content, path=None):

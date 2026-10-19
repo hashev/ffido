@@ -16,6 +16,7 @@ import zipfile
 from urllib.parse import urlparse
 from urllib.request import url2pathname
 ROOT = pathlib.Path(__file__).resolve().parents[2]
+DEBIAN_DOCS = pathlib.Path('/usr/share/doc')
 
 
 def run(*args):
@@ -52,6 +53,8 @@ def bundle_native(stage):
     """Bundle non-system native dependencies; return relocatable runtime paths."""
     library_dir = stage/'lib'
     library_dir.mkdir(exist_ok=True)
+    source_digests = {p.name: hashlib.sha256(p.read_bytes()).digest()
+                      for p in library_dir.iterdir() if p.is_file()}
     todo = list((stage/'bin').iterdir())
     processed = set()
     darwin = platform.system() == 'Darwin'
@@ -80,20 +83,21 @@ def bundle_native(stage):
                 candidates = [origin.parent.parent/name for name in ('LICENSE', 'LICENSE.txt', 'LICENSE.md', 'COPYING')]
             else:
                 owners = run('dpkg-query', '-S', str(origin)).splitlines()
-                candidates = [pathlib.Path('/usr/share/doc')/line.split(':', 1)[0]/'copyright' for line in owners]
+                candidates = [DEBIAN_DOCS/line.split(':', 1)[0]/'copyright' for line in owners]
             notices = [path for path in candidates if path.is_file()]
             if not notices:
                 raise ValueError('Missing runtime library license: '+origin.name)
             for index, notice in enumerate(notices):
                 shutil.copy2(notice, notice_dir/(origin.name+f'-{index}-LICENSE'))
             if not target.exists():
+                source_digests[target.name] = hashlib.sha256(pathlib.Path(dependency).read_bytes()).digest()
                 shutil.copy2(dependency, target)
                 target.chmod(0o755)
                 todo.append(target)
-            elif target.resolve() != pathlib.Path(dependency).resolve() and hashlib.sha256(target.read_bytes()).digest() != hashlib.sha256(pathlib.Path(dependency).read_bytes()).digest():
-                # A previously relocated Mach-O differs; it still names the same source.
-                if not darwin:
-                    raise ValueError('Conflicting native library name')
+            elif target.resolve() != pathlib.Path(dependency).resolve():
+                # Rpath/signature edits change the staged bytes, not the source identity.
+                if source_digests[target.name] != hashlib.sha256(pathlib.Path(dependency).read_bytes()).digest():
+                    raise ValueError('Conflicting native library name: '+target.name)
             if darwin:
                 subprocess.run(['install_name_tool', '-change', dependency, '@rpath/'+target.name, str(binary)], check=True)
         if darwin:

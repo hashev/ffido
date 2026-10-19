@@ -33,7 +33,7 @@ class ExportTest(unittest.TestCase):
         (self.source/'apps/backend/main.cpp').write_text('source')
 
     def test_exports_uncommitted_code_without_history_or_runtime(self):
-        for name in ['config.json', 'messages.jhr', 'metadata.db', 'metadata.db-wal']:
+        for name in ['config.json', 'messages.jhr', 'metadata.db', 'metadata.db-wal', 'metadata.db-journal']:
             (self.source/'apps/backend'/name).write_text('private')
         for name in ['Flutter/Flutter.podspec', 'Runner/GeneratedPluginRegistrant.h',
                      'Runner/GeneratedPluginRegistrant.m']:
@@ -284,6 +284,52 @@ class RelinkRegressionTest(unittest.TestCase):
             subprocess.run(['sh', str(relink/'relink.sh')], env=environment, check=True)
             self.assertEqual(trace.read_text().splitlines(), ['linked']*3)
 
+
+
+class NativeBundleRegressionTest(unittest.TestCase):
+    def test_relocation_preserves_identity_and_real_name_collisions_fail(self):
+        module = load('package')
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            docs = root/'docs/runtime'
+            docs.mkdir(parents=True)
+            (docs/'copyright').write_text('runtime license')
+            libraries = []
+            for name, content in [('a', b'library A'), ('b', b'library B')]:
+                library = root/name/'libsample.so'
+                library.parent.mkdir()
+                library.write_bytes(content)
+                libraries.append(library)
+            for conflict in [False, True]:
+                stage = root/str(conflict)
+                (stage/'bin').mkdir(parents=True)
+                (stage/'legal').mkdir()
+                for name in ['one', 'two']:
+                    (stage/'bin'/name).write_bytes(b'ELF fixture')
+                def inspect(*args):
+                    if args[0] == 'dpkg-query':
+                        return 'runtime: '+str(args[-1])+'\n'
+                    self.assertEqual(args[0], 'ldd')
+                    binary = pathlib.Path(args[1])
+                    if binary.parent.name == 'lib':
+                        return ''
+                    library = libraries[1] if conflict and binary.name == 'two' else libraries[0]
+                    return f'libsample.so => {library} (0x0000)\n'
+                def relocate(command, **kwargs):
+                    self.assertEqual(command[0], 'patchelf')
+                    binary = pathlib.Path(command[-1])
+                    binary.write_bytes(binary.read_bytes()+b' relocated')
+                    return subprocess.CompletedProcess(command, 0)
+                with patch.object(module.platform, 'system', return_value='Linux'), \
+                     patch.object(module, 'DEBIAN_DOCS', root/'docs'), \
+                     patch.object(module, 'run', side_effect=inspect), \
+                     patch.object(module.subprocess, 'run', side_effect=relocate):
+                    if conflict:
+                        with self.assertRaisesRegex(ValueError, 'Conflicting native library name'):
+                            module.bundle_native(stage)
+                    else:
+                        module.bundle_native(stage)
+                        self.assertNotEqual((stage/'lib/libsample.so').read_bytes(), libraries[0].read_bytes())
 
 
 class LegalGateTest(unittest.TestCase):

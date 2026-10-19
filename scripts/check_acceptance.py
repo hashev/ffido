@@ -72,11 +72,13 @@ def main():
         root = pathlib.Path(directory)
         cert, key = root/'certificate.pem', root/'key.pem'
         ca, ca_key, csr = root/'ca.pem', root/'ca-key.pem', root/'server.csr'
-        run(['openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1', '-subj', '/CN=FFIDO temporary test CA', '-addext', 'basicConstraints=critical,CA:TRUE', '-addext', 'keyUsage=critical,keyCertSign,cRLSign', '-out', str(ca), '-keyout', str(ca_key)])
+        run(['openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1', '-subj', '/CN=FFIDO temporary test CA', '-addext', 'basicConstraints=critical,CA:TRUE', '-addext', 'keyUsage=critical,keyCertSign,cRLSign', '-addext', 'subjectKeyIdentifier=hash', '-out', str(ca), '-keyout', str(ca_key)])
         run(['openssl', 'req', '-new', '-newkey', 'rsa:2048', '-nodes', '-subj', '/CN=localhost', '-out', str(csr), '-keyout', str(key)])
         extensions = root/'extensions.cnf'
-        extensions.write_text('basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\nsubjectAltName=DNS:localhost,IP:127.0.0.1\n')
+        # LibreSSL does not add key identifiers automatically; strict clients require them.
+        extensions.write_text('subjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid:always,issuer\nbasicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\nsubjectAltName=DNS:localhost,IP:127.0.0.1\n')
         run(['openssl', 'x509', '-req', '-in', str(csr), '-CA', str(ca), '-CAkey', str(ca_key), '-CAcreateserial', '-days', '1', '-extfile', str(extensions), '-out', str(cert)])
+        run(['openssl', 'verify', '-x509_strict', '-CAfile', str(ca), str(cert)])
         backend_port, gateway_port = port(), port()
         (root/'file.jhr').write_bytes(struct.pack('<7I', 0x004d414a, 123, 0, 0, 0xffffffff, 1, 0)+bytes(996))
         (root/'file.jdx').touch(); (root/'file.jdt').touch()
