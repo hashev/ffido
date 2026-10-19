@@ -14,7 +14,7 @@ FILES = {'README.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'CONTRIBUTING.md',
          'AGENTS.md', '.gitignore', '.clang-format', '.clang-tidy', 'CMakeLists.txt', 'build.sh'}
 SKIP = {'.git', 'build', '.cache', '.dart_tool', '.pub-cache', '.pub', 'coverage',
         '__pycache__', '.idea', '.vscode', '.gradle', 'ephemeral', 'Pods', '.symlinks',
-        'uploads', 'data', 'tmp', '.cxx', '.swiftpm', 'DerivedData', 'node_modules'}
+        '.agents', '.qwen', '.opencode', 'uploads', 'data', 'tmp', '.cxx', '.swiftpm', 'DerivedData', 'node_modules'}
 SUFFIXES = {'.db', '.sqlite', '.sqlite3', '.jhr', '.jdt', '.jdx', '.jlr', '.key',
             '.p12', '.pfx', '.jks', '.keystore', '.log', '.pyc', '.iml', '.lockfile'}
 SECRET = re.compile(r'-----BEGIN (?:RSA |EC |OPENSSH |ENCRYPTED )?PRIVATE KEY-----|'
