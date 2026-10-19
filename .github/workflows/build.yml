@@ -119,6 +119,7 @@ jobs:
           xcodebuild -version
           brew install cmake ninja llvm openssl@3 c-ares re2 pkgconf
           echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
+          echo "$(brew --prefix openssl@3)/bin" >> "$GITHUB_PATH"
           echo "CC=$(xcrun --find clang)" >> "$GITHUB_ENV"
           echo "CXX=$(xcrun --find clang++)" >> "$GITHUB_ENV"
           echo "CMAKE_PREFIX_PATH=$(brew --prefix openssl@3):$(brew --prefix c-ares):$(brew --prefix re2)" >> "$GITHUB_ENV"
@@ -180,8 +181,9 @@ jobs:
       - name: Smoke packaged server and TLS client
         run: python3 scripts/release/smoke.py server-${{ matrix.os }}-${{ matrix.arch }}
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always() && hashFiles('build/packages/*.package.json') != ''
         with:
-          name: server-${{ matrix.os }}-${{ matrix.arch }}
+          name: ${{ job.status == 'success' && 'server' || 'debug-server' }}-${{ matrix.os }}-${{ matrix.arch }}
           path: build/packages/*
           if-no-files-found: error
   build-required:

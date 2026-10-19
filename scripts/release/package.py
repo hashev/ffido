@@ -139,7 +139,8 @@ def relink(stage, build, deps):
                 converted += ['-o', 'bin/'+name]
             elif token == '-isysroot':
                 next(it)  # Use the relinking compiler's own SDK.
-            elif token.startswith(('-Wl,-rpath,', '-Wl,-syslibroot,')):
+            elif token.startswith(('-Wl,-rpath,', '-Wl,-syslibroot,',
+                                   '-Wl,--dependency-file=', '-Wl,--dependency-file,')):
                 continue
             elif not token.startswith('-') and (cwd/token).is_file():
                 source = (cwd/token).resolve()

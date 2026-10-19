@@ -793,3 +793,17 @@ Linux build, 350 CTest, clang-tidy 19 и проверка generated proto про
 остаётся ошибкой. Регрессия проверяет обе ситуации. 18 release-tools тестов
 и повторный macOS package/relink/TLS smoke успешны локально. SQLite rollback
 journal также исключён из экспорта и добавлен в существующую регрессию.
+
+
+Проверка Linux relink выявила служебный флаг CMake `--dependency-file`,
+который ссылался на отсутствующий `CMakeFiles/.../link.d`. Генератор переносимой
+команды теперь удаляет этот build-only флаг; регрессия исполняет все три
+команды с компилятором-заглушкой, отвергающим такой аргумент.
+
+Для сертификатов fixture задан отдельный OpenSSL config с явными профилями CA
+и сервера, SKI/AKI и SHA-256. Локальный полный smoke повторён с LibreSSL 3.3.6
+и OpenSSL 3.5.9; цепочка, HTTP/2, отказ без сессии и gRPC сценарий успешны.
+Mac CI выбирает OpenSSL CLI из того же Homebrew prefix, что и backend. В лог
+попадают версия и только публичные subject/issuer/serial/SKI/AKI. При неудаче
+server smoke готовый пакет сохраняется как debug-server artifact для диагностики;
+условие успеха CI и блокировка публичной публикации не меняются.

@@ -254,7 +254,7 @@ class RelinkRegressionTest(unittest.TestCase):
             for name in ['fidoback', 'ffido-admin', 'ffido-hpt-auth']:
                 command = build/f'apps/backend/CMakeFiles/{name}.dir/link.txt'
                 command.parent.mkdir(parents=True)
-                command.write_text(f'c++ {archive} {archive} -o {name}')
+                command.write_text(f'c++ -Wl,--dependency-file=CMakeFiles/{name}.dir/link.d {archive} {archive} -o {name}')
             for name in ['spdlog', 'nlohmann_json', 'sqlite3']:
                 (build/f'_deps/{name}-src').mkdir(parents=True)
             legal = root/'deps/prefix/share/ffido/legal'
@@ -271,7 +271,7 @@ class RelinkRegressionTest(unittest.TestCase):
             tools = root/'tools'
             tools.mkdir()
             compiler = tools/'compiler'
-            compiler.write_text('#!/bin/sh\ntest "$SDKROOT" = "$FFIDO_TEST_SDK" || exit 9\necho linked >> "$FFIDO_TEST_LINK_TRACE"\n')
+            compiler.write_text('#!/bin/sh\nfor argument; do case "$argument" in *--dependency-file*) exit 10;; esac; done\ntest "$SDKROOT" = "$FFIDO_TEST_SDK" || exit 9\necho linked >> "$FFIDO_TEST_LINK_TRACE"\n')
             (tools/'xcrun').write_text('#!/bin/sh\ntest "$*" = "--sdk macosx --show-sdk-path" || exit 8\nprintf "%s\\n" "$FFIDO_TEST_SDK"\n')
             for name in ['install_name_tool', 'codesign']:
                 (tools/name).write_text('#!/bin/sh\nexit 0\n')

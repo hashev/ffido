@@ -72,12 +72,27 @@ def main():
         root = pathlib.Path(directory)
         cert, key = root/'certificate.pem', root/'key.pem'
         ca, ca_key, csr = root/'ca.pem', root/'ca-key.pem', root/'server.csr'
-        run(['openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1', '-subj', '/CN=FFIDO temporary test CA', '-addext', 'basicConstraints=critical,CA:TRUE', '-addext', 'keyUsage=critical,keyCertSign,cRLSign', '-addext', 'subjectKeyIdentifier=hash', '-out', str(ca), '-keyout', str(ca_key)])
-        run(['openssl', 'req', '-new', '-newkey', 'rsa:2048', '-nodes', '-subj', '/CN=localhost', '-out', str(csr), '-keyout', str(key)])
-        extensions = root/'extensions.cnf'
-        # LibreSSL does not add key identifiers automatically; strict clients require them.
-        extensions.write_text('subjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid:always,issuer\nbasicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\nsubjectAltName=DNS:localhost,IP:127.0.0.1\n')
-        run(['openssl', 'x509', '-req', '-in', str(csr), '-CA', str(ca), '-CAkey', str(ca_key), '-CAcreateserial', '-days', '1', '-extfile', str(extensions), '-out', str(cert)])
+        # Keep certificate extensions independent of the machine's OpenSSL defaults.
+        extensions = root/'openssl.cnf'
+        extensions.write_text('[req]\nprompt=no\ndistinguished_name=ffido_dn\n'
+            '[ffido_dn]\nCN=localhost\n'
+            '[ffido_ca]\nbasicConstraints=critical,CA:TRUE\n'
+            'keyUsage=critical,keyCertSign,cRLSign\nsubjectKeyIdentifier=hash\n'
+            'authorityKeyIdentifier=keyid:always,issuer\n'
+            '[ffido_server]\nbasicConstraints=critical,CA:FALSE\n'
+            'keyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\n'
+            'subjectAltName=DNS:localhost,IP:127.0.0.1\nsubjectKeyIdentifier=hash\n'
+            'authorityKeyIdentifier=keyid:always,issuer\n')
+        run(['openssl', 'req', '-new', '-x509', '-newkey', 'rsa:2048', '-nodes', '-sha256', '-days', '1', '-subj', '/CN=FFIDO temporary test CA', '-config', str(extensions), '-extensions', 'ffido_ca', '-out', str(ca), '-keyout', str(ca_key)])
+        run(['openssl', 'req', '-new', '-newkey', 'rsa:2048', '-nodes', '-sha256', '-subj', '/CN=localhost', '-config', str(extensions), '-out', str(csr), '-keyout', str(key)])
+        run(['openssl', 'x509', '-req', '-in', str(csr), '-CA', str(ca), '-CAkey', str(ca_key), '-CAcreateserial', '-sha256', '-days', '1', '-extfile', str(extensions), '-extensions', 'ffido_server', '-out', str(cert)])
+        print(run(['openssl', 'version']).stdout.strip())
+        for label, public_certificate in [('CA', ca), ('server', cert)]:
+            print(label+': '+run(['openssl', 'x509', '-in', str(public_certificate), '-noout', '-subject', '-issuer', '-serial']).stdout.strip())
+            lines = run(['openssl', 'x509', '-in', str(public_certificate), '-noout', '-text']).stdout.splitlines()
+            for index, line in enumerate(lines):
+                if 'Subject Key Identifier' in line or 'Authority Key Identifier' in line:
+                    print(label+' '+line.strip()+' '+lines[index+1].strip())
         run(['openssl', 'verify', '-x509_strict', '-CAfile', str(ca), str(cert)])
         backend_port, gateway_port = port(), port()
         (root/'file.jhr').write_bytes(struct.pack('<7I', 0x004d414a, 123, 0, 0, 0xffffffff, 1, 0)+bytes(996))

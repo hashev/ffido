@@ -124,6 +124,10 @@ Actions → General: workflow permissions Read repository contents; PR approvals
 `subosito/flutter-action@*` (в YAML всё равно pinned SHA). Другие actions сначала
 добавляйте в явный allowlist и проходите review.
 
+При падении server smoke после успешной упаковки сохраняется artifact
+`debug-server-<OS>-<arch>` для диагностики; его нельзя считать проверенным выпуском.
+Публикация требует успешной матрицы и не собирает artifacts с префиксом debug.
+
 ## 5. Постоянный Android signing key
 
 Создание ключа выполняет владелец локально в каталоге **вне Git**. Пример:
