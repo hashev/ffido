@@ -1,0 +1,5 @@
+// Xcode 27 can report arm64e as the native host; Flutter ships arm64 slices.
+FFIDO_ARCH_arm64e = arm64
+FFIDO_ARCH_arm64 = arm64
+FFIDO_ARCH_x86_64 = x86_64
+ARCHS = $(FFIDO_ARCH_$(NATIVE_ARCH_ACTUAL))

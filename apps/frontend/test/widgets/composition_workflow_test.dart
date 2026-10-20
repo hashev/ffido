@@ -1,4 +1,5 @@
 import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -8,6 +9,7 @@ import 'package:fido/pages/message_screen.dart';
 import 'package:fido/pages/forward_destination.dart';
 import 'package:fido/repositories/message_repository.dart';
 import 'package:fido/repositories/conference_repository.dart';
+
 import '../support/fake_transport.dart';
 
 Future<ConferenceRepository> repository(FakeTransport api) async {

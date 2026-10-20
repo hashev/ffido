@@ -1,4 +1,5 @@
 import 'package:fixnum/fixnum.dart';
+
 import '../api/api_transport.dart';
 import '../api/api_exceptions.dart';
 import '../api/model_mapping.dart';

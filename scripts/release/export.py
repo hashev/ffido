@@ -11,7 +11,7 @@ import shutil
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 TOP = {'apps', 'contracts', 'tools', 'scripts', 'cmake', 'docs', 'openspec', '.github'}
 FILES = {'README.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'CONTRIBUTING.md',
-         'AGENTS.md', '.gitignore', '.clang-format', '.clang-tidy', 'CMakeLists.txt', 'build.sh'}
+         'AGENTS.md', 'Dockerfile', '.dockerignore', '.gitignore', '.clang-format', '.clang-tidy', 'CMakeLists.txt', 'build.sh'}
 SKIP = {'.git', 'build', '.cache', '.dart_tool', '.pub-cache', '.pub', 'coverage',
         '__pycache__', '.idea', '.vscode', '.gradle', 'ephemeral', 'Pods', '.symlinks',
         '.agents', '.qwen', '.opencode', 'uploads', 'data', 'tmp', '.cxx', '.swiftpm', 'DerivedData', 'node_modules'}

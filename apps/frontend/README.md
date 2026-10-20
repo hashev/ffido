@@ -1,5 +1,9 @@
 # Клиент FFIDO
 
+Требуется Flutter 3.47.7 / Dart 3.13.5. Перед выполнением команд выберите этот
+SDK в PATH (`export PATH="/path/to/flutter-3.47.7/bin:$PATH"`). CI использует ту же
+закреплённую версию; общий SDK других проектов менять не требуется.
+
 Flutter-клиент использует контракт `contracts/ffido/v1/ffido.proto`. Android, iOS,
 Windows, Linux и macOS обращаются к TLS gRPC; Web — к HTTPS gRPC-Web шлюзу.
 REST-клиент удалён. Версии runtime и генератора закреплены в `pubspec.yaml`

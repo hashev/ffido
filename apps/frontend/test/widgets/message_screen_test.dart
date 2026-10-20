@@ -1,10 +1,12 @@
 import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:fido/api/api_exceptions.dart';
 import 'package:fido/api/generated/ffido/v1/ffido.pb.dart' as wire;
 import 'package:fido/pages/message_screen.dart';
 import 'package:fido/repositories/message_repository.dart';
+
 import '../support/fake_transport.dart';
 
 Widget screen(FakeTransport api) => MaterialApp(
@@ -98,9 +100,9 @@ void main() {
       expect(text.style!.fontFamily, 'monospace');
       expect(
         text.style!.color,
-        Theme.of(
-          tester.element(find.byType(SelectableText)),
-        ).colorScheme.onSurface,
+        Theme.of(tester.element(find.byType(SelectableText)))
+            .colorScheme
+            .onSurface,
       );
     },
   );

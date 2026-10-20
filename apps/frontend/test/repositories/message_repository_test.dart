@@ -1,10 +1,12 @@
 import 'dart:async';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:fido/api/api_exceptions.dart';
 import 'package:fido/api/api_transport.dart';
 import 'package:fido/api/generated/ffido/v1/ffido.pb.dart' as wire;
 import 'package:fido/models/message.dart';
 import 'package:fido/repositories/message_repository.dart';
+
 import '../support/fake_transport.dart';
 
 void main() {
@@ -26,59 +28,53 @@ void main() {
   });
   tearDown(() => api.dispose());
 
-  test(
-    'bulk read preserves immutable key, maps legacy and ignores stale/cancelled results',
-    () async {
-      final calls = <wire.MarkConferenceReadRequest>[];
-      api.bulkRead = (r) async {
-        calls.add(r);
-        throw const NetworkException();
-      };
-      for (var n = 0; n < 2; n++) {
-        await expectLater(
-          repo.markConferenceRead(
-            conferenceId: 'echo',
-            operationId: 'same-key',
-          ),
-          throwsA(isA<NetworkException>()),
-        );
-      }
-      expect(calls.map((r) => r.operationId), ['same-key', 'same-key']);
-      expect(api.calls.whereType<wire.MessageReference>(), isEmpty);
-      api.bulkRead = (_) async =>
-          throw const ApiException(message: 'unimplemented', statusCode: 12);
+  test('bulk read preserves immutable key, maps legacy and ignores stale/cancelled results', () async {
+    final calls = <wire.MarkConferenceReadRequest>[];
+    api.bulkRead = (r) async {
+      calls.add(r);
+      throw const NetworkException();
+    };
+    for (var n = 0; n < 2; n++) {
       await expectLater(
-        repo.markConferenceRead(conferenceId: 'echo', operationId: 'legacy'),
-        throwsA(
-          isA<ApiException>().having(
-            (e) => e.message,
-            'message',
-            contains('не поддерживает'),
-          ),
-        ),
+        repo.markConferenceRead(conferenceId: 'echo', operationId: 'same-key'),
+        throwsA(isA<NetworkException>()),
       );
-      final future = Completer<wire.MarkConferenceReadResponse>();
-      api.bulkRead = (_) => future.future;
-      final pending = repo.markConferenceRead(
+    }
+    expect(calls.map((r) => r.operationId), ['same-key', 'same-key']);
+    expect(api.calls.whereType<wire.MessageReference>(), isEmpty);
+    api.bulkRead = (_) async =>
+        throw const ApiException(message: 'unimplemented', statusCode: 12);
+    await expectLater(
+      repo.markConferenceRead(conferenceId: 'echo', operationId: 'legacy'),
+      throwsA(
+        isA<ApiException>().having(
+          (e) => e.message,
+          'message',
+          contains('не поддерживает'),
+        ),
+      ),
+    );
+    final future = Completer<wire.MarkConferenceReadResponse>();
+    api.bulkRead = (_) => future.future;
+    final pending = repo.markConferenceRead(
+      conferenceId: 'echo',
+      operationId: 'old',
+    );
+    api.switchSession();
+    future.complete(wire.MarkConferenceReadResponse());
+    await expectLater(pending, throwsA(isA<CancelledException>()));
+    final cancelled = RpcCancellation();
+    await cancelled.cancel();
+    api.bulkRead = (_) async => wire.MarkConferenceReadResponse();
+    await expectLater(
+      repo.markConferenceRead(
         conferenceId: 'echo',
-        operationId: 'old',
-      );
-      api.switchSession();
-      future.complete(wire.MarkConferenceReadResponse());
-      await expectLater(pending, throwsA(isA<CancelledException>()));
-      final cancelled = RpcCancellation();
-      await cancelled.cancel();
-      api.bulkRead = (_) async => wire.MarkConferenceReadResponse();
-      await expectLater(
-        repo.markConferenceRead(
-          conferenceId: 'echo',
-          operationId: 'cancel',
-          cancellation: cancelled,
-        ),
-        throwsA(isA<CancelledException>()),
-      );
-    },
-  );
+        operationId: 'cancel',
+        cancellation: cancelled,
+      ),
+      throwsA(isA<CancelledException>()),
+    );
+  });
   test('list/detail/read/thread preserve IDs, pagination and UTC', () async {
     api.message = (r) async =>
         wire.Message(id: r.messageId, subject: 'Тема', body: 'Текст');

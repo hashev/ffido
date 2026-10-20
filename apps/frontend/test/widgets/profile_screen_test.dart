@@ -1,9 +1,11 @@
 import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:fido/pages/profile_screen.dart';
 import 'package:fido/repositories/account_repository.dart';
 import 'package:fido/api/generated/ffido/v1/ffido.pb.dart' as wire;
+
 import '../support/fake_transport.dart';
 
 void main() {

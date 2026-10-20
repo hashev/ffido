@@ -1,0 +1,19 @@
+name: Docker Hub credentials check
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  credentials:
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-24.04
+    environment: release
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Check authentication and push scope without publishing
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: python3 scripts/release/check_dockerhub.py

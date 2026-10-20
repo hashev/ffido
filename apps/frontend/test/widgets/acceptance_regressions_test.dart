@@ -1,4 +1,5 @@
 import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:fixnum/fixnum.dart';
@@ -11,6 +12,7 @@ import 'package:fido/pages/bookmarks_screen.dart';
 import 'package:fido/pages/history_screen.dart';
 import 'package:fido/repositories/account_repository.dart';
 import 'package:fido/repositories/conference_repository.dart';
+
 import '../support/fake_transport.dart';
 
 Future<void> start(WidgetTester tester, FakeTransport api) async {

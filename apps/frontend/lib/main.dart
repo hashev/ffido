@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
+
 import 'platform/desktop_profile.dart';
 import 'utils/reader_theme.dart';
+
 import 'package:fido/pages/reader_app.dart';
 import 'package:fido/pages/settings.dart';
 import 'package:fido/pages/loading.dart';

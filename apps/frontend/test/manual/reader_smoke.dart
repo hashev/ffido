@@ -6,6 +6,7 @@ import 'package:fido/pages/message_screen.dart';
 import 'package:fido/repositories/conference_repository.dart';
 import 'package:fido/repositories/message_repository.dart';
 import 'package:fido/utils/reader_theme.dart';
+
 import '../support/fake_transport.dart';
 
 Future<void> main() async {
@@ -28,8 +29,7 @@ Future<void> main() async {
     fromName: 'Тестовый автор',
     fromAddress: '2:1/2',
     toName: 'All',
-    body:
-        'Обычный текст. Русская раскладка.\n\n AB> Цитата первого уровня\n AB>> Цитата второго уровня\n > AB>> Третий уровень\n\n  Отступы сохраняются.\na > b — обычный текст.',
+    body: 'Обычный текст. Русская раскладка.\n\n AB> Цитата первого уровня\n AB>> Цитата второго уровня\n > AB>> Третий уровень\n\n  Отступы сохраняются.\na > b — обычный текст.',
   );
   api.conferences = (_) async => wire.ListConferencesResponse(
     conferences: [

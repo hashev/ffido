@@ -45,7 +45,7 @@ jobs:
           java-version: '17'
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
         with:
-          flutter-version: '3.41.6'
+          flutter-version: '3.47.7'
           channel: stable
           cache: true
       - if: matrix.os == 'linux'
@@ -114,19 +114,23 @@ jobs:
       - name: macOS tools
         if: runner.os == 'macOS'
         run: |
-          echo "DEVELOPER_DIR=/Applications/Xcode_26.3.app/Contents/Developer" >> "$GITHUB_ENV"
           export DEVELOPER_DIR=/Applications/Xcode_26.3.app/Contents/Developer
           xcodebuild -version
           brew install cmake ninja llvm openssl@3 c-ares re2 pkgconf
-          echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
-          echo "$(brew --prefix openssl@3)/bin" >> "$GITHUB_PATH"
-          echo "CC=$(xcrun --find clang)" >> "$GITHUB_ENV"
-          echo "CXX=$(xcrun --find clang++)" >> "$GITHUB_ENV"
-          echo "CMAKE_PREFIX_PATH=$(brew --prefix openssl@3):$(brew --prefix c-ares):$(brew --prefix re2)" >> "$GITHUB_ENV"
-          echo "PKG_CONFIG_PATH=$(brew --prefix openssl@3)/lib/pkgconfig:$(brew --prefix c-ares)/lib/pkgconfig:$(brew --prefix re2)/lib/pkgconfig" >> "$GITHUB_ENV"
+          {
+            echo "$(brew --prefix llvm)/bin"
+            echo "$(brew --prefix openssl@3)/bin"
+          } >> "$GITHUB_PATH"
+          {
+            echo "DEVELOPER_DIR=$DEVELOPER_DIR"
+            echo "CC=$(xcrun --find clang)"
+            echo "CXX=$(xcrun --find clang++)"
+            echo "CMAKE_PREFIX_PATH=$(brew --prefix openssl@3):$(brew --prefix c-ares):$(brew --prefix re2)"
+            echo "PKG_CONFIG_PATH=$(brew --prefix openssl@3)/lib/pkgconfig:$(brew --prefix c-ares)/lib/pkgconfig:$(brew --prefix re2)/lib/pkgconfig"
+          } >> "$GITHUB_ENV"
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
         with:
-          flutter-version: '3.41.6'
+          flutter-version: '3.47.7'
           cache: true
       - id: native-toolchain
         run: python3 scripts/release/cache_key.py
@@ -186,10 +190,50 @@ jobs:
           name: ${{ job.status == 'success' && 'server' || 'debug-server' }}-${{ matrix.os }}-${{ matrix.arch }}
           path: build/packages/*
           if-no-files-found: error
+  container:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
+        with:
+          flutter-version: '3.47.7'
+          channel: stable
+          cache: true
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+      - run: sudo apt-get update && sudo apt-get install -y skopeo
+      - run: python3 scripts/release/build_identity.py
+        env:
+          IDENTITY_JSON: ${{ inputs.identity }}
+      - name: Build OCI archive
+        run: |
+          mkdir -p build/container
+          docker buildx build --platform linux/amd64 --provenance=false \
+            --build-arg FFIDO_REVISION="$(jq -r .sha build/identity.json)" \
+            --build-arg FFIDO_VERSION="$(jq -r .version build/identity.json)" \
+            --build-arg FFIDO_TAG="$(jq -r .tag build/identity.json)" \
+            --build-arg FFIDO_BUILD_NUMBER="$(jq -r .build_number build/identity.json)" \
+            --build-arg FFIDO_STABLE="$(jq -r .stable build/identity.json)" \
+            --cache-from type=gha --cache-to type=gha,mode=max \
+            --output type=oci,dest=build/container/image.tar .
+      - name: Smoke the archived image
+        run: |
+          skopeo copy oci-archive:build/container/image.tar docker-daemon:ffido:check
+          (cd apps/frontend && flutter pub get --enforce-lockfile)
+          python3 scripts/release/container_smoke.py ffido:check
+          cp build/identity.json build/container/identity.json
+          (cd build/container && sha256sum image.tar > SHA256SUMS)
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: server-container
+          path: build/container/*
+          if-no-files-found: error
+          compression-level: 0
   build-required:
     name: build-required
     if: always()
-    needs: [release-tools, client, backend]
+    needs: [release-tools, client, backend, container]
     runs-on: ubuntu-24.04
     steps:
       - name: Reject failure, cancellation and skips

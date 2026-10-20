@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:grpc/grpc.dart' as grpc;
 import 'package:protobuf/well_known_types/google/protobuf/empty.pb.dart';
@@ -368,30 +369,27 @@ void main() {
     await client.configure(endpoint: client.endpoint.toString(), token: token);
     expect(client.epoch, previous);
   });
-  test(
-    'field violations decode from binary trailers and malformed trailers are safe',
-    () {
-      final details = wire.ErrorDetails(
-        violations: [
-          wire.FieldViolation(field_1: 'subject', message: 'Обязательное поле'),
-        ],
-      );
-      final error = ApiClient.mapGrpcError(
-        const grpc.GrpcError.invalidArgument('private path'),
-        {'ffido-error-details-bin': base64.encode(details.writeToBuffer())},
-      );
-      expect((error as ValidationException).fieldErrors['subject'], [
-        'Обязательное поле',
-      ]);
-      expect(error.toString(), isNot(contains('private path')));
-      expect(
-        ApiClient.mapGrpcError(const grpc.GrpcError.invalidArgument(), {
-          'ffido-error-details-bin': '!',
-        }),
-        isA<ValidationException>(),
-      );
-    },
-  );
+  test('field violations decode from binary trailers and malformed trailers are safe', () {
+    final details = wire.ErrorDetails(
+      violations: [
+        wire.FieldViolation(field_1: 'subject', message: 'Обязательное поле'),
+      ],
+    );
+    final error = ApiClient.mapGrpcError(
+      const grpc.GrpcError.invalidArgument('private path'),
+      {'ffido-error-details-bin': base64.encode(details.writeToBuffer())},
+    );
+    expect((error as ValidationException).fieldErrors['subject'], [
+      'Обязательное поле',
+    ]);
+    expect(error.toString(), isNot(contains('private path')));
+    expect(
+      ApiClient.mapGrpcError(const grpc.GrpcError.invalidArgument(), {
+        'ffido-error-details-bin': '!',
+      }),
+      isA<ValidationException>(),
+    );
+  });
   for (final status in [
     1,
     2,

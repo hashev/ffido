@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
 import '../api/api_client.dart';
 import '../api/api_exceptions.dart';
 import '../api/session_store.dart';
@@ -109,8 +110,7 @@ class _SettingsWidgetState extends State<SettingsWidget> {
     } catch (_) {
       if (mounted) {
         setState(
-          () => _message =
-              'Не удалось подключиться. Проверьте адрес сервера и доступность сети.',
+          () => _message = 'Не удалось подключиться. Проверьте адрес сервера и доступность сети.',
         );
       }
     } finally {
@@ -165,9 +165,9 @@ class _SettingsWidgetState extends State<SettingsWidget> {
           TextButton(
             onPressed: _busy
                 ? null
-                : () => Navigator.of(
-                    context,
-                  ).pushNamedAndRemoveUntil('/', (_) => false),
+                : () =>
+                      Navigator.of(context)
+                          .pushNamedAndRemoveUntil('/', (_) => false),
             child: const Text('Открыть конференции'),
           ),
         ],

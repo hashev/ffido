@@ -10,6 +10,7 @@ import 'package:fido/pages/reader_app.dart';
 import 'package:fido/pages/forward_destination.dart';
 import 'package:fido/repositories/message_repository.dart';
 import 'package:fido/repositories/conference_repository.dart';
+
 import '../support/fake_transport.dart';
 
 void main() {

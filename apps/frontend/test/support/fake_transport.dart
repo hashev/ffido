@@ -1,4 +1,5 @@
 import 'dart:async';
+
 import 'package:fido/api/api_transport.dart';
 import 'package:fido/api/api_exceptions.dart';
 import 'package:fido/api/generated/ffido/v1/ffido.pb.dart' as wire;

@@ -2,6 +2,7 @@
 import 'dart:io';
 import 'dart:typed_data';
 import 'dart:convert';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:grpc/grpc.dart';
 import 'package:fido/api/api_client.dart';
@@ -96,16 +97,14 @@ void main() {
         header.setUint32(4, 123, Endian.little);
         header.setUint32(16, 0xffffffff, Endian.little);
         header.setUint32(20, 1, Endian.little);
-        await File(
-          '${root.path}/$name.jhr',
-        ).writeAsBytes(header.buffer.asUint8List());
+        await File('${root.path}/$name.jhr')
+            .writeAsBytes(header.buffer.asUint8List());
         for (final ext in ['jdt', 'jdx']) {
           await File('${root.path}/$name.$ext').writeAsBytes([]);
         }
       }
-      await File(
-        '${root.path}/areas.cfg',
-      ).writeAsString('EchoArea ECHO ${root.path}/ECHO -b JAM\n');
+      await File('${root.path}/areas.cfg')
+          .writeAsString('EchoArea ECHO ${root.path}/ECHO -b JAM\n');
       await File('${root.path}/hpt.cfg').writeAsString('''Name Fixture
 Sysop Test
 Location Test
@@ -155,9 +154,8 @@ LocalArea OLD ${root.path}/OLD -b Squish
         },
       };
       Future<void> start() async {
-        await File(
-          '${root.path}/config.json',
-        ).writeAsString(jsonEncode(config));
+        await File('${root.path}/config.json')
+            .writeAsString(jsonEncode(config));
         server = await Process.start(binary!, ['${root.path}/config.json']);
         server!.stdout.transform(utf8.decoder).listen(log.write);
         server!.stderr.transform(utf8.decoder).listen(log.write);

@@ -1,4 +1,5 @@
 import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
@@ -101,9 +102,8 @@ void main() {
         expect(rows.messages.single.isRead, isTrue);
         expect(rows.messages.single.bodyPreview, contains('Phone message'));
         expect(
-          (await client.listBookmarks(
-            wire.PageRequest(limit: 20),
-          )).total.toInt(),
+          (await client.listBookmarks(wire.PageRequest(limit: 20))).total
+              .toInt(),
           1,
         );
         expect(

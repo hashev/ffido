@@ -1,7 +1,10 @@
 import 'dart:io';
+
 import 'package:flutter/foundation.dart' show debugPrint;
+
 import 'dart:typed_data';
 import 'dart:convert';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:grpc/grpc.dart';
 import 'package:fixnum/fixnum.dart';
@@ -163,9 +166,8 @@ void main() {
         header.setUint32(4, 123, Endian.little);
         header.setUint32(16, 0xffffffff, Endian.little);
         header.setUint32(20, 1, Endian.little);
-        await File(
-          '${root.path}/$name.jhr',
-        ).writeAsBytes(header.buffer.asUint8List());
+        await File('${root.path}/$name.jhr')
+            .writeAsBytes(header.buffer.asUint8List());
         for (final extension in ['jdt', 'jdx']) {
           await File('${root.path}/$name.$extension').writeAsBytes([]);
         }
@@ -214,9 +216,8 @@ void main() {
       );
       final hptConfig = File('${root.path}/hpt.cfg');
       await hptConfig.writeAsString(hptText.toString());
-      await File(
-        '${root.path}/areas.cfg',
-      ).writeAsString('EchoArea ECHO ${root.path}/ECHO -b JAM\n');
+      await File('${root.path}/areas.cfg')
+          .writeAsString('EchoArea ECHO ${root.path}/ECHO -b JAM\n');
       final socket = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
       final port = socket.port;
       await socket.close();
@@ -361,19 +362,18 @@ void main() {
       expect(catalog.total.toInt(), 2);
       final mailbox = catalog.conferences.singleWhere((c) => c.personalMailbox);
       final firstId = mailbox.id;
-      final other = (await p2.listConferences(
-        catalogRequest(),
-      )).conferences.singleWhere((c) => c.personalMailbox);
+      final other = (await p2.listConferences(catalogRequest())).conferences
+          .singleWhere((c) => c.personalMailbox);
       expect(
-        (await owner.listConferences(
-          catalogRequest(),
-        )).conferences.where((c) => c.personalMailbox),
+        (await owner.listConferences(catalogRequest())).conferences
+            .where((c) => c.personalMailbox),
         isEmpty,
       );
       expect(
-        (await ordinary.listConferences(
-          catalogRequest(),
-        )).conferences.single.name,
+        (await ordinary.listConferences(catalogRequest()))
+            .conferences
+            .single
+            .name,
         'ECHO',
       );
       wire.ListMessagesRequest page(
@@ -460,9 +460,8 @@ void main() {
       );
       await phone.addBookmark(wire.GetConferenceRequest(conferenceId: firstId));
       expect(
-        (await laptop.listBookmarks(
-          wire.PageRequest(limit: 100),
-        )).total.toInt(),
+        (await laptop.listBookmarks(wire.PageRequest(limit: 100))).total
+            .toInt(),
         1,
       );
       expect(

@@ -2,6 +2,7 @@ import 'package:fido/api/generated/ffido/v1/ffido.pb.dart' as wire;
 import 'package:fido/api/uue_capabilities.dart';
 import 'package:fixnum/fixnum.dart';
 import 'package:flutter_test/flutter_test.dart';
+
 import '../support/fake_transport.dart';
 
 void main() {

@@ -60,16 +60,19 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--build-dir', type=pathlib.Path, default=ROOT/'build/backend')
     parser.add_argument('--server', type=pathlib.Path, help='Test an unpacked server binary')
+    parser.add_argument('--container', help='Test a local Docker image (native TLS and persistent state)')
     parser.add_argument('--native-only', action='store_true')
     parser.add_argument('--envoy')
     parser.add_argument('--chrome')
     parser.add_argument('--hpt')
     args = parser.parse_args()
+    if args.container and not args.native_only:
+        parser.error('--container requires --native-only')
     if not args.native_only and (not args.envoy or not args.chrome):
         parser.error('--envoy and --chrome are required unless --native-only is selected')
     build = args.build_dir.resolve()
     with tempfile.TemporaryDirectory(prefix='ffido-acceptance-') as directory, contextlib.ExitStack() as cleanup:
-        root = pathlib.Path(directory)
+        root = pathlib.Path(directory).resolve()
         cert, key = root/'certificate.pem', root/'key.pem'
         ca, ca_key, csr = root/'ca.pem', root/'ca-key.pem', root/'server.csr'
         # Keep certificate extensions independent of the machine's OpenSSL defaults.
@@ -108,7 +111,36 @@ def main():
         hpt_auth.chmod(0o600)
         configuration = json.loads(config.read_text())
         configuration['auth'] = {'hpt_config_path': str(hpt_auth), 'session_key_path': str(root/'session.key')}
+        if args.container:
+            configuration['server']['ip'] = '0.0.0.0'
+            # Linux daemon may not see macOS /var aliases; Docker shares /private/tmp.
+            root.chmod(0o755)
         config.write_text(json.dumps(configuration))
+        def backend_command():
+            if not args.container:
+                return [str(args.server.resolve() if args.server else build/'apps/backend/fidoback'), str(config)]
+            import os
+            return ['docker', 'run', '--rm', '--platform', 'linux/amd64',
+                    '--user', f'{os.getuid()}:{os.getgid()}',
+                    '--name', 'ffido-acceptance-'+root.name, '-v', f'{root}:{root}',
+                    '-p', f'127.0.0.1:{backend_port}:{backend_port}', args.container, str(config)]
+        def wait_backend(process):
+            ready(process, backend_port)
+            if args.container:
+                # A Docker port proxy can accept TCP before the server is ready.
+                context = ssl.create_default_context(cafile=str(ca))
+                context.set_alpn_protocols(['h2'])
+                until = time.monotonic()+30
+                while True:
+                    try:
+                        with socket.create_connection(('127.0.0.1', backend_port), timeout=1) as transport:
+                            with context.wrap_socket(transport, server_hostname='127.0.0.1') as connection:
+                                assert connection.selected_alpn_protocol() == 'h2'
+                        break
+                    except (OSError, ssl.SSLError):
+                        if process.poll() is not None or time.monotonic() >= until:
+                            raise RuntimeError('Container did not become TLS-ready') from None
+                        time.sleep(.1)
         logs = []
         def start(command, name):
             log = cleanup.enter_context((root/name).open('w'))
@@ -116,14 +148,31 @@ def main():
             logs.append(root/name)
             def stop():
                 if process.poll() is None:
-                    process.send_signal(signal.SIGTERM)
+                    if args.container and command[0] == 'docker':
+                        run(['docker', 'stop', '--time', '15', 'ffido-acceptance-'+root.name])
+                    else:
+                        process.send_signal(signal.SIGTERM)
                     try: process.wait(timeout=15)
                     except subprocess.TimeoutExpired: process.kill(); process.wait(timeout=5)
             cleanup.callback(stop)
             return process
-        backend = start([str(args.server.resolve() if args.server else build/'apps/backend/fidoback'), str(config)], 'backend.log')
+        if args.container:
+            command = backend_command()
+            for failure in ('tls', 'state'):
+                invalid = root/('invalid-'+failure+'.json')
+                value = json.loads(config.read_text())
+                if failure == 'tls':
+                    value['server']['tls_private_key'] = str(root/'missing-key.pem')
+                else:
+                    # /proc is read-only even for uid 0 on Docker hosts.
+                    value['database']['metadata_path'] = '/proc/ffido-smoke/metadata.db'
+                invalid.write_text(json.dumps(value))
+                result = subprocess.run([*command[:-1], str(invalid)], text=True, capture_output=True, timeout=30)
+                assert result.returncode != 0 and result.stderr+result.stdout, 'Invalid '+failure+' accepted'
+            print('PASS: missing TLS and unwritable state rejected')
+        backend = start(backend_command(), 'backend.log')
         try:
-            ready(backend, backend_port)
+            wait_backend(backend)
             # The fixture listens on IPv4; localhost may resolve to ::1 on CI.
             native_host = '127.0.0.1' if args.native_only else 'localhost'
             tls = ssl.create_default_context(cafile=str(ca))
@@ -134,6 +183,19 @@ def main():
             print('PASS: certificate verification and HTTP/2 ALPN on the configured loopback address')
             native = run(['dart', 'run', 'tool/native_acceptance.dart'], cwd=ROOT/'apps/frontend', input=json.dumps({'endpoint': f'https://{native_host}:{backend_port}', 'ca': str(ca), 'passwordA': password_a, 'passwordB': password_b}))
             print(native.stdout.strip())
+            if args.container:
+                probe_input = {'endpoint': f'https://{native_host}:{backend_port}', 'ca': str(ca),
+                               'passwordA': password_a, 'state': str(root/'probe.json')}
+                for phase in ('save', 'restore'):
+                    result = run(['dart', 'run', 'tool/container_persistence.dart', phase],
+                                 cwd=ROOT/'apps/frontend', input=json.dumps(probe_input))
+                    print(result.stdout.strip())
+                    run(['docker', 'stop', '--time', '15', 'ffido-acceptance-'+root.name])
+                    assert backend.wait(timeout=20) == 0, 'Container did not stop cleanly'
+                    if phase == 'save':
+                        backend = start(backend_command(), 'container-restart.log')
+                        wait_backend(backend)
+                print('PASS: container SIGTERM and recreation with durable state')
             if args.native_only:
                 return
             js = ROOT/'build/web-acceptance.js'

@@ -1,4 +1,5 @@
 import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -6,6 +7,7 @@ import 'package:fido/pages/reader_app.dart';
 import 'package:fido/repositories/conference_repository.dart';
 import 'package:fido/api/api_exceptions.dart';
 import 'package:fido/api/generated/ffido/v1/ffido.pb.dart' as wire;
+
 import '../support/fake_transport.dart';
 
 class PendingRequest {
