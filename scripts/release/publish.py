@@ -56,7 +56,14 @@ def publish(api, directory, identity, rows):
     directory = pathlib.Path(directory)
     marker = f"FFIDO SHA {identity['sha']} tag {identity['tag']}"
     manifest = directory/'release-manifest.json'
-    manifest.write_text(json.dumps({'identity': identity, 'packages': rows}, indent=2)+'\n')
+    data = {'identity': identity, 'packages': rows}
+    container_file = directory/'container.json'
+    if container_file.exists():
+        container = json.loads(container_file.read_text())
+        if container['sha'] != identity['sha'] or container['release_tag'] != identity['tag']:
+            raise ValueError('Container belongs to a different release')
+        data['container'] = container
+    manifest.write_text(json.dumps(data, indent=2)+'\n')
     sums = directory/'SHA256SUMS'
     names = [r['file'] for r in rows]+[manifest.name, 'LICENSE', 'THIRD_PARTY_NOTICES.md']
     for name in ('LICENSE', 'THIRD_PARTY_NOTICES.md'):
@@ -94,10 +101,14 @@ if __name__ == '__main__':
     p = argparse.ArgumentParser()
     p.add_argument('directory', type=pathlib.Path)
     p.add_argument('--identity', type=pathlib.Path, required=True)
+    p.add_argument('--check-only', action='store_true', help='Validate packages without publishing')
     a = p.parse_args()
     if os.environ.get('FFIDO_PUBLICATION_READY') != 'true':
         p.exit(1, 'Public release disabled: FFIDO_PUBLICATION_READY is not true\n')
     settings = json.loads((ROOT/'scripts/release/settings.json').read_text())
     data = json.loads(a.identity.read_text())
     rows = inventory(a.directory, data, settings['expected_packages'])
+    if a.check_only:
+        print('PASS: complete release package inventory')
+        raise SystemExit(0)
     publish(GitHub(settings['repository']), a.directory, data, rows)

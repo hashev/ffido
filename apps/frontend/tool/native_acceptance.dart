@@ -1,14 +1,16 @@
 import 'dart:convert';
 import 'dart:io';
+
 import 'package:grpc/grpc.dart' as grpc;
 import 'package:fido/api/api_client.dart';
 import 'package:fido/api/generated/ffido/v1/ffido.pbgrpc.dart' as wire;
+
 import 'acceptance_flow.dart';
 
 Future<void> main() async {
-  final input =
-      jsonDecode(await stdin.transform(utf8.decoder).join())
-          as Map<String, dynamic>;
+  final input = jsonDecode(
+    await stdin.transform(utf8.decoder).join(),
+  ) as Map<String, dynamic>;
   grpc.ClientChannel createChannel(Uri uri) => grpc.ClientChannel(
     uri.host,
     port: uri.port,

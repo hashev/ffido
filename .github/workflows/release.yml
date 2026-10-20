@@ -44,7 +44,7 @@ jobs:
           java-version: '17'
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
         with:
-          flutter-version: '3.41.6'
+          flutter-version: '3.47.7'
           cache: true
       - run: python3 scripts/release/build_identity.py
         env:
@@ -79,7 +79,7 @@ jobs:
     permissions:
       contents: write
     concurrency:
-      group: ffido-publication-${{ github.run_id }}
+      group: ffido-publication
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -87,12 +87,51 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          pattern: '{client-*,server-*,signed-android,release-identity}'
+          pattern: '{client-*,server-*-*,signed-android,release-identity}'
           path: build/downloads
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: server-container
+          path: build/container
+      - name: Validate tested container artifact
+        run: |
+          (cd build/container && sha256sum --check SHA256SUMS)
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          expected = json.loads(Path('build/downloads/release-identity/identity.json').read_text())
+          assert json.loads(Path('build/container/identity.json').read_text()) == expected
+          PY
+      - run: sudo apt-get update && sudo apt-get install -y skopeo
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
+        with:
+          flutter-version: '3.47.7'
+          channel: stable
+          cache: true
+      - name: Check Docker Hub scope
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: python3 scripts/release/check_dockerhub.py
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
       - name: Collect this run only
         run: |
           mkdir -p build/packages
           find build/downloads -type f \( -path '*/client-android-universal/*' -o -path '*/release-identity/*' \) -prune -o -type f -exec cp {} build/packages/ \;
+      - name: Publish checked container
+        env:
+          FFIDO_PUBLICATION_READY: ${{ vars.FFIDO_PUBLICATION_READY }}
+        run: |
+          python3 scripts/release/publish.py build/packages --identity build/container/identity.json --check-only
+          python3 scripts/release/container_publish.py build/container/image.tar \
+            --identity build/container/identity.json --output build/packages/container.json
+          image=$(python3 -c 'import json; d=json.load(open("build/packages/container.json")); print(d["image"]+"@"+d["digest"])')
+          docker pull "$image"
+          (cd apps/frontend && flutter pub get --enforce-lockfile)
+          python3 scripts/release/container_smoke.py "$image"
       - name: Publish complete release
         env:
           GH_TOKEN: ${{ github.token }}

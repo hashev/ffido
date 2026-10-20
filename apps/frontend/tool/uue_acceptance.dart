@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+
 import 'package:grpc/grpc.dart' as grpc;
 import 'package:fido/api/api_client.dart';
 import 'package:fido/api/api_exceptions.dart';

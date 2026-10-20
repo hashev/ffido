@@ -14,4 +14,4 @@ PRODUCT_BUNDLE_IDENTIFIER = io.github.hashev.ffido
 PRODUCT_COPYRIGHT = Copyright © 2026 hashev and FFIDO contributors. MIT License.
 
 // Each release package is built on its matching native runner.
-ARCHS = $(NATIVE_ARCH_ACTUAL)
+#include "Architecture.xcconfig"

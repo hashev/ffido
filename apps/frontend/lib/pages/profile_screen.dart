@@ -1,6 +1,9 @@
 import '../utils/refresh_on_resume.dart';
+
 import 'dart:async';
+
 import 'package:flutter/material.dart';
+
 import '../api/api_transport.dart';
 import '../models/api_response.dart';
 import '../repositories/account_repository.dart';

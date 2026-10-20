@@ -1,5 +1,6 @@
 import 'dart:typed_data';
 import 'dart:convert';
+
 import '../api/api_exceptions.dart';
 
 class SelectedUueFile {

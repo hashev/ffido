@@ -1,4 +1,5 @@
 import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:protobuf/well_known_types/google/protobuf/empty.pb.dart';
@@ -7,6 +8,7 @@ import 'package:fido/api/generated/ffido/v1/ffido.pb.dart' as wire;
 import 'package:fido/pages/bookmarks_screen.dart';
 import 'package:fido/pages/history_screen.dart';
 import 'package:fido/repositories/account_repository.dart';
+
 import '../support/fake_transport.dart';
 
 void main() {

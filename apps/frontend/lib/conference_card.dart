@@ -28,9 +28,8 @@ class ConferenceCard extends StatelessWidget {
         ),
         title: Text(
           conference.name,
-          style: Theme.of(
-            context,
-          ).textTheme.titleLarge!.copyWith(fontWeight: FontWeight.bold),
+          style: Theme.of(context).textTheme.titleLarge!
+              .copyWith(fontWeight: FontWeight.bold),
         ),
         subtitle: Text(
           conference.unsupportedFormat

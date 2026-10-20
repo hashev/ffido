@@ -4,9 +4,12 @@ import '../files/uue_files.dart';
 import '../models/uue.dart';
 import '../repositories/uue_repository.dart';
 import '../utils/ftn_text.dart';
+
 import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:grpc/grpc_or_grpcweb.dart' show StatusCode;
+
 import '../api/api_transport.dart';
 import '../api/api_exceptions.dart';
 import '../main.dart';
@@ -516,9 +519,8 @@ class _MessageScreenState extends State<MessageScreen>
           : bulkOperation != null
           ? 'Результат не подтверждён. Выберите «Проверить/повторить»: $e'
           : '$e';
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text(message)));
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(message)));
     } finally {
       if (mounted && captured == repository.epoch) {
         setState(() => bulkBusy = false);
@@ -996,9 +998,8 @@ class _ComposeScreenState extends State<_ComposeScreen> {
       if (widget.kind == AreaKind.netmail &&
           !widget.forward &&
           (toName.text.trim().isEmpty ||
-              !RegExp(
-                r'^[1-9][0-9]*:[1-9][0-9]*/[0-9]+(?:\.[0-9]+)?$',
-              ).hasMatch(toAddress.text))) {
+              !RegExp(r'^[1-9][0-9]*:[1-9][0-9]*/[0-9]+(?:\.[0-9]+)?$')
+                  .hasMatch(toAddress.text))) {
         throw const ValidationException(
           message: 'Укажите имя и полный FTN-адрес получателя',
         );

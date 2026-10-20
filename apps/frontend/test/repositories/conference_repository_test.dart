@@ -1,11 +1,13 @@
 import 'dart:async';
 import 'dart:convert';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:fido/api/api_exceptions.dart';
 import 'package:fido/api/api_transport.dart';
 import 'package:fido/api/generated/ffido/v1/ffido.pb.dart' as wire;
 import 'package:fido/repositories/conference_repository.dart';
+
 import '../support/fake_transport.dart';
 
 void main() {
@@ -87,9 +89,10 @@ void main() {
         await repo.fetchConferences();
         api.conferences = (_) async => throw error;
         expect(
-          (await repo.fetchConferences(
-            forceRefresh: true,
-          )).conferences.single.name,
+          (await repo.fetchConferences(forceRefresh: true))
+              .conferences
+              .single
+              .name,
           'network',
         );
         await expectLater(

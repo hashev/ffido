@@ -219,7 +219,7 @@ macOS поддерживает независимые профили:
 `contracts/` — общий protobuf, `openspec/` — спецификации. Версии и матрица CI
 закреплены в `.github/workflows/` и `scripts/release/`.
 
-Flutter 3.41.6; Java 17/Android SDK для Android, Visual Studio C++ для Windows,
+Flutter 3.47.7 / Dart 3.13.5; Java 17/Android SDK для Android, Visual Studio C++ для Windows,
 Xcode для macOS, GTK/libsecret development packages для Linux. Backend требует
 CMake, C++23 compiler, Python 3, OpenSSL, c-ares, RE2, zlib и согласованные
 Protobuf 36.2/gRPC 1.84/Husky. Для backend на macOS нужен Xcode 26 или новее:
@@ -256,3 +256,8 @@ sanitizer-сборки; их команды описаны в [документ�
 Получать код и пакеты может любой. PR и запись в upstream доступны только
 приглашённым участникам; изменения master проходят PR и обязательный CI, без
 обязательного второго reviewer. См. [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Docker
+
+Сборка Linux amd64, запуск с постоянными данными и публикация `hashev/ffido`:
+[инструкция Docker](docs/docker.md).

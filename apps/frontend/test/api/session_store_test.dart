@@ -113,30 +113,27 @@ void main() {
       expect(client.hasToken, isFalse);
     },
   );
-  test(
-    'failed secure write keeps current login without plaintext fallback or stale restoration',
-    () async {
-      store.failWrites = true;
-      final manager = SessionManager(client, prefs, store: store);
-      final result = await manager.connect(
-        endpoint: client.endpoint.toString(),
-        name: 'Name',
-        address: '2:1/2',
-        password: 'private-fixture',
-      );
-      expect(result, contains('сохранить вход не удалось'));
-      expect(client.hasToken, isTrue);
-      expect(
-        prefs.getKeys().any(
-          (key) => prefs.get(key).toString().contains('private-fixture'),
-        ),
-        isFalse,
-      );
-      await client.clearAuthToken();
-      await manager.restore();
-      expect(client.hasToken, isFalse);
-    },
-  );
+  test('failed secure write keeps current login without plaintext fallback or stale restoration', () async {
+    store.failWrites = true;
+    final manager = SessionManager(client, prefs, store: store);
+    final result = await manager.connect(
+      endpoint: client.endpoint.toString(),
+      name: 'Name',
+      address: '2:1/2',
+      password: 'private-fixture',
+    );
+    expect(result, contains('сохранить вход не удалось'));
+    expect(client.hasToken, isTrue);
+    expect(
+      prefs.getKeys().any(
+        (key) => prefs.get(key).toString().contains('private-fixture'),
+      ),
+      isFalse,
+    );
+    await client.clearAuthToken();
+    await manager.restore();
+    expect(client.hasToken, isFalse);
+  });
   test('corrupt saved secret is rejected and removed', () async {
     store.values[client.endpoint.toString()] = 'damaged';
     await expectLater(
@@ -146,88 +143,82 @@ void main() {
     expect(client.hasToken, isFalse);
     expect(store.values, isEmpty);
   });
-  test(
-    'secure profile sessions isolate connect, restore, endpoint changes and logout',
-    () async {
-      const channel = MethodChannel(
-        'plugins.it_nomads.com/flutter_secure_storage',
-      );
-      final secrets = <String, String>{};
-      var failWrite = false;
-      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-          .setMockMethodCallHandler(channel, (call) async {
-            final args = Map<String, dynamic>.from(call.arguments as Map);
-            final key = args['key'] as String;
-            switch (call.method) {
-              case 'write':
-                if (failWrite) throw PlatformException(code: 'unavailable');
-                secrets[key] = args['value'] as String;
-                return null;
-              case 'read':
-                return secrets[key];
-              case 'delete':
-                secrets.remove(key);
-                return null;
-            }
-            throw StateError('Unexpected secure storage operation');
-          });
-      addTearDown(
-        () => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-            .setMockMethodCallHandler(channel, null),
-      );
-      final oneStore = SecureSessionStore(profile: DesktopProfile('point1'));
-      final twoStore = SecureSessionStore(profile: DesktopProfile('point2'));
-      final endpoint = client.endpoint.toString();
-      await twoStore.write(endpoint, 'c' * 64);
-      await const SecureSessionStore().write(endpoint, 'd' * 64);
-      final manager = SessionManager(client, prefs, store: oneStore);
-      await manager.connect(
-        endpoint: endpoint,
-        name: 'One',
-        address: '2:1/2.1',
-        password: 'not-stored',
-      );
-      expect(await oneStore.read(endpoint), 'b' * 64);
-      await client.clearAuthToken();
-      await manager.restore();
-      expect(client.hasToken, isTrue);
-      await manager.connect(
-        endpoint: 'https://another.invalid',
-        name: 'One',
-        address: '2:1/2.1',
-        password: 'not-stored',
-      );
-      expect(await oneStore.read(endpoint), isNull);
-      expect(await twoStore.read(endpoint), 'c' * 64);
-      await manager.logout();
-      expect(await twoStore.read(endpoint), 'c' * 64);
-      failWrite = true;
-      final result = await manager.connect(
-        endpoint: endpoint,
-        name: 'One',
-        address: '2:1/2.1',
-        password: 'not-stored',
-      );
-      expect(result, contains('сохранить вход не удалось'));
-      await client.clearAuthToken();
-      await manager.restore();
-      expect(client.hasToken, isFalse);
-      failWrite = false;
-      await manager.connect(
-        endpoint: endpoint,
-        name: 'One',
-        address: '2:1/2.1',
-        password: 'not-stored',
-      );
-      client.restoreFailure = const UnauthorizedException();
-      await expectLater(
-        manager.restore(),
-        throwsA(isA<UnauthorizedException>()),
-      );
-      expect(await oneStore.read(endpoint), isNull);
-      expect(await twoStore.read(endpoint), 'c' * 64);
-      expect(await const SecureSessionStore().read(endpoint), 'd' * 64);
-      expect(secrets.values, isNot(contains('not-stored')));
-    },
-  );
+  test('secure profile sessions isolate connect, restore, endpoint changes and logout', () async {
+    const channel = MethodChannel(
+      'plugins.it_nomads.com/flutter_secure_storage',
+    );
+    final secrets = <String, String>{};
+    var failWrite = false;
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (call) async {
+          final args = Map<String, dynamic>.from(call.arguments as Map);
+          final key = args['key'] as String;
+          switch (call.method) {
+            case 'write':
+              if (failWrite) throw PlatformException(code: 'unavailable');
+              secrets[key] = args['value'] as String;
+              return null;
+            case 'read':
+              return secrets[key];
+            case 'delete':
+              secrets.remove(key);
+              return null;
+          }
+          throw StateError('Unexpected secure storage operation');
+        });
+    addTearDown(
+      () => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, null),
+    );
+    final oneStore = SecureSessionStore(profile: DesktopProfile('point1'));
+    final twoStore = SecureSessionStore(profile: DesktopProfile('point2'));
+    final endpoint = client.endpoint.toString();
+    await twoStore.write(endpoint, 'c' * 64);
+    await const SecureSessionStore().write(endpoint, 'd' * 64);
+    final manager = SessionManager(client, prefs, store: oneStore);
+    await manager.connect(
+      endpoint: endpoint,
+      name: 'One',
+      address: '2:1/2.1',
+      password: 'not-stored',
+    );
+    expect(await oneStore.read(endpoint), 'b' * 64);
+    await client.clearAuthToken();
+    await manager.restore();
+    expect(client.hasToken, isTrue);
+    await manager.connect(
+      endpoint: 'https://another.invalid',
+      name: 'One',
+      address: '2:1/2.1',
+      password: 'not-stored',
+    );
+    expect(await oneStore.read(endpoint), isNull);
+    expect(await twoStore.read(endpoint), 'c' * 64);
+    await manager.logout();
+    expect(await twoStore.read(endpoint), 'c' * 64);
+    failWrite = true;
+    final result = await manager.connect(
+      endpoint: endpoint,
+      name: 'One',
+      address: '2:1/2.1',
+      password: 'not-stored',
+    );
+    expect(result, contains('сохранить вход не удалось'));
+    await client.clearAuthToken();
+    await manager.restore();
+    expect(client.hasToken, isFalse);
+    failWrite = false;
+    await manager.connect(
+      endpoint: endpoint,
+      name: 'One',
+      address: '2:1/2.1',
+      password: 'not-stored',
+    );
+    client.restoreFailure = const UnauthorizedException();
+    await expectLater(manager.restore(), throwsA(isA<UnauthorizedException>()));
+    expect(await oneStore.read(endpoint), isNull);
+    expect(await twoStore.read(endpoint), 'c' * 64);
+    expect(await const SecureSessionStore().read(endpoint), 'd' * 64);
+    expect(secrets.values, isNot(contains('not-stored')));
+  });
 }

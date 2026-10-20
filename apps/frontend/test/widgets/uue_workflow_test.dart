@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:typed_data';
+
 import 'package:crypto/crypto.dart';
 import 'package:fixnum/fixnum.dart';
 import 'package:flutter/material.dart';
@@ -13,6 +14,7 @@ import 'package:fido/pages/message_screen.dart';
 import 'package:fido/repositories/message_repository.dart';
 import 'package:fido/repositories/uue_repository.dart';
 import 'package:fido/widgets/uue_body.dart';
+
 import '../support/fake_transport.dart';
 
 class Files extends UueFiles {

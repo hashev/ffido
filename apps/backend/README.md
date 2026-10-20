@@ -503,3 +503,8 @@ cross-container `--cycle` не поддерживается. Изменение 
 При проверке адаптера используйте `PointMailboxProvisionMapped` и
 `PointMailboxCycleMapped`: первый проверяет перевод логических путей и коллизии
 ящиков, второй повторяет полный HPT-цикл в общей среде с включённым mapping.
+
+## Docker
+
+Сборка Linux amd64, запуск с постоянными данными и публикация `hashev/ffido`:
+[инструкция Docker](../../docs/docker.md).

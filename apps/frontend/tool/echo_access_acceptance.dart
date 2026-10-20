@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+
 import 'package:grpc/grpc.dart' as grpc;
 import 'package:fido/api/api_client.dart';
 import 'package:fido/api/api_exceptions.dart';
@@ -28,9 +29,9 @@ wire.CreateMessageRequest post(String area, String operation) =>
       toName: 'All',
     );
 Future<void> main() async {
-  final input =
-      jsonDecode(await stdin.transform(utf8.decoder).join())
-          as Map<String, dynamic>;
+  final input = jsonDecode(
+    await stdin.transform(utf8.decoder).join(),
+  ) as Map<String, dynamic>;
   final client = ApiClient(
     endpoint: input['endpoint'] as String,
     channelFactory: (uri) => grpc.ClientChannel(
@@ -58,15 +59,13 @@ Future<void> main() async {
           () => client.createMessage(post('ACL.FULL', 'acl-initial')),
         );
         require(
-          (await client.listBookmarks(
-            wire.PageRequest(limit: 100),
-          )).bookmarks.every((v) => v.conference.id != 'ACL.FULL'),
+          (await client.listBookmarks(wire.PageRequest(limit: 100))).bookmarks
+              .every((v) => v.conference.id != 'ACL.FULL'),
           'revoked bookmark',
         );
         require(
-          (await client.listHistory(
-            wire.PageRequest(limit: 100),
-          )).history.every((v) => v.conference.id != 'ACL.FULL'),
+          (await client.listHistory(wire.PageRequest(limit: 100))).history
+              .every((v) => v.conference.id != 'ACL.FULL'),
           'revoked history',
         );
       } else {
@@ -78,9 +77,8 @@ Future<void> main() async {
           'preserved read state',
         );
         require(
-          (await client.listBookmarks(
-            wire.PageRequest(limit: 100),
-          )).bookmarks.any((v) => v.conference.id == 'ACL.FULL'),
+          (await client.listBookmarks(wire.PageRequest(limit: 100))).bookmarks
+              .any((v) => v.conference.id == 'ACL.FULL'),
           'restored bookmark',
         );
       }
@@ -131,9 +129,9 @@ Future<void> main() async {
     );
     final created = await client.createMessage(post('ACL.FULL', 'acl-initial'));
     require(
-      (await client.createMessage(
-            post('ACL.FULL', 'acl-initial'),
-          )).message.messageId ==
+      (await client.createMessage(post('ACL.FULL', 'acl-initial')))
+              .message
+              .messageId ==
           created.message.messageId,
       'idempotency',
     );

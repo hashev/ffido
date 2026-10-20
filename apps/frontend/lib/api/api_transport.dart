@@ -1,4 +1,5 @@
 import 'package:protobuf/well_known_types/google/protobuf/empty.pb.dart';
+
 import 'generated/ffido/v1/ffido.pb.dart' as wire;
 
 class RpcCancellation {

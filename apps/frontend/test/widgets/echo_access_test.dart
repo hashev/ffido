@@ -4,6 +4,7 @@ import 'package:fido/api/api_exceptions.dart';
 import 'package:fido/api/generated/ffido/v1/ffido.pb.dart' as wire;
 import 'package:fido/pages/message_screen.dart';
 import 'package:fido/repositories/message_repository.dart';
+
 import '../support/fake_transport.dart';
 
 void main() {

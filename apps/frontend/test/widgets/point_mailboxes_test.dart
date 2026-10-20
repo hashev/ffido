@@ -6,6 +6,7 @@ import 'package:fido/api/generated/ffido/v1/ffido.pb.dart' as wire;
 import 'package:fido/models/conference.dart';
 import 'package:fido/pages/message_screen.dart';
 import 'package:fido/repositories/message_repository.dart';
+
 import '../support/fake_transport.dart';
 
 wire.Message row(int index, {bool outgoing = false}) => wire.Message(

@@ -1,6 +1,8 @@
 import 'dart:js_interop';
+
 import 'package:fido/api/api_client.dart';
 import 'package:fido/api/api_exceptions.dart';
+
 import 'acceptance_flow.dart';
 
 @JS('ffidoEndpoint')

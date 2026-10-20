@@ -1,8 +1,11 @@
 import '../models/conference.dart';
 import '../api/api_exceptions.dart';
 import '../utils/refresh_on_resume.dart';
+
 import 'dart:async';
+
 import 'package:flutter/material.dart';
+
 import '../api/api_transport.dart';
 import '../main.dart';
 import '../repositories/account_repository.dart';

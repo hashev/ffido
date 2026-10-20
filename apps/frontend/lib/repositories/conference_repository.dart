@@ -1,7 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
+
 import 'package:fixnum/fixnum.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
 import '../api/api_transport.dart';
 import '../api/api_constants.dart';
 import '../api/api_exceptions.dart';
@@ -10,11 +12,7 @@ import '../api/generated/ffido/v1/ffido.pb.dart' as wire;
 import '../models/conference.dart';
 
 class ConferenceRepository {
-  ConferenceRepository({
-    required ApiTransport apiClient,
-    required SharedPreferences prefs,
-  }) : _apiClient = apiClient,
-       _prefs = prefs {
+  ConferenceRepository({required this._apiClient, required this._prefs}) {
     _subscription = _apiClient.sessionChanges.listen((_) {
       unawaited(clearCache());
     });

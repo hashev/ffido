@@ -170,6 +170,17 @@ class PublicationTest(unittest.TestCase):
         self.assertFalse(api.edited)
         self.assertEqual(api.assets, {})
 
+    def test_container_digest_recorded_and_foreign_container_rejected(self):
+        container = {'sha': self.identity['sha'], 'release_tag': self.identity['tag'],
+                     'image': 'docker.io/hashev/ffido', 'digest': 'sha256:'+'a'*64}
+        (self.root/'container.json').write_text(json.dumps(container))
+        publisher.publish(FakeGitHub(), self.root, self.identity, [self.row])
+        manifest = json.loads((self.root/'release-manifest.json').read_text())
+        self.assertEqual(manifest['container'], container)
+        (self.root/'container.json').write_text(json.dumps({**container, 'sha': 'b'*40}))
+        with self.assertRaises(ValueError):
+            publisher.publish(FakeGitHub(), self.root, self.identity, [self.row])
+
 class GovernanceTest(unittest.TestCase):
     def test_bypass_ci_permissions_and_access(self):
         audit = load('audit_github')

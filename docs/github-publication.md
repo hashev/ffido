@@ -112,7 +112,7 @@ OS/arch вариантах, backend build/CTest/HPT/static checks/proto на т�
 Тестовый HPT собирается из закреплённых Husky-ревизий в локальном build-prefix.
 `check_ctest.py` запрещает отсутствующий HPT и skipped tests. amster2 не используется.
 
-Матрица использует Flutter 3.41.6, Java 17, Ubuntu 24.04, Windows 2022 runner,
+Матрица использует Flutter 3.47.7, Java 17, Ubuntu 24.04, Windows 2022 runner,
 macOS 15 arm64 и macos-15-intel. Backend выбирает установленный Xcode 26.3
 для стандартного `std::stop_token`; deployment target остаётся macOS 15.
 Actions закреплены полными commit SHA.
@@ -227,3 +227,17 @@ build/test и smoke доступных пакетов. Удалённо: зел�
 PR/master, постоянная подпись APK и anonymous download полного prerelease/stable.
 Недоступная проверка не считается пройденной и отмечается в docs/testing.md.
 Commit/push и публикация выполняются только по отдельному запросу владельца.
+
+## Docker Hub
+
+Серверный OCI-образ проверяется в обязательном container job и публикуется в
+`hashev/ffido` перед завершением полного GitHub Release. Настройка secrets,
+проверка авторизации без push, правила тегов и digest описаны в [Docker](docker.md).
+
+20 октября 2026 года по отдельному согласованию владельца в Actions allowlist
+добавлены только `docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f`
+и `docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9`. GitHub-owned actions
+и прежний `subosito/flutter-action@*` сохранены; `verified_allowed=false`.
+При обновлении этих actions сначала проверяйте новый commit, затем согласованно
+обновляйте pinned SHA в workflow и точечную запись allowlist. Не заменяйте её
+wildcard `docker/*` и не разрешайте все verified actions.

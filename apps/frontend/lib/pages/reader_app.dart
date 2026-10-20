@@ -1,8 +1,11 @@
 import '../models/conference.dart';
 import '../api/api_exceptions.dart';
 import '../utils/refresh_on_resume.dart';
+
 import 'dart:async';
+
 import '../api/api_transport.dart';
+
 import 'package:flutter/material.dart';
 import 'package:fido/fido_conference.dart';
 import 'package:fido/conference_card.dart';

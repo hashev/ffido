@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
 import 'api_client.dart';
 import '../platform/desktop_profile.dart';
 import 'api_exceptions.dart';
@@ -123,8 +124,7 @@ class SessionManager {
     try {
       await store.delete(endpoint);
     } catch (_) {
-      message +=
-          ' Удалить запись из защищённого хранилища не удалось; автоматический вход отключён.';
+      message += ' Удалить запись из защищённого хранилища не удалось; автоматический вход отключён.';
     }
     return message;
   }
