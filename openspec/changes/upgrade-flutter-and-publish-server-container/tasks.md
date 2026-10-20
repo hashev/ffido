@@ -17,7 +17,7 @@
 
 ## 3. CI и публикация Docker Hub
 
-- [x] 3.1 Добавить container job и включить его в обязательный агрегатор `.github/workflows/build.yml`; передавать проверенный image artifact и release identity текущего run. Критерий: PR выполняет build/smoke без Docker Hub secrets и push, отказ/skip job делает обязательный итог неуспешным.
+- [ ] 3.1 Добавить container job и включить его в обязательный агрегатор `.github/workflows/build.yml`; передавать проверенный image artifact и release identity текущего run. Критерий: PR выполняет build/smoke без Docker Hub secrets и push, отказ/skip job делает обязательный итог неуспешным. BuildKit gha v2 получает runtime-переменные; сохранение и повторное использование кеша подтверждены в CI.
 - [x] 3.2 Добавить в `scripts/release/` вычисление/проверку Docker-тегов из существующей identity и тесты. Критерий: unittest покрывает prerelease, stable, неверную identity, повтор с тем же digest, конфликт digest, порядок обновления `latest` и параллельные выпуски без переназначения версии.
 - [x] 3.3 Расширить `.github/workflows/release.yml` загрузкой именно проверенного образа, публикацией в `docker.io/hashev/ffido`, OCI labels, сохранением digest и завершением полного Release после Docker push. Критерий: сохранены существующие gates/`FFIDO_PUBLICATION_READY`/environment `release`; stable получает `X.Y.Z`, SHA и `latest`, prerelease не меняет `latest`; частичный сбой допускает безопасный повтор.
 - [x] 3.4 Документировать `DOCKERHUB_USERNAME`/`DOCKERHUB_TOKEN`, права на репозиторий, настройки выпуска, теги и проверку digest в документации релизов. Критерий: токен не попадает в образ/артефакты/логи, отсутствие credentials при включённой публикации даёт явную ошибку, PR не получает секреты.

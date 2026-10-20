@@ -164,3 +164,5 @@ docker pull --platform linux/amd64 docker.io/hashev/ffido@sha256:eb800cd08c10faf
 ```
 
 В CI сохраняются предупреждения GitHub о Node.js 20 у ранее закреплённых actions; runner запускает их на Node.js 24. Обновление этих существующих action pins не входило в обновление Flutter и добавление Docker-публикации.
+
+Для BuildKit gha cache используется API v2 и scope ffido-server-amd64. Inline buildx требует экспорта ACTIONS_RESULTS_URL/ACTIONS_RUNTIME_TOKEN из JavaScript action; значения маскируются и передаются только exporter, без build args и записи в образ. Источник: [Docker cache authentication](https://docs.docker.com/build/cache/backends/gha/). Сохранение и тёплый повтор проверяются в CI.

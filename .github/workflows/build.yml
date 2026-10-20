@@ -202,21 +202,41 @@ jobs:
           channel: stable
           cache: true
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+      - name: Expose BuildKit cache runtime
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            for (const name of ['ACTIONS_RESULTS_URL', 'ACTIONS_RUNTIME_TOKEN']) {
+              const value = process.env[name];
+              if (!value) throw new Error(`Missing ${name} for BuildKit cache`);
+              core.setSecret(value);
+              core.exportVariable(name, value);
+            }
       - run: sudo apt-get update && sudo apt-get install -y skopeo
       - run: python3 scripts/release/build_identity.py
         env:
           IDENTITY_JSON: ${{ inputs.identity }}
-      - name: Build OCI archive
+      - name: Build OCI archive and verify remote cache
         run: |
           mkdir -p build/container
-          docker buildx build --platform linux/amd64 --provenance=false \
-            --build-arg FFIDO_REVISION="$(jq -r .sha build/identity.json)" \
-            --build-arg FFIDO_VERSION="$(jq -r .version build/identity.json)" \
-            --build-arg FFIDO_TAG="$(jq -r .tag build/identity.json)" \
-            --build-arg FFIDO_BUILD_NUMBER="$(jq -r .build_number build/identity.json)" \
-            --build-arg FFIDO_STABLE="$(jq -r .stable build/identity.json)" \
-            --cache-from type=gha --cache-to type=gha,mode=max \
+          build_args=(
+            --platform linux/amd64 --provenance=false
+            --build-arg "FFIDO_REVISION=$(jq -r .sha build/identity.json)"
+            --build-arg "FFIDO_VERSION=$(jq -r .version build/identity.json)"
+            --build-arg "FFIDO_TAG=$(jq -r .tag build/identity.json)"
+            --build-arg "FFIDO_BUILD_NUMBER=$(jq -r .build_number build/identity.json)"
+            --build-arg "FFIDO_STABLE=$(jq -r .stable build/identity.json)"
+          )
+          cache=type=gha,version=2,scope=ffido-server-amd64
+          docker buildx build "${build_args[@]}" \
+            --cache-from "$cache" --cache-to "$cache,mode=max" \
             --output type=oci,dest=build/container/image.tar .
+          # A new daemon has no local layers, so this verifies the exported cache.
+          cache_builder=ffido-cache-check
+          trap 'docker buildx rm --force "$cache_builder" >/dev/null 2>&1 || true' EXIT
+          docker buildx create --name "$cache_builder" --driver docker-container
+          timeout 600s docker buildx build --builder "$cache_builder" "${build_args[@]}" \
+            --cache-from "$cache" --target builder --output type=cacheonly .
       - name: Smoke the archived image
         run: |
           skopeo copy oci-archive:build/container/image.tar docker-daemon:ffido:check
