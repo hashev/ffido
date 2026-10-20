@@ -130,28 +130,37 @@
 
 ## Проверки
 
-- Flutter analyze: без замечаний.
-- Flutter test: 230 passed, 2 существующих пропуска.
-- enforce-lockfile для обоих пакетов: успешно.
-- protoc generation --check: успешно, wire-контракт не изменён.
+- Flutter analyze: без замечаний; Flutter test: 230 passed, 2 существующих пропуска.
+- enforce-lockfile для обоих пакетов: успешно; protoc generation --check: успешно, wire-контракт не изменён.
 - Dart format: 86 файлов, 0 изменений при повторной проверке. Новый formatter Dart 3.13 изменил оформление 59 файлов; исправлены два prefer_initializing_formals без изменения API конструктора.
-- Корневая Debug CMake-сборка и CTest: 350/350, включая HPT, без пропусков.
+- Корневая Debug CMake-сборка и CTest: 350/350, включая HPT, без пропусков. C++ format/clang-tidy: 99 файлов / 51 translation units, успешно.
+- Release-tools: 26 тестов успешно; actionlint и OpenSpec strict validation успешны; экспорт исходников: 0 найденных секретов.
+- Локальные release-сборки и запуск macOS, Android API 36 arm64 и Linux amd64 успешны. Пакеты macOS/Linux извлечены и проверены существующими package.py/smoke.py; Android APK проверен на устройстве-эмуляторе без изменения пользовательских AVD. Нативные тесты профилей macOS прошли.
+- Прямой TLS gRPC acceptance нового Dart-клиента против backend прошёл: сертификат/ALPN, отказ без авторизации, Unicode, ответы, идемпотентность, UUE и метаданные.
+- Полная клиентская и серверная матрица прошла в [PR #6 / run 39453112427](https://github.com/hashev/ffido/actions/runs/39453112427), затем повторно в доверенном Release: macOS arm64/x86_64, Windows/Linux x86_64, Android; серверы Linux x86_64 и macOS arm64/x86_64. Упаковка и smoke выполнены.
 
 ## Платформенные миграции
 
-- Android: Gradle 8.12 → 9.3.1, AGP 8.9.1 → 9.1.0, Kotlin plugin 2.1.0 → 2.4.0, Java/Kotlin target 17. Версии взяты из шаблона установленного Flutter 3.47.7 (`gradle_utils.dart`); прежний Gradle ниже обязательного минимума 8.14, AGP ниже 8.11.1 и Kotlin ниже 2.2.20. Идентификатор приложения, minSdk и release signing сохранены. Встроенный Kotlin включён (`android.builtInKotlin=true`), отдельный kotlin-android plugin удалён. Флаг `android.newDsl=false` нужен из-за обращения Gradle-плагина Flutter к legacy AGP DSL; newDsl=true подтверждённо вызывает ClassCastException. Он не обходит dependency validation.
+- Android: Gradle 8.12 → 9.3.1, AGP 8.9.1 → 9.1.0, Kotlin plugin 2.1.0 → 2.4.0, Java/Kotlin target 17. Версии взяты из шаблона установленного Flutter 3.47.7 (`gradle_utils.dart`); прежний Gradle ниже обязательного минимума 8.14, AGP ниже 8.11.1 и Kotlin ниже 2.2.20. Идентификатор приложения, minSdk 24 и release signing сохранены. Встроенный Kotlin включён (`android.builtInKotlin=true`), отдельный kotlin-android plugin удалён. Флаг `android.newDsl=false` нужен из-за обращения Gradle-плагина Flutter к legacy AGP DSL; newDsl=true подтверждённо вызывает ClassCastException. Он не обходит dependency validation.
 - macOS: общий Architecture.xcconfig отображает native arm64e Xcode 27 в поддерживаемый Flutter arm64, сохраняя отдельную сборку x86_64 на Intel. Сборка arm64 и запуск извлечённого DMG прошли. Xcode выводит рекомендацию по arm64-only; существующая матрица Intel сохраняется. Flutter автоматически подключил SwiftPM для плагинов и обновил Xcode project/scheme и Podfile.lock. Полное удаление оставшейся CocoaPods-интеграции нестандартного Podfile не требуется для успешной сборки и не выполнялось попутно.
-- Прямой TLS gRPC acceptance нового Dart-клиента против реального backend прошёл: сертификат/ALPN, отказ без авторизации, Unicode, ответы, идемпотентность, UUE, метаданные.
-- C++ format/clang-tidy: 99 файлов / 51 translation units, успешно. GitHub workflows: actionlint, успешно. Release-tools unit tests: 26 успешно. Экспорт: 0 найденных секретов.
 
-Android release APK: успешно, 54.0 MB, Gradle build без предупреждений после миграции на встроенный Kotlin. OCI-архив передан в временный локальный registry с `--preserve-digests`; digest совпал до и после передачи.
+## Docker и фактическая публикация
 
-Android smoke: APK установлен и запущен в отдельном временном эмуляторе API 36 arm64; процесс жив, crash buffer не содержит FATAL EXCEPTION. Пользовательские AVD не изменялись. Нативные тесты профилей macOS прошли. Скрипт container_publish.py проверен на временном локальном registry: настоящие inspect/copy, проверка identity, сохранение digest и идемпотентный повтор. В Docker Hub ничего не загружено.
+Docker Linux amd64 собран; CTest внутри builder прошёл 350/350 без пропусков от непривилегированного пользователя. Runtime 10001:10001 содержит admin/helper/wrapper, библиотеки, лицензионные архивы и материалы перелинковки. Фактический BuildKit context отдельно проверен на отсутствие локальных конфигов, ключей, FTN/SQLite и сборочных кешей.
 
-Фактический Docker build context отдельно экспортирован BuildKit и проверен на отсутствие config.json, приватных ключей, FTN/SQLite и сборочных кешей.
+Container smoke проверил TLS, ошибки конфигурации и прав, SIGTERM и пересоздание с сохранением действительной сессии, сообщения, read state, закладки и незавершённой загрузки. Признак прочтения проверяется до открытия сообщения; текст сравнивается точно до и после остановки с учётом нормализации JAM. Перенос через локальный registry сохранил digest; идемпотентность публикации проверена настоящими inspect/copy.
 
-Linux amd64: в отдельном Ubuntu 24.04 контейнере выполнены flutter pub get --enforce-lockfile, analyze, все тесты, release-сборка и запуск приложения в Xvfb. Графические предупреждения headless-окружения не прерывают запуск. Windows и Intel macOS проверяются штатной CI-матрицей после отправки изменений.
+Права pull,push проверены [отдельным workflow без загрузки образа](https://github.com/hashev/ffido/actions/runs/39460929276). Затем [автоматический Release 39460898488](https://github.com/hashev/ffido/actions/runs/39460898488), запущенный push после слияния PR #6, успешно опубликовал образ:
 
-Linux release-пакет дополнительно создан package.py и проверен smoke.py: контрольная сумма, динамические библиотеки и запуск извлечённого приложения — успешно.
+- GitHub Release: [v1.0.0-dev.1003.9e8e79c94706](https://github.com/hashev/ffido/releases/tag/v1.0.0-dev.1003.9e8e79c94706).
+- Source SHA: `9e8e79c94706687d3f415e35046bd96cad373ff6`.
+- Docker image: `docker.io/hashev/ffido:1.0.0-dev.1003.9e8e79c94706`.
+- Digest: `sha256:eb800cd08c10fafb67784e87ba1aa8ce0c690ac62f79e9c67058a4826163567d`.
 
-Docker Linux amd64: сборка завершена; CTest внутри builder 350/350 без пропусков, от непривилегированного пользователя. Runtime 10001:10001 содержит admin/helper/wrapper, библиотеки и лицензионные архивы. Container smoke прошёл TLS, ошибки конфигурации и прав, SIGTERM и пересоздание с сохранением действительной сессии, сообщения, read state, закладки и незавершённой загрузки. Сравнение текста учитывает нормализацию JAM через точное сравнение прочитанного значения до и после остановки. Перенос готового образа через локальный registry сохраняет OCI digest; pull по digest успешен.
+SHA/версия/digest совпали с release-manifest.json и его SHA256SUMS. Версия и SHA-тег указывают на один digest. Тег latest отсутствовал до prerelease и после него остался отсутствующим. Выполнены независимый анонимный pull по опубликованному digest и полный container smoke локально; GitHub Actions также повторил smoke после pull из Docker Hub. Секреты не потребовались для скачивания образа и не выводились в логи.
+
+```sh
+docker pull --platform linux/amd64 docker.io/hashev/ffido@sha256:eb800cd08c10fafb67784e87ba1aa8ce0c690ac62f79e9c67058a4826163567d
+```
+
+В CI сохраняются предупреждения GitHub о Node.js 20 у ранее закреплённых actions; runner запускает их на Node.js 24. Обновление этих существующих action pins не входило в обновление Flutter и добавление Docker-публикации.
