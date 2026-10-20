@@ -1,0 +1,100 @@
+name: Release
+on:
+  push:
+    branches: [master]
+    tags: ['v*']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  identity:
+    runs-on: ubuntu-24.04
+    outputs:
+      json: ${{ steps.record.outputs.json }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: record
+        run: |
+          python3 scripts/release/version.py --output build/identity.json
+          echo "json=$(python3 -c 'import json; print(json.dumps(json.load(open("build/identity.json"))))')" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: release-identity
+          path: build/identity.json
+  verify:
+    needs: identity
+    uses: ./.github/workflows/build.yml
+    with:
+      identity: ${{ needs.identity.outputs.json }}
+  android-sign:
+    needs: [identity, verify]
+    if: vars.FFIDO_PUBLICATION_READY == 'true'
+    runs-on: ubuntu-24.04
+    environment: release
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
+        with:
+          flutter-version: '3.41.6'
+          cache: true
+      - run: python3 scripts/release/build_identity.py
+        env:
+          IDENTITY_JSON: ${{ needs.identity.outputs.json }}
+      - name: Release APK
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          FFIDO_ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          FFIDO_ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          FFIDO_ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_CERT_SHA256: ${{ vars.ANDROID_CERT_SHA256 }}
+          FFIDO_PUBLIC_RELEASE: 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          export FFIDO_ANDROID_KEYSTORE="$RUNNER_TEMP/ffido-release.jks"
+          trap 'rm -f "$FFIDO_ANDROID_KEYSTORE"' EXIT
+          python3 -c 'import os,base64,pathlib; pathlib.Path(os.environ["FFIDO_ANDROID_KEYSTORE"]).write_bytes(base64.b64decode(os.environ["KEYSTORE_BASE64"], validate=True))'
+          chmod 600 "$FFIDO_ANDROID_KEYSTORE"
+          (cd apps/frontend && flutter pub get --enforce-lockfile && flutter build apk --release --build-name="$FFIDO_BUILD_NAME" --build-number="$FFIDO_BUILD_NUMBER")
+          python3 scripts/release/package.py client android universal --identity build/identity.json --public
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: signed-android
+          path: build/packages/*
+          if-no-files-found: error
+  publish:
+    needs: [identity, verify, android-sign]
+    if: vars.FFIDO_PUBLICATION_READY == 'true'
+    runs-on: ubuntu-24.04
+    environment: release
+    permissions:
+      contents: write
+    concurrency:
+      group: ffido-publication-${{ github.run_id }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: '{client-*,server-*,signed-android,release-identity}'
+          path: build/downloads
+      - name: Collect this run only
+        run: |
+          mkdir -p build/packages
+          find build/downloads -type f \( -path '*/client-android-universal/*' -o -path '*/release-identity/*' \) -prune -o -type f -exec cp {} build/packages/ \;
+      - name: Publish complete release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FFIDO_PUBLICATION_READY: ${{ vars.FFIDO_PUBLICATION_READY }}
+        run: python3 scripts/release/publish.py build/packages --identity build/downloads/release-identity/identity.json

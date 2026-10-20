@@ -1,0 +1,37 @@
+option(FIDOBACK_ENABLE_ASAN "Enable AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
+option(FIDOBACK_ENABLE_TSAN "Enable ThreadSanitizer" OFF)
+
+if(FIDOBACK_ENABLE_ASAN AND FIDOBACK_ENABLE_TSAN)
+  message(FATAL_ERROR "ASan/UBSan and TSan require separate build directories")
+endif()
+
+add_library(ffido_backend_instrumentation INTERFACE)
+add_library(ffido_backend_checks INTERFACE)
+target_link_libraries(ffido_backend_checks INTERFACE ffido_backend_instrumentation)
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+  target_compile_options(ffido_backend_checks INTERFACE -Wall -Wextra -Wpedantic)
+  if(FIDOBACK_ENABLE_ASAN)
+    target_compile_options(ffido_backend_instrumentation INTERFACE
+      -fsanitize=address,undefined -fno-omit-frame-pointer)
+    target_link_options(ffido_backend_instrumentation INTERFACE -fsanitize=address,undefined)
+  elseif(FIDOBACK_ENABLE_TSAN)
+    target_compile_options(ffido_backend_instrumentation INTERFACE
+      -fsanitize=thread -fno-omit-frame-pointer)
+    target_link_options(ffido_backend_instrumentation INTERFACE -fsanitize=thread)
+  endif()
+elseif(FIDOBACK_ENABLE_ASAN OR FIDOBACK_ENABLE_TSAN)
+  message(FATAL_ERROR "The selected compiler does not support the configured sanitizers")
+endif()
+
+option(FIDOBACK_ENABLE_COVERAGE "Enable LLVM source-based coverage" OFF)
+if(FIDOBACK_ENABLE_COVERAGE)
+  if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    message(FATAL_ERROR "LLVM source-based coverage requires a Clang compiler")
+  endif()
+  if(FIDOBACK_ENABLE_ASAN OR FIDOBACK_ENABLE_TSAN)
+    message(FATAL_ERROR "Coverage requires a separate build without sanitizers")
+  endif()
+  target_compile_options(ffido_backend_instrumentation INTERFACE
+    -fprofile-instr-generate -fcoverage-mapping)
+  target_link_options(ffido_backend_instrumentation INTERFACE -fprofile-instr-generate)
+endif()

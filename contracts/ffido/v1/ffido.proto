@@ -1,0 +1,355 @@
+syntax = "proto3";
+
+package ffido.v1;
+
+import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto";
+
+// Login проверяет данные HPT; остальные RPC требуют внутреннюю Bearer-сессию.
+service Ffido {
+  rpc Login(LoginRequest) returns (LoginResponse);
+  rpc RestoreSession(google.protobuf.Empty) returns (SessionInfo);
+  rpc Logout(google.protobuf.Empty) returns (google.protobuf.Empty);
+  rpc ListConferences(ListConferencesRequest) returns (ListConferencesResponse);
+  rpc GetConference(GetConferenceRequest) returns (Conference);
+  rpc ListMessages(ListMessagesRequest) returns (ListMessagesResponse);
+  rpc GetMessage(MessageReference) returns (Message);
+  rpc CreateMessage(CreateMessageRequest) returns (CreateMessageResponse);
+  rpc MarkRead(MessageReference) returns (google.protobuf.Empty);
+  rpc MarkConferenceRead(MarkConferenceReadRequest) returns (MarkConferenceReadResponse);
+  rpc GetThread(GetThreadRequest) returns (ListMessagesResponse);
+  rpc ListBookmarks(PageRequest) returns (ListBookmarksResponse);
+  rpc AddBookmark(GetConferenceRequest) returns (google.protobuf.Empty);
+  rpc RemoveBookmark(GetConferenceRequest) returns (google.protobuf.Empty);
+  rpc ListHistory(PageRequest) returns (ListHistoryResponse);
+  rpc ClearHistory(google.protobuf.Empty) returns (google.protobuf.Empty);
+  rpc GetProfile(google.protobuf.Empty) returns (Profile);
+  rpc GetUueLimits(google.protobuf.Empty) returns (UueLimits);
+  rpc SearchUueParts(SearchUuePartsRequest) returns (SearchUuePartsResponse);
+  rpc AssembleUue(AssembleUueRequest) returns (UueAttachment);
+  rpc GetUueChunk(GetUueChunkRequest) returns (UueChunk);
+  rpc UploadUueChunk(UploadUueChunkRequest) returns (UueUploadStatus);
+  rpc CommitUue(CommitUueRequest) returns (UueSendStatus);
+  rpc GetUueSendStatus(UueOperationReference) returns (UueSendStatus);
+}
+
+// offset >= 0, limit от 1 до 100; нулевой limit не означает unlimited.
+message PageRequest {
+  int64 offset = 1;
+  int32 limit = 2;
+}
+
+enum ConferenceSort {
+  CONFERENCE_SORT_UNSPECIFIED = 0;
+  CONFERENCE_SORT_NAME = 1;
+  CONFERENCE_SORT_LAST_MESSAGE = 2;
+  CONFERENCE_SORT_UNREAD = 3;
+}
+
+enum MessageSort {
+  MESSAGE_SORT_UNSPECIFIED = 0;
+  MESSAGE_SORT_DATE_ASCENDING = 1;
+  MESSAGE_SORT_DATE_DESCENDING = 2;
+}
+
+message ListConferencesRequest {
+  PageRequest page = 1;
+  string query = 2;
+  ConferenceSort sort = 3;
+}
+
+message GetConferenceRequest {
+  string conference_id = 1;
+}
+
+enum AreaKind {
+  AREA_KIND_ECHO = 0;
+  AREA_KIND_NETMAIL = 1;
+  AREA_KIND_LOCAL = 2;
+  AREA_KIND_BAD = 3;
+  AREA_KIND_DUPE = 4;
+  AREA_KIND_ROBOTS = 5;
+}
+
+enum AreaAvailability {
+  AREA_AVAILABILITY_AVAILABLE = 0;
+  AREA_AVAILABILITY_UNSUPPORTED_FORMAT = 1;
+}
+
+message Conference {
+  string id = 1;
+  string name = 2;
+  string description = 3;
+  int64 unread_count = 4;
+  int64 total_count = 5;
+  google.protobuf.Timestamp last_message_date = 6;
+  bool is_bookmarked = 7;
+  bool can_read = 8;
+  bool can_post = 9;
+  AreaKind kind = 10;
+  string storage_format = 11;
+  AreaAvailability availability = 12;
+  optional bool statistics_known = 13;
+  bool personal_mailbox = 14;
+  string last_opened_message_id = 15;
+  uint64 position_revision = 16;
+}
+
+message ListConferencesResponse {
+  repeated Conference conferences = 1;
+  int64 total = 2;
+  bool has_more = 3;
+}
+
+message ListMessagesRequest {
+  string conference_id = 1;
+  PageRequest page = 2;
+  string query = 3;
+  MessageSort sort = 4;
+  string anchor_message_id = 5;
+}
+
+// message_id — непрозрачный локальный ID с generation, а не FTN MsgID.
+message MessageReference {
+  string conference_id = 1;
+  string message_id = 2;
+}
+
+enum MailDirection {
+  MAIL_DIRECTION_UNSPECIFIED = 0;
+  MAIL_DIRECTION_INCOMING = 1;
+  MAIL_DIRECTION_OUTGOING = 2;
+}
+
+message Message {
+  string id = 1;
+  string conference_id = 2;
+  string from_name = 3;
+  string from_address = 4;
+  string to_name = 5;
+  string to_address = 6;
+  string subject = 7;
+  google.protobuf.Timestamp date = 8;
+  // В списках передаётся preview; полный текст доступен через GetMessage.
+  string body = 9;
+  string body_preview = 10;
+  bool is_read = 11;
+  string thread_id = 12;
+  string in_reply_to = 13;
+  string ftn_message_id = 14;
+  uint32 attributes = 15;
+  MailDirection direction = 16;
+  uint64 position_revision = 17;
+}
+
+message ListMessagesResponse {
+  repeated Message messages = 1;
+  int64 total = 2;
+  bool has_more = 3;
+  optional int64 actual_offset = 4;
+}
+
+message CreateMessageRequest {
+  string conference_id = 1;
+  // Ключ сохраняется клиентом при повторе неопределённого результата.
+  string operation_id = 2;
+  string to_name = 3;
+  string to_address = 4;
+  string subject = 5;
+  string body = 6;
+  string in_reply_to = 7;
+}
+
+enum SaveStatus {
+  SAVE_STATUS_UNSPECIFIED = 0;
+  // Подтверждает durable локальную запись, без обещания доставки в FidoNet.
+  SAVE_STATUS_SAVED_LOCALLY = 1;
+}
+
+message CreateMessageResponse {
+  MessageReference message = 1;
+  string ftn_message_id = 2;
+  SaveStatus status = 3;
+}
+
+message GetThreadRequest {
+  string conference_id = 1;
+  string thread_id = 2;
+  PageRequest page = 3;
+}
+
+message Bookmark {
+  Conference conference = 1;
+  google.protobuf.Timestamp added_at = 2;
+}
+
+message ListBookmarksResponse {
+  repeated Bookmark bookmarks = 1;
+  int64 total = 2;
+  bool has_more = 3;
+}
+
+message HistoryEntry {
+  Conference conference = 1;
+  google.protobuf.Timestamp viewed_at = 2;
+}
+
+message ListHistoryResponse {
+  repeated HistoryEntry history = 1;
+  int64 total = 2;
+  bool has_more = 3;
+}
+
+message Profile {
+  string user_id = 1;
+  string name = 2;
+  string address = 3;
+  string email = 4;
+  google.protobuf.Timestamp registered_at = 5;
+}
+
+// Сериализованный ErrorDetails передаётся в ffido-error-details-bin trailers.
+// Только публичная диагностика: без путей, SQL, токенов и payload запроса.
+message ErrorDetails {
+  repeated FieldViolation violations = 1;
+}
+
+message FieldViolation {
+  string field = 1;
+  string message = 2;
+}
+
+message LoginRequest {
+  string name = 1;
+  string address = 2;
+  string password = 3;
+}
+message SessionInfo {
+  Profile profile = 1;
+  google.protobuf.Timestamp expires_at = 2;
+}
+message LoginResponse {
+  string session_secret = 1;
+  SessionInfo session = 2;
+}
+
+// Одна атомарная отметка снимка эхи, повтор определяется пользовательским operation_id.
+message MarkConferenceReadRequest {
+  string conference_id = 1;
+  string operation_id = 2;
+}
+message MarkConferenceReadResponse {
+  int64 marked_count = 1;
+  int64 snapshot_count = 2;
+  string generation = 3;
+}
+
+
+// Additive UUE extension. UNIMPLEMENTED means ordinary text-only operation.
+message UueLimits {
+  uint64 max_file_bytes = 1;
+  uint32 part_body_bytes = 2;
+  uint32 max_parts = 3;
+  uint32 chunk_bytes = 4;
+  uint64 preview_pixels = 5;
+  uint32 preview_dimension = 6;
+}
+message UuePartReference {
+  MessageReference message = 1;
+  uint32 block_index = 2;
+}
+message UuePart {
+  UuePartReference source = 1;
+  string from_address = 2;
+  string to_address = 3;
+  string subject = 4;
+  string transfer_id = 5;
+  uint32 part = 6;
+  uint32 total = 7;
+  string filename = 8;
+  uint64 decoded_size = 9;
+  string sha256 = 10;
+  uint32 body_start = 11;
+  uint32 body_end = 12;
+  string diagnostic = 13;
+  string date = 14;
+  MailDirection direction = 15;
+}
+message SearchUuePartsRequest {
+  string conference_id = 1;
+  string generation = 2;
+  uint32 after_number = 3;
+  uint32 limit = 4;
+}
+message SearchUuePartsResponse {
+  repeated UuePart parts = 1;
+  string generation = 2;
+  uint32 next_number = 3;
+  bool has_more = 4;
+}
+message AssembleUueRequest {
+  repeated UuePartReference sources = 1;
+  // False sorts validated FFIDO metadata or legacy sender/subject/numbering.
+  // Legacy automatic assembly does not prove integrity; surface the mixing warning.
+  // True uses explicitly chosen order for legacy parts, including unnumbered parts.
+  bool explicit_order = 2;
+}
+enum UueState {
+  UUE_STATE_UNSPECIFIED = 0;
+  UUE_STATE_READY = 1;
+  UUE_STATE_INCOMPLETE = 2;
+  UUE_STATE_CONFLICT = 3;
+  UUE_STATE_CORRUPT = 4;
+}
+message UueAttachment {
+  string id = 1;
+  string filename = 2;
+  uint64 size = 3;
+  string sha256 = 4;
+  bool checksum_verified = 5;
+  UueState state = 6;
+  repeated uint32 missing_parts = 7;
+  repeated UuePartReference sources = 8;
+  string diagnostic = 9;
+}
+message GetUueChunkRequest {
+  string attachment_id = 1;
+  uint64 offset = 2;
+  uint32 max_bytes = 3;
+}
+message UueChunk {
+  bytes data = 1;
+  uint64 offset = 2;
+  uint64 total_size = 3;
+  bool eof = 4;
+}
+message UueOperationReference {
+  string operation_id = 1;
+}
+message UploadUueChunkRequest {
+  string operation_id = 1;
+  string filename = 2;
+  uint64 file_size = 3;
+  string sha256 = 4;
+  uint64 offset = 5;
+  bytes data = 6;
+}
+message UueUploadStatus {
+  uint64 received_bytes = 1;
+  bool complete = 2;
+}
+message CommitUueRequest {
+  // body is the author's text only; server adds the staged UUE file.
+  CreateMessageRequest message = 1;
+}
+message UueSendStatus {
+  string operation_id = 1;
+  string state = 2;
+  uint32 total_parts = 3;
+  uint32 saved_parts = 4;
+  repeated MessageReference messages = 5;
+  string diagnostic = 6;
+  string filename = 7;
+  uint64 file_size = 8;
+  string sha256 = 9;
+}

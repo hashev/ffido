@@ -1,0 +1,17 @@
+--- cfg.c
++++ cfg.c
+@@ -31,0 +32 @@
++#include <stdbool.h>
+@@ -56,0 +58,3 @@
++
++/* FFIDO: only configuration file opens, after HPT expansion. */
++extern FILE * ffido_config_open(const char * path, unsigned depth);
+@@ -99 +103 @@
+-    hcfg          = fopen(conf_name, "rb");
++    hcfg          = ffido_config_open(conf_name, 0);
+@@ -386 +390 @@
+-                        if(dest - parsed >= curlen - 2)
++                        if((size_t)(dest - parsed) >= curlen - 2)
+@@ -783 +787 @@
+-            hcfg = fopen(p, "rb");
++            hcfg = ffido_config_open(p, (unsigned)sp + 1);

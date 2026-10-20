@@ -1,0 +1,47 @@
+schema: spec-driven
+
+context: |
+  Изменения общего HTTP-контракта должны учитывать обе стороны: клиент и сервер.
+  Совместное размещение компонентов не означает, что интеграция между ними завершена.
+  Существующие архивы относятся к прежней структуре проекта и сохраняются без переписывания.
+
+rules:
+  proposal:
+    - Пиши на русском и указывай затронутые компоненты монорепозитория.
+  design:
+    - Пиши на русском; для общего API описывай совместимость клиента и сервера.
+  specs:
+    - Пиши на русском и сохраняй канонические заголовки OpenSpec на английском.
+  tasks:
+    - Пиши на русском; используй пути относительно корня монорепозитория и проверяемые критерии завершения.
+
+# Project context (optional)
+# Add only constraints that should guide OpenSpec artifacts and workflows.
+# Include constraints an agent cannot infer by reading the code.
+# Keep general project documentation and discoverable codebase facts out.
+# Example:
+#   context: |
+#     Designs and tasks must cover Windows, macOS, and Linux
+#     Write all artifacts in Spanish
+
+# Per-artifact rules (optional)
+# Add custom rules for specific artifacts.
+# Example:
+#   rules:
+#     proposal:
+#       - Keep proposals under 500 words
+#       - Always state what is out of scope
+#     tasks:
+#       - Break tasks into chunks of max 2 hours
+
+# Per-operation guidance (optional)
+# Add advisory guidance for how apply and archive work should be conducted.
+# This is separate from artifact rules above.
+# Example:
+#   operations:
+#     apply:
+#       guidance:
+#         - Keep test summaries concise
+#     archive:
+#       guidance:
+#         - Summarize the archive outcome before finishing

@@ -1,0 +1,32 @@
+# Build outputs and tool caches
+build/
+.cache/
+.DS_Store
+*.log
+__pycache__/
+
+# Backend local configuration and runtime data
+/apps/backend/config.json
+/apps/backend/uploads/
+/apps/backend/*.db
+/apps/backend/*.db-shm
+/apps/backend/*.db-wal
+/apps/backend/compile_commands.json
+
+# Keep Flutter's platform-specific ignore rules in apps/frontend.
+
+# Default local authentication key
+/apps/backend/data/session.key
+
+# Publication credentials and local runtime material
+.env
+*.jks
+*.keystore
+*.p12
+*.pfx
+*.jhr
+*.jdt
+*.jdx
+*.jlr
+/apps/backend/tmp/
+/apps/frontend/android/key.properties

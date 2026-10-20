@@ -1,0 +1,27 @@
+# cfg.c from huskyproject/fidoconf 62c963a6f078905660f2c0b3a6929383823190c5.
+# Replace only that archive member; all parsing semantics remain in Husky.
+set(FFIDO_FIDOCONFIG_SOURCE "" CACHE PATH "Matching fidoconf source tree for mapped includes")
+if(FFIDO_FIDOCONFIG_SOURCE)
+  set(cfg_source "${FFIDO_FIDOCONFIG_SOURCE}/src/cfg.c")
+  file(SHA256 "${cfg_source}" cfg_sha)
+  if(NOT cfg_sha STREQUAL "9c5245d0a1f7fdd12b7eb0a86c8c58b763f0a8db66f9932462f98eb1cc042db4")
+    message(FATAL_ERROR "Unsupported fidoconf cfg.c; use revision 62c963a6f078905660f2c0b3a6929383823190c5")
+  endif()
+  if(NOT FFIDO_FIDOCONFIG_LIBRARY MATCHES "\\.a$")
+    message(FATAL_ERROR "The mapped include adapter requires the matching static archive; set FFIDO_FIDOCONFIG_LIBRARY=/path/to/libfidoconfig.a")
+  endif()
+  find_program(FFIDO_PATCH_EXECUTABLE patch REQUIRED)
+  set(cfg_patched "${CMAKE_CURRENT_BINARY_DIR}/fidoconfig-adapter/cfg.c")
+  file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/fidoconfig-adapter")
+  execute_process(COMMAND "${FFIDO_PATCH_EXECUTABLE}" --silent -o "${cfg_patched}" "${cfg_source}"
+    "${CMAKE_CURRENT_LIST_DIR}/patches/fidoconfig-open.patch" RESULT_VARIABLE patch_result)
+  if(NOT patch_result EQUAL 0)
+    message(FATAL_ERROR "Cannot apply fidoconfig open adapter")
+  endif()
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    "${cfg_source}" "${CMAKE_CURRENT_LIST_DIR}/patches/fidoconfig-open.patch")
+  target_sources(ffido-hpt-auth PRIVATE "${cfg_patched}" src/ftn/path_mapping.cpp)
+  target_include_directories(ffido-hpt-auth PRIVATE include)
+  target_include_directories(ffido-hpt-auth SYSTEM PRIVATE "${FFIDO_FIDOCONFIG_INCLUDE}/fidoconf")
+  target_compile_definitions(ffido-hpt-auth PRIVATE FFIDO_CONFIG_OPEN_ADAPTER=1)
+endif()

@@ -1,0 +1,14 @@
+{
+  "repository": "hashev/ffido",
+  "license": "MIT",
+  "history": "new",
+  "application_id": "io.github.hashev.ffido",
+  "desktop_signing": "unsigned",
+  "flutter": "3.41.6",
+  "android_build_offset": 1000,
+  "expected_packages": [
+    "client-macos-arm64", "client-macos-x86_64", "client-windows-x86_64",
+    "client-linux-x86_64", "client-android-universal",
+    "server-macos-arm64", "server-macos-x86_64", "server-linux-x86_64"
+  ]
+}

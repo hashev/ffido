@@ -1,0 +1,19 @@
+name: Pull request CI
+on:
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    uses: ./.github/workflows/build.yml
+  ci-required:
+    name: ci-required
+    if: always()
+    needs: verify
+    runs-on: ubuntu-24.04
+    steps:
+      - env:
+          RESULT: ${{ needs.verify.result }}
+        run: test "$RESULT" = success
