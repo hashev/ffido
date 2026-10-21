@@ -1256,3 +1256,21 @@ Android APK повторно проверен по production-сертифика
 Flutter analyze без замечаний, OpenSpec strict и whitespace checks прошли.
 В 62 текстовых QA output не найдено production seed/паролей; keystore SHA-256
 не изменился. Контролируемых macOS QA-процессов после cleanup не осталось.
+
+
+Отправка add-managed-updates в PR и первые CI findings (2026-10-22):
+
+- В экспорт добавлен deploy/ с regression test: Compose-конфигурация входит
+  в checkout для PR. Несвязанный архив prepare-github-publication исключён.
+- Widget-тест уведомления теперь завершает настоящий desktop startup I/O через
+  tester.runAsync до проверки UI. На Linux/Windows виртуальное время Flutter
+  не дожидалось filesystem futures; проверки уведомления/черновика сохранены.
+  Повторный CI подтвердил 248 passing Flutter tests и 2 существующих skip.
+- Windows smoke выявил WinError 32 при удалении .ffido-ready: Flutter ещё держал
+  handle записи. Теперь маркер публикуется rename временного файла после
+  завершения writeAsString, поэтому updater видит только закрытый целый файл.
+  Локально после исправления analyze и 17 update Flutter-тестов прошли;
+  результат повторной Windows smoke должен оцениваться по последнему CI SHA.
+
+Windows/systemd acceptance остаются открытыми. PR не означает merge или выпуск;
+FFIDO_PUBLICATION_READY=false, публикация и workflow Release не запускались.

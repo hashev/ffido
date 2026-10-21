@@ -258,7 +258,11 @@ Future<void> confirmDesktopStartup() async {
   if (await probe.exists()) {
     final token = await probe.readAsString();
     if (RegExp(r'^[0-9a-f]{32}$').hasMatch(token)) {
-      await File('${root.path}/.ffido-ready').writeAsString(token, flush: true);
+      // Publish only after the writer has closed its Windows file handle.
+      // The updater can then read and remove the complete marker immediately.
+      final pending = File('${root.path}/.ffido-ready.tmp');
+      await pending.writeAsString(token, flush: true);
+      await pending.rename('${root.path}/.ffido-ready');
     }
   }
 }
