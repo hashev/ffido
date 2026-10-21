@@ -15,6 +15,7 @@ import tempfile
 import zipfile
 from urllib.parse import urlparse
 from urllib.request import url2pathname
+from update_metadata import COMPATIBILITY, package_platform
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 DEBIAN_DOCS = pathlib.Path('/usr/share/doc')
 
@@ -276,6 +277,11 @@ def package(component, os_name, arch, identity, output, build, deps, public=Fals
             shutil.copy2(source, stage/'ffido.apk')
         else:
             raise ValueError('Unsupported package target')
+        if component == 'client' and os_name in {'windows', 'linux'}:
+            helper = ROOT/'build/desktop-updater'/os_name/('ffido-updater.exe' if os_name == 'windows' else 'ffido-updater')
+            if not helper.is_file(): raise ValueError('Missing standalone desktop updater')
+            shutil.copy2(helper, stage/helper.name)
+            shutil.copytree(ROOT/'build/desktop-updater/licenses', stage/'legal/updater')
         verify_legal(stage, component, os_name)
         toolchain = {'python': platform.python_version(), 'flutter': settings['flutter']}
         if component == 'server':
@@ -302,7 +308,9 @@ def package(component, os_name, arch, identity, output, build, deps, public=Fals
                         for version in re.findall(r'minos (\d+(?:\.\d+)*)', run('vtool', '-show-build', candidate)):
                             minimums.append(tuple(map(int, version.split('.'))))
             baseline = 'macOS '+'.'.join(map(str, max(minimums)))
-        (stage/'BUILD.json').write_text(json.dumps({**identity, 'component': component, 'os': os_name,
+        update = {**package_platform(component, os_name, arch, baseline),
+                  'compatibility': dict(COMPATIBILITY)}
+        (stage/'BUILD.json').write_text(json.dumps({**identity, **update, 'component': component, 'os': os_name,
             'toolchain': toolchain,
             'architecture': arch, 'signing': signing, 'notarized': False,
             'baseline': baseline}, indent=2)+'\n')
@@ -319,7 +327,8 @@ def package(component, os_name, arch, identity, output, build, deps, public=Fals
             target = output/(basename+'.tar.gz')
             with tarfile.open(target, 'w:gz') as archive:
                 archive.add(stage, arcname=basename)
-        row = {'id': package_id, **identity, 'file': target.name, 'signing': signing,
+        row = {'id': package_id, **identity, **update, 'file': target.name, 'signing': signing,
+               'size': target.stat().st_size,
                'sha256': hashlib.sha256(target.read_bytes()).hexdigest(), 'toolchain': toolchain, 'baseline': baseline}
         (output/(basename+'.package.json')).write_text(json.dumps(row, indent=2)+'\n')
         return target

@@ -1,4 +1,5 @@
 import importlib.util
+import sys
 import json
 import pathlib
 import os
@@ -9,6 +10,8 @@ import unittest
 from unittest.mock import patch
 
 HERE = pathlib.Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+from update_metadata import COMPATIBILITY, package_platform, release_metadata
 
 
 def load(name):
@@ -48,6 +51,15 @@ class ExportTest(unittest.TestCase):
         self.assertFalse((out/'.git').exists())
         self.assertTrue((self.source/'apps/backend/config.json').exists())
         self.assertEqual((out/'apps/backend/main.cpp').read_text(), 'source')
+
+    def test_exports_docker_deployment(self):
+        compose = self.source/'deploy/docker/compose.yaml'
+        compose.parent.mkdir(parents=True)
+        compose.write_text('services: {}\n')
+        out = self.root/'output'
+        report = exporter.export(self.source, out)
+        self.assertIn('deploy/docker/compose.yaml', report['files'])
+        self.assertEqual((out/'deploy/docker/compose.yaml').read_bytes(), compose.read_bytes())
 
     def test_rejects_overwrite_inside_source_and_symlinks(self):
         for path in [self.source/'nested', self.root]:
@@ -129,6 +141,12 @@ class FakeGitHub:
 
 class PublicationTest(unittest.TestCase):
     def setUp(self):
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+        self.signing_key = ('test-only', Ed25519PrivateKey.generate())
+        original_publish = publisher.publish
+        signer = patch.object(publisher, 'publish', side_effect=lambda *args, **kwargs: original_publish(*args, **kwargs, signing_key=self.signing_key))
+        signer.start()
+        self.addCleanup(signer.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = pathlib.Path(self.temp.name)
@@ -136,7 +154,10 @@ class PublicationTest(unittest.TestCase):
         self.file = self.root/'client.apk'
         self.file.write_bytes(b'apk fixture')
         self.row = dict(self.identity, id='client-android-universal', file=self.file.name,
-                        signing='release', sha256=publisher.digest(self.file))
+                        signing='release', sha256=publisher.digest(self.file),
+                        size=self.file.stat().st_size, baseline='API 24 (Android 7)',
+                        compatibility=dict(COMPATIBILITY),
+                        **package_platform('client', 'android', 'universal', 'API 24 (Android 7)'))
         self.sidecar = self.root/'client.package.json'
         self.sidecar.write_text(json.dumps(self.row))
 
@@ -162,6 +183,13 @@ class PublicationTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             publisher.publish(api, self.root, self.identity, [dict(self.row, signing='different')])
 
+    def test_public_signature_cannot_be_replaced(self):
+        api = FakeGitHub()
+        publisher.publish(api, self.root, self.identity, [self.row])
+        api.assets['release-manifest.sig'] = b'changed remote signature'
+        with self.assertRaisesRegex(ValueError, 'Published release differs'):
+            publisher.publish(api, self.root, self.identity, [self.row])
+
     def test_mismatched_existing_release_is_untouched(self):
         api = FakeGitHub()
         api.current = {'isDraft': False, 'body': 'Other commit'}
@@ -172,7 +200,8 @@ class PublicationTest(unittest.TestCase):
 
     def test_container_digest_recorded_and_foreign_container_rejected(self):
         container = {'sha': self.identity['sha'], 'release_tag': self.identity['tag'],
-                     'image': 'docker.io/hashev/ffido', 'digest': 'sha256:'+'a'*64}
+                     'image': 'docker.io/hashev/ffido', 'digest': 'sha256:'+'a'*64,
+                     'version': self.identity['version'], 'tag': self.identity['tag'].removeprefix('v')}
         (self.root/'container.json').write_text(json.dumps(container))
         publisher.publish(FakeGitHub(), self.root, self.identity, [self.row])
         manifest = json.loads((self.root/'release-manifest.json').read_text())
@@ -180,6 +209,61 @@ class PublicationTest(unittest.TestCase):
         (self.root/'container.json').write_text(json.dumps({**container, 'sha': 'b'*40}))
         with self.assertRaises(ValueError):
             publisher.publish(FakeGitHub(), self.root, self.identity, [self.row])
+
+    def test_structured_manifest_preserves_existing_identity_and_packages(self):
+        publisher.publish(FakeGitHub(), self.root, self.identity, [self.row])
+        manifest = json.loads((self.root/'release-manifest.json').read_text())
+        self.assertEqual(manifest['identity'], self.identity)
+        self.assertEqual(manifest['packages'], [self.row])
+        self.assertEqual(manifest['schema_version'], 1)
+        self.assertEqual(manifest['update_sequence'], self.identity['build_number'])
+        self.assertEqual(manifest['channel'], 'dev')
+        self.assertEqual(manifest['compatibility']['state_schema_min'], 9)
+
+    def test_inventory_rejects_mixed_identity_platform_size_and_compatibility(self):
+        for change in ({'version': '2.0.0'}, {'build_number': 1002}, {'stable': True},
+                       {'size': 1}, {'size': True}, {'platform': {'os': 'macos'}},
+                       {'min_os': {'api': 1}}, {'compatibility': {}}, {'component': 'server'}):
+            with self.subTest(change=change):
+                self.sidecar.write_text(json.dumps({**self.row, **change}))
+                with self.assertRaises(ValueError):
+                    publisher.inventory(self.root, self.identity, [self.row['id']])
+
+
+class UpdateMetadataTest(unittest.TestCase):
+    def test_all_packages_have_structured_platforms(self):
+        settings = json.loads((HERE/'settings.json').read_text())
+        baselines = {'macos': 'macOS 15.2', 'linux': 'Ubuntu 24.04 x86_64',
+                     'windows': 'Windows 10 x86_64', 'android': 'API 24 (Android 7)'}
+        for package_id in settings['expected_packages']:
+            component, os_name, arch = package_id.split('-')
+            with self.subTest(package_id=package_id):
+                value = package_platform(component, os_name, arch, baselines[os_name])
+                self.assertEqual(value['component'], component)
+                self.assertEqual(value['platform'], {'os': os_name, 'architecture': arch})
+                self.assertTrue(value['min_os'])
+        self.assertEqual(package_platform('client', 'macos', 'arm64', 'macOS 15.2')['min_os'],
+                         {'version': '15.2'})
+
+    def test_invalid_identity_cannot_be_used_for_updates(self):
+        identity = versions.identity('1.0.0', 'a'*40, 1001, 'refs/heads/master', 'push', True)
+        for change in ({'tag': 'v1.0.0-check.aaaaaaaaaaaa'}, {'version': '01.0.0'},
+                       {'stable': 'false'}, {'build_number': True}, {'build_number': 0},
+                       {'sha': 'bad'}, {'tag': 'v1.0.0-dev.1002.aaaaaaaaaaaa'}):
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                release_metadata({**identity, **change})
+        stable = versions.identity('1.0.0', 'a'*40, 1002, 'refs/tags/v1.0.0', 'push', True)
+        self.assertEqual(release_metadata(stable)['channel'], 'stable')
+        self.assertGreater(release_metadata(stable)['update_sequence'],
+                           release_metadata(identity)['update_sequence'])
+
+    def test_bad_platform_or_unstructured_baseline_is_rejected(self):
+        for args in [('server', 'windows', 'x86_64', 'Windows 10 x86_64'),
+                     ('client', 'macos', 'arm64', 'unknown'),
+                     ('client', 'linux', 'arm64', 'Ubuntu 24.04 x86_64')]:
+            with self.subTest(args=args), self.assertRaises(ValueError):
+                package_platform(*args)
+
 
 class GovernanceTest(unittest.TestCase):
     def test_bypass_ci_permissions_and_access(self):

@@ -142,3 +142,80 @@ container smoke. Затем проверенный OCI-архив текущег
 Release завершается только после этого. Публикации сериализованы, чтобы старый
 запуск не откатил `latest`. При частичном сбое Docker Hub/GitHub повтор продолжает
 тот же выпуск без замены уже опубликованной версии.
+
+## Host-команда управляемого обновления
+
+Пример [deploy/docker/compose.yaml](../deploy/docker/compose.yaml) сохраняет те же
+четыре внешних mounts и UID/GID. Кроме сертификата сервера, в TLS mount должен быть
+`ca.pem` — доверенный CA для readiness. Задайте `FFIDO_VERSION` (опубликованный тег)
+и `FFIDO_SERVER_NAME` (DNS-имя в сертификате). Сначала проверьте обычный запуск
+`docker compose -f deploy/docker/compose.yaml up -d ffido`.
+
+На Linux/macOS-хосте подготовьте Python 3.10+ и update dependencies в отдельном
+окружении, настройте production trust anchors по руководству выпуска:
+
+```sh
+python3 -m venv build/update-venv
+build/update-venv/bin/python -m pip install -r scripts/update/requirements.txt
+build/update-venv/bin/python scripts/update/ffido-docker-update.py check --compose-file deploy/docker/compose.yaml --service ffido
+build/update-venv/bin/python scripts/update/ffido-docker-update.py apply --compose-file deploy/docker/compose.yaml --service ffido
+```
+
+Команда скачивает точный digest, останавливает только `ffido`, проверяет schema
+постоянного состояния через старый образ и пересоздаёт только этот сервис.
+Пользовательский Compose, mounts, UID/GID и FTN-конфиги не переписываются.
+Успех означает healthcheck TLS gRPC, а не только состояние running.
+
+Рядом с Compose создаётся `.ffido-update/`: `image-override.json`, подписанные
+метаданные, предыдущий digest и журнал. Для последующих ручных start/up используйте
+оба файла, чтобы не вернуть старый version tag из исходного Compose:
+
+```sh
+docker compose -f deploy/docker/compose.yaml -f deploy/docker/.ffido-update/image-override.json up -d ffido
+```
+
+`apply` после обрыва продолжает записанную операцию и заново проверяет подпись.
+При ошибке готовности выводится неуспех; автоматического rollback нет. Команда
+`rollback` с теми же `--compose-file/--service` проверяет совместимость предыдущего
+образа с текущей schema. При несовместимости нужны согласованная backup и отдельное
+восстановление; бинарники не откатываются поверх новых данных вслепую.
+
+При переходе с `docker run` остановите прежний контейнер, сохраните его digest и
+перенесите те же mounts, UID/GID, порт и конфигурацию в Compose. Не удаляйте volumes
+и не запускайте два backend над одними JAM. Docker socket в контейнер не передаётся;
+внутри официального образа native `update apply` отказывает с указанием host-пути.
+
+### Локальная проверка registry/Compose без публикации
+
+Для повторяемого QA используется `scripts/update/test_compose_flow.py`. Нужны
+Docker/Compose, локальные amd64-образы A/B, Flutter/Dart из закреплённого SDK
+и Python-окружение с `scripts/update/requirements.txt`:
+
+```sh
+build/update-venv/bin/python scripts/update/test_compose_flow.py \
+  --before ffido:managed-updates --after ffido:managed-updates-final \
+  --directory build/managed-updates-compose-local
+```
+
+Каталог результата должен отсутствовать. Скрипт запускает временный registry
+только на `127.0.0.1` и отправляет туда только локальные тестовые образы.
+В изолированной копии updater заменяются registry allowlist и transport
+обнаружения релиза: GitHub-ответы берутся из локального fixture, manifest
+подписан одноразовым Ed25519-ключом. Production trust store и allowlist
+не изменяются. Это проверка настоящих pull по digest, Docker и Compose;
+она не подтверждает доступ к GitHub Releases или Docker Hub.
+
+Проверяются перенос с `docker run` на те же bind mounts/UID/GID, check, apply,
+TLS gRPC readiness, rollback, сохранность сессии/сообщения/metadata/uploads,
+неизменность пользовательского Compose и соседнего контейнера. Неверная подпись
+не останавливает A; несовместимая schema возвращает A в работу без переключения.
+Для исходного локального образа с tag `local` только QA-слой BUILD.json/OCI labels
+нормализуется до v1.0.0/41001; серверные бинарники не подменяются.
+Стенд использует UID/GID 0:0 для синтетических bind mounts и сохраняет их при
+переходе; production 10001:10001 отдельно покрыт container smoke.
+
+В конце удаляются только собственные тестовые контейнеры/сеть/теги. Registry
+данные находятся в tmpfs, синтетические bind mounts остаются в каталоге отчёта;
+удаление volumes и Docker socket внутри FFIDO не используются.
+Результат — `result.json`, команды и диагностика — `commands.log`; временные
+TLS private keys, пароль HPT и файл сессии удаляются при завершении.

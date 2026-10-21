@@ -1,3 +1,4 @@
+import '../updates/update_controller.dart';
 import '../utils/refresh_on_resume.dart';
 import '../widgets/uue_body.dart';
 import '../files/uue_files.dart';
@@ -911,6 +912,11 @@ class _ComposeScreenState extends State<_ComposeScreen> {
   @override
   void initState() {
     super.initState();
+    appUpdates.guardExit(
+      this,
+      // Не завершаем приложение, пока открыт редактор или ожидается отправка.
+      () => false,
+    );
     epoch = widget.repository.epoch;
     unawaited(loadUueLimits());
     destination = widget.destination;
@@ -944,6 +950,7 @@ class _ComposeScreenState extends State<_ComposeScreen> {
 
   @override
   void dispose() {
+    appUpdates.removeExitGuard(this);
     unawaited(cancellation.cancel());
     unawaited(subscription.cancel());
     composerScroll.dispose();

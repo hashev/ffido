@@ -23,7 +23,10 @@ class DesktopProfile {
       ? 'ffido_session_v1:$endpoint'
       : 'ffido_profile_session_v1:$id:$endpoint';
 
-  static Future<void> initialize() async {
+  static Future<void> ready = Future<void>.value();
+  static Future<void> initialize() => ready = _initialize();
+
+  static Future<void> _initialize() async {
     if (!supported) return;
     current = DesktopProfile(
       await channel.invokeMethod<String>('getProfile') ?? 'default',

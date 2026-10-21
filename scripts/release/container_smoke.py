@@ -13,7 +13,7 @@ def run(*args, **kwargs):
     return subprocess.run(args, check=True, text=True, **kwargs)
 
 
-def smoke(image):
+def smoke(image, upgrade=None):
     info = json.loads(subprocess.check_output(['docker', 'image', 'inspect', image], text=True))[0]
     assert info['Architecture'] == 'amd64' and info['Os'] == 'linux'
     assert info['Config']['User'] == '10001:10001'
@@ -32,10 +32,12 @@ def smoke(image):
         'ldd /opt/ffido/bin/fidoback')
     result = subprocess.run([*base, image], capture_output=True, text=True, timeout=30)
     assert result.returncode != 0 and result.stderr+result.stdout, 'Missing configuration accepted'
-    run(sys.executable, str(ROOT/'scripts/check_acceptance.py'), '--native-only', '--container', image)
+    run(sys.executable, str(ROOT/'scripts/check_acceptance.py'), '--native-only', '--container', image, *(['--container-upgrade', upgrade] if upgrade else []))
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('image')
-    smoke(parser.parse_args().image)
+    parser.add_argument('--upgrade')
+    args = parser.parse_args()
+    smoke(args.image, args.upgrade)

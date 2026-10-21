@@ -9,7 +9,7 @@ import re
 import shutil
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
-TOP = {'apps', 'contracts', 'tools', 'scripts', 'cmake', 'docs', 'openspec', '.github'}
+TOP = {'apps', 'contracts', 'tools', 'scripts', 'cmake', 'docs', 'openspec', '.github', 'deploy'}
 FILES = {'README.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'CONTRIBUTING.md',
          'AGENTS.md', 'Dockerfile', '.dockerignore', '.gitignore', '.clang-format', '.clang-tidy', 'CMakeLists.txt', 'build.sh'}
 SKIP = {'.git', 'build', '.cache', '.dart_tool', '.pub-cache', '.pub', 'coverage',

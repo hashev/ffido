@@ -1,3 +1,6 @@
+import '../updates/update_controller.dart';
+import '../updates/update_ui.dart';
+
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -29,6 +32,7 @@ class _SettingsWidgetState extends State<SettingsWidget> {
   final _password = TextEditingController();
   bool _busy = false;
   String _message = '';
+  String _savedName = '', _savedAddress = '', _savedEndpoint = '';
   Map<String, List<String>> _errors = {};
   ApiClient get _client => widget.client ?? apiClient;
   @override
@@ -36,6 +40,16 @@ class _SettingsWidgetState extends State<SettingsWidget> {
     super.initState();
     _endpoint = TextEditingController(text: _client.endpoint.toString());
     _message = widget.initialMessage;
+    _savedEndpoint = _endpoint.text;
+    appUpdates.guardExit(
+      this,
+      () =>
+          !_busy &&
+          _password.text.isEmpty &&
+          _endpoint.text == _savedEndpoint &&
+          _name.text == _savedName &&
+          _address.text == _savedAddress,
+    );
     _loadFields();
   }
 
@@ -51,11 +65,14 @@ class _SettingsWidgetState extends State<SettingsWidget> {
           _client.session?.profile.address ??
           prefs.getString('ffido_address_v1') ??
           '';
+      _savedName = _name.text;
+      _savedAddress = _address.text;
     });
   }
 
   @override
   void dispose() {
+    appUpdates.removeExitGuard(this);
     _endpoint.dispose();
     _name.dispose();
     _address.dispose();
@@ -92,6 +109,9 @@ class _SettingsWidgetState extends State<SettingsWidget> {
           _name.text = _client.session!.profile.name;
           _address.text = _client.session!.profile.address;
         }
+        _savedName = _name.text;
+        _savedAddress = _address.text;
+        _savedEndpoint = _endpoint.text;
       });
     } on ValidationException catch (error) {
       if (mounted) {
@@ -141,7 +161,10 @@ class _SettingsWidgetState extends State<SettingsWidget> {
 
   @override
   Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(title: const Text('Подключение к FFIDO')),
+    appBar: AppBar(
+      title: const Text('Подключение к FFIDO'),
+      actions: const [UpdateButton()],
+    ),
     body: ListView(
       padding: const EdgeInsets.all(16),
       children: [

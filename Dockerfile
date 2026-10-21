@@ -39,6 +39,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
     && groupadd --gid 10001 ffido && useradd --uid 10001 --gid 10001 --no-create-home ffido \
     && mkdir -p /var/lib/ffido /etc/ffido && chown 10001:10001 /var/lib/ffido
 COPY --from=builder /bundle/ /opt/ffido/
+RUN touch /opt/ffido/share/ffido/container-distribution
 COPY apps/backend/config.container.example.json /opt/ffido/share/ffido/config.container.example.json
 ARG FFIDO_REVISION=0000000000000000000000000000000000000000
 ARG FFIDO_VERSION=1.0.0

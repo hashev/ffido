@@ -15,3 +15,5 @@ PRODUCT_COPYRIGHT = Copyright © 2026 hashev and FFIDO contributors. MIT License
 
 // Each release package is built on its matching native runner.
 #include "Architecture.xcconfig"
+
+#include "Updates.xcconfig"

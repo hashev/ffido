@@ -7,12 +7,14 @@ import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 
 class MainActivity : FlutterActivity() {
+    private var updater: AndroidUpdater? = null
     private var pendingResult: MethodChannel.Result? = null
     private var pendingBytes: ByteArray? = null
     private val saveRequest = 7421
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        updater = AndroidUpdater(this, flutterEngine.dartExecutor.binaryMessenger)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "org.ffido/files")
             .setMethodCallHandler { call, result ->
                 if (call.method != "saveUue") { result.notImplemented(); return@setMethodCallHandler }
@@ -40,6 +42,7 @@ class MainActivity : FlutterActivity() {
 
     @Deprecated("Android callback retained for FlutterActivity compatibility")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        if (requestCode == AndroidUpdater.permissionRequest) { updater?.permissionReturned(); return }
         if (requestCode != saveRequest) { super.onActivityResult(requestCode, resultCode, data); return }
         val result = pendingResult ?: return
         val bytes = pendingBytes

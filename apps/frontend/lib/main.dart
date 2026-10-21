@@ -1,3 +1,12 @@
+import 'dart:async';
+
+import 'updates/update_host_stub.dart'
+    if (dart.library.io) 'updates/update_host_io.dart'
+    as update_host;
+import 'updates/update_ui.dart';
+
+import 'package:flutter/services.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import 'platform/desktop_profile.dart';
@@ -50,6 +59,10 @@ Future<void> initializeApp() async {
   } on UnauthorizedException {
     startupMessage =
         'Срок входа истёк или доступ изменён. Введите пароль снова.';
+  } on PlatformException {
+    startupMessage = defaultTargetPlatform == TargetPlatform.macOS
+        ? 'Не удалось прочитать сессию. Разрешите доступ к Keychain или войдите снова; настройки профиля сохранены.'
+        : 'Не удалось прочитать защищённую сессию. Войдите снова; настройки профиля сохранены.';
   } catch (_) {
     startupMessage =
         'Не удалось восстановить вход. Проверьте сеть и подключитесь снова.';
@@ -57,8 +70,34 @@ Future<void> initializeApp() async {
 }
 
 Future<void> main() async {
-  await initializeApp();
-  runApp(const ReaderApp());
+  WidgetsFlutterBinding.ensureInitialized();
+  await update_host.acquireDesktopLease();
+  final initialized = initializeApp().then((_) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      unawaited(update_host.confirmDesktopStartup());
+    });
+  });
+  runApp(
+    FutureBuilder<void>(
+      future: initialized,
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.done &&
+            !snapshot.hasError) {
+          return const ReaderApp();
+        }
+        return MaterialApp(
+          builder: (context, child) => UpdateShell(child: child!),
+          home: Scaffold(
+            body: Center(
+              child: snapshot.hasError
+                  ? const Text('Не удалось запустить приложение')
+                  : const CircularProgressIndicator(),
+            ),
+          ),
+        );
+      },
+    ),
+  );
 }
 
 class ReaderApp extends StatelessWidget {
@@ -68,6 +107,7 @@ class ReaderApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'FFIDO',
+      builder: (context, child) => UpdateShell(child: child!),
       theme: readerTheme(),
       initialRoute: '/',
       routes: {

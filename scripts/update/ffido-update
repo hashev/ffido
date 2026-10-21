@@ -1,0 +1,14 @@
+#!/usr/bin/env python3
+"""Installed CLI entry point; no shell or remotely supplied commands."""
+import pathlib
+import sqlite3
+import sys
+here = pathlib.Path(__file__).resolve()
+root = here.parent.parent
+sys.path.insert(0, str(root/'share/ffido/update' if here.parent.name == 'bin' else here.parent))
+try:
+    import server
+    raise SystemExit(server.main(distribution=root))
+except (OSError, ValueError, KeyError, sqlite3.Error, ImportError) as error:
+    print('Update failed: '+str(error)+'. See the update runtime setup in README.', file=sys.stderr)
+    raise SystemExit(1)

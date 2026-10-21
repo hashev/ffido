@@ -57,6 +57,15 @@ final class ProfileLease {
       close(descriptor)
       throw busy ? ProfileError.busy(profile.id) : ProfileError.storage
     }
+    // A locked descriptor is authoritative; GUI process inventories omit some
+    // directly launched --profile instances. Keep PID metadata on this inode.
+    let record: [String: Any] = ["pid": getpid(), "profile": profile.id,
+                               "bundle": Bundle.main.bundleURL.standardizedFileURL.path]
+    guard let data = try? JSONSerialization.data(withJSONObject: record),
+          ftruncate(descriptor, 0) == 0, lseek(descriptor, 0, SEEK_SET) == 0,
+          data.withUnsafeBytes({ write(descriptor, $0.baseAddress, data.count) }) == data.count else {
+      close(descriptor); throw ProfileError.storage
+    }
   }
   deinit { close(descriptor) }
 }

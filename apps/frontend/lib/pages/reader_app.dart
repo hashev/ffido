@@ -1,3 +1,4 @@
+import '../updates/update_ui.dart';
 import '../models/conference.dart';
 import '../api/api_exceptions.dart';
 import '../utils/refresh_on_resume.dart';
@@ -227,6 +228,7 @@ class _MainScreenState extends State<MainScreen>
         ),
         centerTitle: true,
         actions: [
+          const UpdateButton(),
           IconButton(
             tooltip: 'Настройки',
             icon: const Icon(Icons.settings),

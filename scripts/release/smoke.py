@@ -65,8 +65,25 @@ def smoke(row, packages):
                 shutil.copytree(volume/'fido.app', directory/'fido.app', symlinks=True)
             finally:
                 run('hdiutil', 'detach', volume)
-            run('codesign', '--verify', '--deep', '--strict', directory/'fido.app')
-            launch([str(directory/'fido.app/Contents/MacOS/fido')], directory)
+            bundle = directory/'fido.app'
+            info = plistlib.loads((bundle/'Contents/Info.plist').read_bytes())
+            assert info['CFBundleVersion'] == str(row['build_number'])
+            assert info['SURequireSignedFeed'] and info['SUVerifyUpdateBeforeExtraction']
+            assert info['SUEnableInstallerLauncherService']
+            assert not info['SUEnableAutomaticChecks']
+            assert (bundle/'Contents/Frameworks/Sparkle.framework').is_dir()
+            embedded = json.loads((bundle/'Contents/Frameworks/App.framework/Resources/flutter_assets/assets/updates/identity.json').read_text())
+            assert all(embedded[key] == row[key] for key in ('tag', 'sha', 'build_number'))
+            trusted = json.loads((ROOT/'scripts/update/public_keys.json').read_text())
+            settings = json.loads((ROOT/'scripts/release/settings.json').read_text())
+            key_id = settings.get('update_key_id') or (next(iter(trusted)) if len(trusted) == 1 else '')
+            assert info.get('SUPublicEDKey', '') == trusted.get(key_id, '')
+            entitlements = plistlib.loads(subprocess.check_output(['codesign', '-d', '--entitlements', ':-', str(bundle)], stderr=subprocess.DEVNULL))
+            assert entitlements['com.apple.security.app-sandbox']
+            lookup = entitlements['com.apple.security.temporary-exception.mach-lookup.global-name']
+            assert all(info['CFBundleIdentifier']+suffix in lookup for suffix in ('-spks', '-spki'))
+            run('codesign', '--verify', '--deep', '--strict', bundle)
+            launch([str(directory/'fido.app/Contents/MacOS/fido'), '--profile', 'package-smoke-'+str(os.getpid())], directory)
         else:
             if package.suffix == '.zip':
                 with zipfile.ZipFile(package) as archive:
@@ -90,11 +107,14 @@ def smoke(row, packages):
                 run(stage/'bin/ffido-admin', '--help', timeout=30)
                 run(sys.executable, ROOT/'scripts/test_admin.py', stage/'bin/ffido-admin')
                 run(sys.executable, ROOT/'scripts/test_hpt_wrapper.py', stage/'bin/ffido-run-hpt')
+                run(sys.executable, ROOT/'scripts/update/test_server_flow.py', '--bundle', stage, '--directory', directory/'managed-server-qa')
                 run('flutter', 'pub', 'get', '--enforce-lockfile', cwd=ROOT/'apps/frontend')
                 run(sys.executable, ROOT/'scripts/check_acceptance.py', '--native-only', '--server', binary)
             elif target == 'windows':
+                run(stage/'ffido-updater.exe', '--help', timeout=30)
                 launch([str(stage/'fido.exe')], directory)
             else:
+                run(stage/'ffido-updater', '--help', timeout=30)
                 binary = stage/'fido'
                 output = subprocess.check_output(['ldd', str(binary)], text=True)
                 assert 'not found' not in output

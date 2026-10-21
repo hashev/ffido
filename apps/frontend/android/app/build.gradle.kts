@@ -39,6 +39,7 @@ android {
 
     buildTypes {
         release {
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             val publicRelease = System.getenv("FFIDO_PUBLIC_RELEASE") == "true"
             if (publicRelease) {
                 require(!System.getenv("FFIDO_ANDROID_KEYSTORE").isNullOrEmpty()) {

@@ -145,8 +145,9 @@ keytool -list -v -keystore ffido-release.jks -alias ffido
 
 Settings → Environments → **release**: разрешить deployment master и контролируемых
 тегов `v*`, без обязательного reviewer (иначе выпуск перестанет быть автоматическим).
-Environment release и политики master/v* уже созданы через gh; секреты ещё не добавлены.
-Создайте environment secrets:
+Environment release и политики master/v* созданы через gh. На 2026-10-22
+перечисленные Android secrets уже присутствуют; повторно создавать ключ не нужно.
+При настройке нового окружения требуются environment secrets:
 
 - `ANDROID_KEYSTORE_BASE64`: Base64 содержимого keystore без дополнительных строк;
 - `ANDROID_KEYSTORE_PASSWORD`;
@@ -241,3 +242,154 @@ Commit/push и публикация выполняются только по о�
 При обновлении этих actions сначала проверяйте новый commit, затем согласованно
 обновляйте pinned SHA в workflow и точечную запись allowlist. Не заменяйте её
 wildcard `docker/*` и не разрешайте все verified actions.
+
+## Подписанные метаданные обновления
+
+Начиная с формата `schema_version: 1`, `release-manifest.json` сохраняет прежние
+`identity`, `packages` и `container` и добавляет:
+
+- `channel`: `stable` или `dev`, согласованный с `identity.stable`;
+- `update_sequence`: `identity.build_number` текущего release workflow;
+- `compatibility`: major протокола и поддерживаемые диапазоны клиента/сервера,
+  диапазон SQLite schema, `config_format` и `jam_format`;
+- у каждого пакета — `component`, `platform.os`, `platform.architecture`,
+  `min_os`, `size` в байтах и `compatibility` наряду с прежним `sha256`;
+- `macos_appcasts`: immutable XML feeds по архитектурам с размером и SHA-256.
+
+Для Android минимум задаётся `min_os.api=24`, macOS — `min_os.version` по реально
+связанным binaries, Windows — version/build, Linux — distribution/version.
+Совместимость с текущим состоянием SQLite объявлена только для schema 9;
+неизвестные форматы не разрешают автоматическую миграцию. Поля не означают,
+что клиент уже проверил версию подключённого сервера через gRPC.
+
+`release-manifest.sig` — JSON с `algorithm: "Ed25519"`, `key_id` и base64 `signature`
+над точными байтами manifest, включая завершающий перевод строки. Получатель
+сначала проверяет подпись встроенным доверенным ключом, затем схему, идентичность,
+последовательность и пакет. Повторная сериализация JSON перед проверкой запрещена.
+macOS feed и архив дополнительно имеют Sparkle Ed25519 signatures; feed связан
+с manifest своим SHA-256. Формат signing block соответствует Sparkle 2.10.0.
+Подпись обновления не является Developer ID, нотариализацией или Authenticode.
+
+`update_sequence` зависит от сохранения истории нумерации release workflow.
+При пересоздании workflow оператор должен сохранить возрастающий build number
+через существующий `android_build_offset`; уменьшение последовательности
+заблокирует обновление у уже видевших новый номер клиентов. Исторические
+неподписанные выпуски остаются доступны вручную и не переписываются.
+
+### Ключ выпуска
+
+`scripts/update/public_keys.json` — источник публичных trust anchors. Подключён
+ключ `ffido-prod-2026-01`; этот же ID выбран в release settings и встроен в
+клиент/Sparkle. Настройка GitHub environment остаётся отдельным шагом: наличие
+публичного ключа в исходниках само по себе не включает выпуск.
+Приватный ключ нельзя помещать в репозиторий, артефакты CI, журналы или чат.
+Для provisioning владелец создаёт и резервирует ключ в защищённом месте вне checkout,
+добавляет только публичный base64 ключ в JSON под устойчивым key ID и настраивает
+в GitHub environment `release`:
+
+- variable `FFIDO_UPDATE_KEY_ID` — выбранный ID;
+- secret `FFIDO_UPDATE_PRIVATE_KEY` — base64 32-байтового Ed25519 seed.
+
+Публичный JSON и ID не являются секретами. После настройки `--check-only` проверяет
+не только полный inventory, но и наличие private key, совпадение его публичной части
+с trust anchors данного исходного дерева. Эта проверка идёт до push образа.
+Отсутствующий, неверный или неизвестный ключ блокирует выпуск. Тестовые ключи
+генерируются только в памяти тестов и не добавляются в trust anchors.
+
+Генератор нового update-ключа для локального запуска владельцем:
+
+```sh
+build/update-venv/bin/python scripts/release/generate_update_key.py \
+  --directory /Users/yurik/Projects/ffido-keys --key-id ffido-prod-2026-01
+```
+
+Он создаёт только `update-private-seed.b64` (секрет) и `update-public.json`
+(публичный JSON trust anchors) вне checkout, с закрытыми правами. Android keystore,
+его пароли, repository settings и GitHub не меняются. Приватное содержимое не
+печатается. При повторном запуске существующая согласованная пара проверяется
+без ротации; неполная/повреждённая пара, иной key ID и небезопасные права дают
+ошибку без перезаписи. `--check-only` проверяет пару, ничего не создавая.
+Сначала сохраните защищённую резервную копию; в чат можно передать только
+`update-public.json`. Android-ключ, которым подписан уже установленный выпуск,
+сохраняйте: этот генератор не заменяет его и не создаёт новый Android signing key.
+
+Для ротации сначала выпустите переходную версию с обоими публичными ключами,
+подписанную прежним ключом. Лишь после её распространения переключайте подпись
+на новый ключ. Потеря всех доверенных ключей требует ручной установки; SHA-256
+или ключ, полученный вместе с неподтверждённым релизом, не восстанавливает доверие.
+
+### Локальная проверка инфраструктуры
+
+Для update tooling нужен Python 3.10+ и отдельное окружение с закреплёнными
+зависимостями; системные пакеты не изменяются:
+
+```sh
+python3 -m venv build/update-venv
+build/update-venv/bin/python -m pip install -r scripts/update/requirements.txt
+build/update-venv/bin/python -m unittest discover -s scripts/release -p 'test_*.py' -v
+build/update-venv/bin/python -m unittest discover -s scripts/update -p 'test_*.py' -v
+```
+
+Тесты publication используют FakeGitHub без сетевой публикации: проверяют подпись
+точных байтов, пакет/архитектуру, подписанный appcast, обязательность ключа, повтор
+draft и неизменяемость публичных manifest/signature/feed. Наличие этой инфраструктуры
+ещё не означает, что UI и платформенные установщики реализованы.
+
+Для macOS выбранный `update_key_id` в `scripts/release/settings.json` должен
+совпадать с ID подписи выпуска (при единственном ключе он выбирается автоматически).
+Генератор identity и signer используют общую проверку trust store: ID должны
+быть корректными, значения — canonical Base64 ровно 32 байт. Неизвестный/пустой
+выбранный ID и несколько ключей без явного выбора блокируют генерацию до записи
+identity, assets, xcconfig и GITHUB_ENV. Пустой trust store допускается только
+для ненастроенной локальной конфигурации без выбранного ID.
+Проверка до публикации запрещает несоответствие ключа, встроенного в Sparkle, и
+подписи архива. Генератор xcconfig экранирует `/` через переменную, чтобы base64
+с `//` не превратился в комментарий Xcode.
+
+Для macOS ad-hoc общая переходная ротация ключей имеет ограничение Sparkle:
+смена ключа вместе с нестабильной ad-hoc code identity может потребовать ручного
+bootstrap новой сборки. Сохраняйте и резервируйте исходный ключ; не обещайте
+бесшовную macOS-ротацию без стабильной Developer ID подписи. Это не меняет
+обычный сценарий обновления с тем же ключом.
+
+
+## Подготовка первого prerelease с managed updates (2026-10-22)
+
+Это первый выпуск новой системы обновлений, а не первый prerelease репозитория.
+Read-only проверка GitHub обнаружила последний prerelease
+`v1.0.0-dev.1005.4159d0bbf466`: version 1.0.0, Android build_number 1005.
+Текущая исходная версия `apps/frontend/pubspec.yaml` — `1.0.0+1`.
+Для dev-выпуска оставляем base version 1.0.0; локальный суффикс +1 не используется
+как публичный versionCode: Release передаёт Flutter явные build-name/build-number.
+При сохранении workflow и offset 1000 следующий новый запуск после run 5 даст
+versionCode 1006 и тег `v1.0.0-dev.1006.<sha12>`. Это нижняя оценка, а не
+зарезервированный номер: пропущенные/проверочные новые запуски тоже расходуют
+run_number. Retry существующего запуска сохраняет номер. Перед публикацией
+снова сверяйте actual run_number с последним публичным Android versionCode.
+QA versionCode 41001/41002 не публиковались и не задают минимум для пользователей.
+
+Проверена передача единой identity из Release в build.yml и Android signing job,
+соответствие постоянному сертификату, выбранный update key и inventory. В environment
+release присутствуют четыре Android secrets, update private key и Docker Hub secrets;
+публичные ANDROID_CERT_SHA256 и FFIDO_UPDATE_KEY_ID совпадают с локальной конфигурацией.
+Наличие secrets не подтверждает их содержимое или работоспособность в Actions:
+реальная signing/publish цепочка нового исходного дерева ещё не запускалась.
+Actionlint и локальные release/updater unit-тесты прошли.
+
+FFIDO_PUBLICATION_READY остаётся false. При false Release выполняет identity/verify,
+но пропускает android-sign и publish. При true publish зависит от всей verify-матрицы
+и android-sign; предварительная проверка inventory и update key идёт до push OCI,
+затем проверяется опубликованный образ и публикуется полный GitHub Release.
+Windows входит в обязательную verify-матрицу: открытая Windows-проверка не обойдена.
+Systemd остаётся отдельной незавершённой проверкой и не покрывается зелёной сборкой.
+
+Следующие действия владельца: сохранить резервную копию ключей; отдельно разрешить
+commit/push текущих изменений и пройти полную PR CI; проверить actual identity,
+комплект пакетов, лицензии и ограничения Windows/systemd; лишь затем отдельным
+решением включить publication flag и запуск выпуска. После выпуска проверить
+анонимную загрузку manifest/signature/appcast и реальный публичный A→B на следующем
+build. Для старых клиентов без updater нужна однократная ручная установка.
+Текущие local check-only main-target сборки не являются release candidates.
+
+Локальный отчёт preflight: build/prerelease-preflight/report.json.
+Workflow dispatch, commit/push, публикация и изменение release-флага не выполнялись.

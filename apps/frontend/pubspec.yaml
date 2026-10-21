@@ -46,6 +46,7 @@ dependencies:
   # Локальное хранилище для кеширования
   shared_preferences: ^2.5.6
   flutter_secure_storage: 11.2.0
+  cryptography: 2.9.0
 
 dev_dependencies:
   integration_test:
@@ -76,6 +77,8 @@ flutter:
   uses-material-design: true
   assets:
     - assets/legal/LICENSE
+    - assets/updates/identity.json
+    - assets/updates/public_keys.json
 
   # To add assets to your application, add an assets section, like this:
   # assets:
