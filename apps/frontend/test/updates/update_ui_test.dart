@@ -26,6 +26,10 @@ void main() {
     (tester) async {
       final text = TextEditingController(text: 'черновик');
       addTearDown(text.dispose);
+      // Desktop startup reads the updater diagnostic file using real I/O.
+      // Complete it outside the widget test's fake async clock on every host.
+      await tester.runAsync(controller.start);
+      expect(controller.available, isNotNull);
       await tester.pumpWidget(
         MaterialApp(
           home: UpdateShell(
