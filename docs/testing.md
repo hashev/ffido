@@ -1274,3 +1274,40 @@ Flutter analyze без замечаний, OpenSpec strict и whitespace checks 
 
 Windows/systemd acceptance остаются открытыми. PR не означает merge или выпуск;
 FFIDO_PUBLICATION_READY=false, публикация и workflow Release не запускались.
+
+
+### Сверка приёмки после первого managed prerelease (2026-10-22)
+
+Эта запись актуализирует прежние отметки об открытых Windows/CI-проверках;
+исторические результаты выше сохранены.
+
+- **5.1 и 5.3:** в CI на Windows x86_64 и Linux x86_64 успешно выполнены
+  `test_desktop_flow.py` и smoke упакованного клиента. Замороженный отдельный
+  updater заменяет весь ZIP/tar.gz bundle с DLL/lib/data, запускает B,
+  подтверждает readiness и сохранность внешнего состояния/preferences.
+  README описывает полную распаковку и первый ручной переход на updater.
+  Windows-отчёт: `build/windows-timeout-fixed-diagnostics/result.json`;
+  журнал подтверждён, helper завершился, B продолжает работать без DLL из
+  временного runtime PyInstaller. Это один Flutter-бинарник с различными
+  метаданными A/B, а не две независимо собранные версии и не проверка
+  защищённой Windows/Linux-сессии.
+- **5.2:** `scripts/update/test_desktop.py` покрывает неверные подпись/пакет,
+  неполный bundle, отказ между rename и восстановление после прерывания,
+  нехватку места, read-only каталог, параллельный updater, работающий процесс,
+  ошибку запуска B и безопасный rollback. Эти тесты и desktop smoke прошли
+  в CI; исходная причина Windows timeout устранена без увеличения таймаута.
+- **8.2:** полная матрица прошла на master `a564b0f`:
+  [CI после merge](https://github.com/hashev/ffido/actions/runs/39761453319)
+  и [Release](https://github.com/hashev/ffido/actions/runs/39766799249).
+  Локальные сохранённые результаты: `build/managed-updates-master-ci-result.json`
+  и `build/managed-updates-first-prerelease-ci-result.json`.
+  Реальные macOS arm64/x86_64 A→B с двумя профилями и Android API 25/36
+  release A→B с production-ключами подтверждены отдельной записью выше и
+  `build/managed-updates-prod-recheck-result.json`: настройки и токены
+  сохранены в настоящих защищённых хранилищах. Сессии синтетические;
+  авторизация живого аккаунта и переход между двумя публичными managed
+  релизами этим локальным прогоном не проверялись.
+
+**6.5 остаётся открытым:** настоящая systemd-проверка не выполнена.
+Эта сверка изменяет документацию и чек-лист, новых сборок/установок,
+коммитов и публикации не выполняет. Итог: 29/30 задач, без архивации.
