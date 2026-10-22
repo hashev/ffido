@@ -88,6 +88,13 @@ jobs:
           else
             xvfb-run -a python scripts/update/test_desktop_flow.py --bundle apps/frontend/build/linux/x64/release/bundle --directory build/desktop-update-qa
           fi
+      - name: Upload desktop update diagnostics
+        if: always() && (matrix.os == 'windows' || matrix.os == 'linux')
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: desktop-update-qa-${{ matrix.os }}
+          path: build/desktop-update-qa/
+          if-no-files-found: ignore
       - name: Package
         env:
           TARGET: ${{ matrix.os }}

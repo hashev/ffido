@@ -2,6 +2,7 @@
 import argparse
 import contextlib
 import json
+import traceback
 import os
 import pathlib
 import shutil
@@ -145,16 +146,29 @@ def apply(root, archive, keys, executable):
     return root/executable
 
 
+def diagnostic(root, message, *, failure=False):
+    # Each append closes its handle; neither renamed bundles nor tests retain it.
+    try:
+        with (root.parent/('.'+root.name+'-update.log')).open('a', encoding='utf-8') as output:
+            output.write(f'{time.monotonic():.3f} {message}\n')
+            if failure: output.write(traceback.format_exc())
+    except OSError:
+        pass  # Diagnostics must not prevent rollback or reporting an error.
+
+
 def run_install(args):
     root = args.root.resolve()
     executable = root/args.executable
     try:
         # Freeze the trust store into the helper; never trust downloaded keys.
         keys = common.strict_json((pathlib.Path(getattr(sys, '_MEIPASS', pathlib.Path(__file__).parent))/'public_keys.json').read_bytes())
+        diagnostic(root, 'Validating and staging desktop update')
         target = apply(root, args.package.resolve(strict=True), keys, args.executable)
+        diagnostic(root, 'Bundle switched; starting client')
         nonce = uuid.uuid4().hex
         (root/'.ffido-launch-probe').write_text(nonce)
         child = subprocess.Popen([str(target)], cwd=target.parent, start_new_session=os.name != 'nt')
+        diagnostic(root, f'Client started with PID {child.pid}; waiting for readiness')
         ready = root/'.ffido-ready'
         deadline = time.monotonic()+30
         while time.monotonic() < deadline:
@@ -163,6 +177,7 @@ def run_install(args):
                 journal = root.parent/('.'+root.name+'-update.json')
                 record = common.strict_json(journal.read_bytes())
                 atomic_record(journal, {**record, 'phase': 'confirmed'})
+                diagnostic(root, 'Client startup confirmed')
                 return 0
             if child.poll() is not None: break
             time.sleep(.25)
@@ -171,6 +186,7 @@ def run_install(args):
         except subprocess.TimeoutExpired: child.kill(); child.wait()
         raise ValueError('New client did not confirm startup')
     except Exception as error:
+        diagnostic(root, 'Desktop installation failed', failure=True)
         # Recovery must take the same process lock as switching: another window
         # may have opened B while startup confirmation was failing.
         try:
@@ -196,13 +212,17 @@ def main():
     root = args.root.resolve()
     try:
         validate_parent(root)
+        # Windowed frozen executables have no stderr and show a blocking dialog
+        # for unhandled exceptions. Keep diagnostics outside the switched bundle.
+        diagnostic(root, f'Updater started; preflight={args.preflight}')
         # This lock spans startup confirmation. The running lock is released
         # before launching Flutter, so its own shared lease can be acquired.
         with install_lock(root, timeout=0, operation=True):
             if args.preflight: return 0
             recover(root)
             return run_install(args)
-    except (OSError, ValueError) as error:
+    except Exception as error:
+        diagnostic(root, 'Desktop updater failed', failure=True)
         print('Update failed: '+str(error), file=sys.stderr)
         return 1
 

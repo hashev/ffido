@@ -76,6 +76,7 @@ def run(args):
     environment = {**os.environ, 'XDG_CONFIG_HOME': str(profile/'config'), 'XDG_DATA_HOME': str(profile/'data'), 'XDG_CACHE_HOME': str(profile/'cache'), 'APPDATA': str(profile/'roaming'), 'LOCALAPPDATA': str(profile/'local')}
     for name in ['config', 'data', 'cache', 'roaming', 'local']: (profile/name).mkdir()
     children = []
+    updater = None
     restore_preferences = {}
     try:
         nonce = secrets.token_hex(16)
@@ -131,6 +132,7 @@ def run(args):
         subprocess.run([str(helper), '--root', str(installed), '--package', str(archive), '--executable', executable, '--preflight'], env=environment, check=True)
         with (work/'B.log').open('w') as log:
             process = subprocess.Popen([str(helper), '--root', str(installed), '--package', str(archive), '--executable', executable], env=environment, stdout=log, stderr=subprocess.STDOUT)
+            updater = process
             assert process.wait(timeout=120) == 0, 'Frozen updater failed; see B.log'
         journal = json.loads((work/'.installed-update.json').read_text())
         assert journal['phase'] == 'confirmed' and journal['tag'] == new['tag']
@@ -144,6 +146,9 @@ def run(args):
         result = {'platform': os_name, 'frozen_helper': True, 'complete_flutter_bundle': True, 'from': old['tag'], 'to': new['tag'], 'startup_confirmed': True, 'external_state_preserved': True, 'preferences_files_verified': len(snapshots), 'same_flutter_binary_with_distinct_bundle_metadata': True}
         (reports/'result.json').write_text(json.dumps(result, indent=2)+'\n'); print(json.dumps(result))
     finally:
+        for name in ['.installed-update.log', '.installed-update.json']:
+            path = work/name
+            if path.exists(): shutil.copy2(path, reports/name.removeprefix('.'))
         # The updater intentionally leaves its new Flutter child running. The
         # readiness probe records no PID; terminate only processes under this QA
         # installation, using platform-native inventory with exact path matching.
@@ -155,13 +160,20 @@ def run(args):
                 except (OSError, ProcessLookupError): pass
         else:
             # Windows test runners expose PowerShell/CIM; arguments are data.
-            script = '$p=$env:FFIDO_QA_EXE; Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -eq $p } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }'
-            subprocess.run(['powershell', '-NoProfile', '-Command', script], env={**environment, 'FFIDO_QA_EXE': str(installed/executable)}, check=False)
+            script = '$paths=@($env:FFIDO_QA_EXE,$env:FFIDO_QA_HELPER); $p=@(Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -in $paths }); $p | Select-Object ProcessId,ParentProcessId,ExecutablePath,CommandLine | ConvertTo-Json; $p | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }'
+            inventory = subprocess.run(['powershell', '-NoProfile', '-Command', script], env={**environment, 'FFIDO_QA_EXE': str(installed/executable), 'FFIDO_QA_HELPER': str(helper)}, text=True, capture_output=True, check=False)
+            (reports/'processes.json').write_text(inventory.stdout)
+        if updater is not None and updater.poll() is None:
+            updater.terminate(); updater.wait(timeout=15)
         for child, log in children:
             if child.poll() is None: child.terminate(); child.wait(timeout=15)
             log.close()
         for name in ['freeze.log', 'A.log', 'B.log']:
-            if (work/name).exists(): shutil.copy2(work/name, reports/name)
+            if (work/name).exists():
+                shutil.copy2(work/name, reports/name)
+                if name == 'B.log': print((work/name).read_text(errors='replace')[-8192:])
+        if (reports/'installed-update.log').exists():
+            print((reports/'installed-update.log').read_text(errors='replace')[-8192:])
         for path, original in restore_preferences.items():
             if original is None: path.unlink(missing_ok=True)
             else: path.write_bytes(original)
