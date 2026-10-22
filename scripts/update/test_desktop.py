@@ -118,6 +118,50 @@ class DesktopTest(unittest.TestCase):
                 install.assert_not_called()
             self.assertEqual(json.loads((self.root/self.asset).read_text())['tag'], 'v1.0.0')
 
+    def test_frozen_windows_child_uses_system_dll_search_and_restores_helper_runtime(self):
+        import ctypes
+        for launch_error in [False, True]:
+            with self.subTest(launch_error=launch_error):
+                dll_directory = Mock(return_value=1)
+                kernel = Mock(SetDllDirectoryW=dll_directory)
+                def launch(*args, **kwargs):
+                    dll_directory.assert_called_once_with(None)
+                    if launch_error: raise OSError('QA spawn failed')
+                    return 'child'
+                with patch.object(sys, 'platform', 'win32'), patch.object(sys, 'frozen', True, create=True), patch.object(sys, '_MEIPASS', 'helper-runtime', create=True), patch.object(ctypes, 'WinDLL', return_value=kernel, create=True), patch.object(desktop.subprocess, 'Popen', side_effect=launch):
+                    if launch_error:
+                        with self.assertRaisesRegex(OSError, 'QA spawn failed'):
+                            desktop.start_client(self.root/self.exe)
+                    else:
+                        self.assertEqual(desktop.start_client(self.root/self.exe), 'child')
+                self.assertEqual([call.args for call in dll_directory.call_args_list], [(None,), ('helper-runtime',)])
+
+    def test_failed_dll_reset_does_not_launch_child(self):
+        import ctypes
+        kernel = Mock(SetDllDirectoryW=Mock(return_value=0))
+        with patch.object(sys, 'platform', 'win32'), patch.object(sys, 'frozen', True, create=True), patch.object(ctypes, 'WinDLL', return_value=kernel, create=True), patch.object(ctypes, 'WinError', return_value=OSError('DLL reset failed'), create=True), patch.object(ctypes, 'get_last_error', return_value=5, create=True), patch.object(desktop.subprocess, 'Popen') as launch:
+            with self.assertRaisesRegex(OSError, 'DLL reset failed'):
+                desktop.start_client(self.root/self.exe)
+            launch.assert_not_called()
+
+    def test_unfrozen_child_launch_does_not_change_dll_search(self):
+        import ctypes
+        with patch.object(sys, 'platform', 'win32'), patch.object(sys, 'frozen', False, create=True), patch.object(ctypes, 'WinDLL', create=True) as dll, patch.object(desktop.subprocess, 'Popen') as launch:
+            desktop.start_client(self.root/self.exe)
+            launch.assert_called_once()
+            dll.assert_not_called()
+
+    def test_windowed_updater_records_unexpected_failure_and_exits(self):
+        import contextlib
+        argv = ['desktop', '--root', str(self.root), '--package', str(self.archive), '--executable', self.exe]
+        with patch.object(sys, 'argv', argv), patch.object(desktop, 'run_install', side_effect=RuntimeError('QA unexpected failure')), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(desktop.main(), 1)
+        report = self.base/'.FFIDO-update.log'
+        self.assertIn('RuntimeError: QA unexpected failure', report.read_text())
+        # Windowed execution must not keep a log handle locked after returning.
+        report.unlink()
+        self.assertEqual(json.loads((self.root/self.asset).read_text())['tag'], 'v1.0.0')
+
     def test_second_updater_cannot_enter_an_active_operation(self):
         import contextlib
         import subprocess

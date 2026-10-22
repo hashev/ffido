@@ -156,6 +156,26 @@ def diagnostic(root, message, *, failure=False):
         pass  # Diagnostics must not prevent rollback or reporting an error.
 
 
+def start_client(executable):
+    # PyInstaller's Windows DLL directory is inherited by native children.
+    # B must not load the helper's runtime DLLs and pin its onefile temp dir.
+    dll_directory = None
+    if sys.platform == 'win32' and getattr(sys, 'frozen', False):
+        import ctypes
+        kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+        dll_directory = kernel32.SetDllDirectoryW
+        dll_directory.argtypes = [ctypes.c_wchar_p]
+        dll_directory.restype = ctypes.c_int
+        if not dll_directory(None): raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        return subprocess.Popen([str(executable)], cwd=executable.parent,
+                                start_new_session=os.name != 'nt')
+    finally:
+        if dll_directory is not None:
+            if not dll_directory(sys._MEIPASS):
+                raise ctypes.WinError(ctypes.get_last_error())
+
+
 def run_install(args):
     root = args.root.resolve()
     executable = root/args.executable
@@ -167,7 +187,7 @@ def run_install(args):
         diagnostic(root, 'Bundle switched; starting client')
         nonce = uuid.uuid4().hex
         (root/'.ffido-launch-probe').write_text(nonce)
-        child = subprocess.Popen([str(target)], cwd=target.parent, start_new_session=os.name != 'nt')
+        child = start_client(target)
         diagnostic(root, f'Client started with PID {child.pid}; waiting for readiness')
         ready = root/'.ffido-ready'
         deadline = time.monotonic()+30
@@ -198,7 +218,7 @@ def run_install(args):
             return 1
         if root.is_dir():
             (root/'.ffido-update-error').write_text('Не удалось установить обновление: '+str(error))
-            if executable.is_file(): subprocess.Popen([str(executable)], cwd=root, start_new_session=os.name != 'nt')
+            if executable.is_file(): start_client(executable)
         return 1
 
 

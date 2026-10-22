@@ -42,7 +42,7 @@ def run(args):
     reports.mkdir(parents=True, exist_ok=False)
     # Installation ownership checks need a real per-user filesystem, not a
     # Docker/macOS bind mount that remaps every file to the host UID.
-    work = pathlib.Path(tempfile.mkdtemp(prefix='ffido-desktop-qa-'))
+    work = pathlib.Path(tempfile.mkdtemp(prefix='ffido-desktop-qa-')).resolve()
     key = Ed25519PrivateKey.generate()
     keys = {'qa': base64.b64encode(key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)).decode()}
     shadow = work/'shadow'
@@ -134,6 +134,13 @@ def run(args):
             process = subprocess.Popen([str(helper), '--root', str(installed), '--package', str(archive), '--executable', executable], env=environment, stdout=log, stderr=subprocess.STDOUT)
             updater = process
             assert process.wait(timeout=120) == 0, 'Frozen updater failed; see B.log'
+        if os_name == 'windows':
+            # A native Flutter child must not inherit DLLs from PyInstaller's
+            # temporary runtime. Also require B to remain alive after helper exit.
+            script = r'$p=@(Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -eq $env:FFIDO_QA_EXE }); if ($p.Count -ne 1) { throw "Expected one running updated client" }; $modules=@((Get-Process -Id $p[0].ProcessId).Modules | Where-Object { $_.FileName -like "*\_MEI*\*" } | Select-Object -ExpandProperty FileName); ConvertTo-Json -InputObject $modules'
+            modules = subprocess.check_output(['powershell', '-NoProfile', '-Command', script], env={**environment, 'FFIDO_QA_EXE': str(installed/executable)}, text=True)
+            (reports/'client-frozen-modules.json').write_text(modules)
+            assert json.loads(modules) == [], 'Flutter inherited the frozen helper DLL runtime'
         journal = json.loads((work/'.installed-update.json').read_text())
         assert journal['phase'] == 'confirmed' and journal['tag'] == new['tag']
         assert json.loads((installed/identity_path).read_text()) == new
