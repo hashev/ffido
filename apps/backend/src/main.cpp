@@ -1,11 +1,18 @@
+#include <fcntl.h>
 #include <grpcpp/grpcpp.h>
 #include <pthread.h>
 #include <signal.h>
 #include <spdlog/spdlog.h>
+#include <sys/file.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #include <fstream>
+#include <iostream>
 #include <thread>
 #include <vector>
+
+#include "ffido/v1/ffido.grpc.pb.h"
 #ifdef __APPLE__
 #include <mach-o/dyld.h>
 #endif
@@ -18,6 +25,28 @@
 #include "storage/jam_writer.hpp"
 #include "storage/point_mailbox.hpp"
 namespace {
+std::filesystem::path ExecutablePath() {
+#ifdef __APPLE__
+  uint32_t size = 0;
+  _NSGetExecutablePath(nullptr, &size);
+  std::vector<char> buffer(size);
+  if (_NSGetExecutablePath(buffer.data(), &size) == 0)
+    return std::filesystem::weakly_canonical(buffer.data());
+#else
+  std::error_code error;
+  auto binary = std::filesystem::read_symlink("/proc/self/exe", error);
+  if (!error)
+    return binary;
+#endif
+  return {};
+}
+struct RunningLease {
+  int fd = -1;
+  ~RunningLease() {
+    if (fd >= 0)
+      close(fd);
+  }
+};
 std::expected<std::string, int> Pem(const std::string& path) {
   if (path.empty())
     return std::unexpected(1);
@@ -55,17 +84,19 @@ int RunBackend(int argc, char** argv) {
     spdlog::error("Invalid configuration");
     return 1;
   }
-  std::filesystem::path binary;
-#ifdef __APPLE__
-  uint32_t size = 0;
-  _NSGetExecutablePath(nullptr, &size);
-  std::vector<char> buffer(size);
-  if (_NSGetExecutablePath(buffer.data(), &size) == 0)
-    binary = buffer.data();
-#else
-  std::error_code executable_error;
-  binary = std::filesystem::read_symlink("/proc/self/exe", executable_error);
-#endif
+  const auto binary = ExecutablePath();
+  RunningLease running;
+  const auto distribution = binary.parent_path().parent_path();
+  if (distribution.parent_path().filename() == "releases") {
+    const auto lock = distribution.parent_path().parent_path() / ".running.lock";
+    running.fd = open(lock.c_str(), O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK, 0600);
+    struct stat identity{};
+    if (running.fd < 0 || fstat(running.fd, &identity) != 0 || !S_ISREG(identity.st_mode) ||
+        flock(running.fd, LOCK_SH | LOCK_NB) != 0) {
+      spdlog::error("Installation is being updated; retry after the update completes");
+      return 1;
+    }
+  }
   if (binary.empty()) {
     spdlog::error("Cannot locate HPT authentication helper");
     return 1;
@@ -182,7 +213,52 @@ int RunBackend(int argc, char** argv) {
 }
 }  // namespace
 int main(int argc, char** argv) {
+  if (argc == 2 && std::string_view(argv[1]) == "--version") {
+    std::ifstream metadata(ExecutablePath().parent_path().parent_path() / "BUILD.json");
+    if (metadata)
+      std::cout << metadata.rdbuf();
+    else
+      std::cout << "FFIDO server (development build)\n";
+    return 0;
+  }
+  if (argc >= 2 && std::string_view(argv[1]) == "update") {
+    const auto helper = ExecutablePath().parent_path() / "ffido-update";
+    std::string command = helper.string();
+    std::vector<char*> arguments{command.data()};
+    for (int index = 2; index < argc; ++index)
+      arguments.push_back(argv[index]);
+    arguments.push_back(nullptr);
+    execv(command.c_str(), arguments.data());
+    std::cerr << "Cannot launch ffido-update; use a complete installed server bundle\n";
+    return 1;
+  }
   fidoback::service::GrpcRuntime runtime;
+  if (argc >= 2 && std::string_view(argv[1]) == "--check-ready") {
+    if (argc != 5) {
+      std::cerr << "Usage: fidoback --check-ready HOST:PORT CA_FILE TLS_SERVER_NAME\n";
+      return 2;
+    }
+    const auto ca = Pem(argv[3]);
+    if (!ca)
+      return 1;
+    bool ready = false;
+    {
+      grpc::SslCredentialsOptions options;
+      options.pem_root_certs = *ca;
+      grpc::ChannelArguments arguments;
+      arguments.SetSslTargetNameOverride(argv[4]);
+      auto channel = grpc::CreateCustomChannel(argv[2], grpc::SslCredentials(options), arguments);
+      auto stub = ffido::v1::Ffido::NewStub(channel);
+      grpc::ClientContext context;
+      context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(5));
+      google::protobuf::Empty request;
+      ffido::v1::UueLimits response;
+      const auto status = stub->GetUueLimits(&context, request, &response);
+      ready = status.ok() || status.error_code() == grpc::StatusCode::UNAUTHENTICATED;
+    }
+    const bool shutdown = runtime.Shutdown(std::chrono::steady_clock::now() + std::chrono::seconds(5));
+    return ready && shutdown ? 0 : 1;
+  }
   const int result = RunBackend(argc, argv);
   if (!runtime.Shutdown(std::chrono::steady_clock::now() + std::chrono::seconds(5))) {
     spdlog::error("gRPC runtime cleanup deadline exceeded");

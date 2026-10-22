@@ -60,6 +60,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--build-dir', type=pathlib.Path, default=ROOT/'build/backend')
     parser.add_argument('--server', type=pathlib.Path, help='Test an unpacked server binary')
+    parser.add_argument('--container-upgrade', help='Local replacement image for A-to-B persistence smoke')
     parser.add_argument('--container', help='Test a local Docker image (native TLS and persistent state)')
     parser.add_argument('--native-only', action='store_true')
     parser.add_argument('--envoy')
@@ -116,6 +117,7 @@ def main():
             # Linux daemon may not see macOS /var aliases; Docker shares /private/tmp.
             root.chmod(0o755)
         config.write_text(json.dumps(configuration))
+        container_image = args.container
         def backend_command():
             if not args.container:
                 return [str(args.server.resolve() if args.server else build/'apps/backend/fidoback'), str(config)]
@@ -123,7 +125,7 @@ def main():
             return ['docker', 'run', '--rm', '--platform', 'linux/amd64',
                     '--user', f'{os.getuid()}:{os.getgid()}',
                     '--name', 'ffido-acceptance-'+root.name, '-v', f'{root}:{root}',
-                    '-p', f'127.0.0.1:{backend_port}:{backend_port}', args.container, str(config)]
+                    '-p', f'127.0.0.1:{backend_port}:{backend_port}', container_image, str(config)]
         def wait_backend(process):
             ready(process, backend_port)
             if args.container:
@@ -181,6 +183,13 @@ def main():
                 with tls.wrap_socket(transport, server_hostname=native_host) as connection:
                     assert connection.selected_alpn_protocol() == 'h2'
             print('PASS: certificate verification and HTTP/2 ALPN on the configured loopback address')
+            probe = (['docker', 'exec', 'ffido-acceptance-'+root.name, 'fidoback'] if args.container
+                     else [str(args.server.resolve() if args.server else build/'apps/backend/fidoback')])
+            run([*probe, '--check-ready', f'{native_host}:{backend_port}' if ':' not in native_host else f'[{native_host}]:{backend_port}', str(ca), native_host])
+            rejected = subprocess.run([*probe, '--check-ready', f'{native_host}:{backend_port}' if ':' not in native_host else f'[{native_host}]:{backend_port}', str(ca), 'invalid.ffido.test'], capture_output=True, text=True, timeout=15)
+            assert rejected.returncode != 0, 'Readiness ignored TLS name validation'
+            print('PASS: TLS gRPC readiness accepts the configured name and rejects a wrong name')
+
             native = run(['dart', 'run', 'tool/native_acceptance.dart'], cwd=ROOT/'apps/frontend', input=json.dumps({'endpoint': f'https://{native_host}:{backend_port}', 'ca': str(ca), 'passwordA': password_a, 'passwordB': password_b}))
             print(native.stdout.strip())
             if args.container:
@@ -193,6 +202,7 @@ def main():
                     run(['docker', 'stop', '--time', '15', 'ffido-acceptance-'+root.name])
                     assert backend.wait(timeout=20) == 0, 'Container did not stop cleanly'
                     if phase == 'save':
+                        if args.container_upgrade: container_image = args.container_upgrade
                         backend = start(backend_command(), 'container-restart.log')
                         wait_backend(backend)
                 print('PASS: container SIGTERM and recreation with durable state')

@@ -508,3 +508,66 @@ cross-container `--cycle` не поддерживается. Изменение 
 
 Сборка Linux amd64, запуск с постоянными данными и публикация `hashev/ffido`:
 [инструкция Docker](../../docs/docker.md).
+
+## Управляемое обновление установленного сервера
+
+Команды `fidoback --version`, `fidoback update check`, `update download`,
+`update apply` и `update rollback` работают до обычного startup. `check/download`
+не открывают JAM и рабочую SQLite. Обычный `fidoback CONFIG` не скачивает обновления.
+Все компоненты сервера и библиотеки заменяются одним комплектом.
+
+Для updater нужен Python 3.10+ с зависимостями из поставляемого
+`share/ffido/update/requirements.txt`. Создайте отдельное окружение вне каталогов
+версий и добавьте его в PATH оператора перед выполнением команд:
+
+```sh
+python3 -m venv /opt/ffido/update-runtime
+/opt/ffido/update-runtime/bin/python -m pip install -r /opt/ffido/current/share/ffido/update/requirements.txt
+export PATH="/opt/ffido/update-runtime/bin:$PATH"
+/opt/ffido/current/bin/fidoback update check
+/opt/ffido/current/bin/fidoback update download --install-root /opt/ffido
+```
+
+Первый переход с ручной установки выполняется при остановленных экземплярах
+сервера. Сохраните согласованную backup с HPT по прежней инструкции. Подготовьте
+`/opt/ffido/releases/vX.Y.Z/` и распакуйте туда полный текущий серверный пакет,
+убрав только внешний каталог архива; `bin`, `lib`, `share`, `BUILD.json` должны
+находиться непосредственно в каталоге версии. Создайте относительную ссылку
+`/opt/ffido/current -> releases/vX.Y.Z`. Конфигурация, TLS, JAM, SQLite и session key
+должны остаться вне `releases/`. Updater отказывает при неизвестном layout.
+
+Установкой владеет оператор обновления, каталог не должен быть доступен группе
+или остальным пользователям на запись. Для непривилегированного пользователя
+службы заранее создайте `/opt/ffido/.running.lock` с правами 0600 и владельцем
+этого пользователя; файл доступен оператору обновления. Не удаляйте lock при работе.
+Служба использует путь `/opt/ffido/current/bin/fidoback /etc/ffido/config.json`.
+
+Foreground: завершите сервер по SIGTERM, выполните apply, запустите новый сервер
+прежней командой и проверьте его. Для systemd последовательность такая:
+
+```sh
+sudo systemctl stop ffido.service
+/opt/ffido/current/bin/fidoback update apply --install-root /opt/ffido --config /etc/ffido/config.json
+sudo systemctl start ffido.service
+/opt/ffido/current/bin/fidoback --check-ready 127.0.0.1:8080 /etc/ffido/tls/ca.pem fido.example.org
+```
+
+На macOS аналогично: `launchctl bootout` своего plist, apply, затем
+`launchctl bootstrap` того же plist и `--check-ready`. Updater не угадывает label
+службы и не вызывает sudo. Запуск и остановку выполняйте с прежними пользователем,
+правами и путями; server daemon не получает полномочий обновлять установку.
+
+`--check-ready HOST:PORT CA_FILE TLS_SERVER_NAME` проверяет TLS и существующий
+неизменяющий gRPC-запрос с deadline. Неверное имя или CA дают ненулевой результат.
+
+Для отката остановите службу, выполните `update rollback --install-root ... --config ...`,
+затем запустите и проверьте её. Откат разрешён только к подписанному сохранённому
+полному комплекту с совместимой схемой. Для bootstrap-версии без подписанного
+манифеста автоматический rollback недоступен: сохраните её и согласованную backup
+для ручного восстановления. Новые версии не мигрируют неизвестные форматы:
+несовместимая schema требует отдельной процедуры, а не принудительного downgrade.
+
+Производственный ключ обновлений должен быть настроен по
+[руководству выпуска](../../docs/github-publication.md). Пустой trust store не даёт
+права устанавливать неподтверждённый пакет. В Docker native apply запрещён;
+используйте host-команду из [инструкции Docker](../../docs/docker.md).

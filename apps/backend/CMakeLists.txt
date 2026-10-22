@@ -182,3 +182,14 @@ endif()
 install(TARGETS fidoback ffido-admin ffido-hpt-auth RUNTIME DESTINATION bin COMPONENT ffido)
 install(PROGRAMS ${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/run_hpt.py DESTINATION bin RENAME ffido-run-hpt COMPONENT ffido)
 install(FILES config.example.json DESTINATION share/ffido COMPONENT ffido)
+
+install(PROGRAMS ${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/update/ffido-update DESTINATION bin COMPONENT ffido)
+install(FILES
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/update/common.py
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/update/discovery.py
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/update/server.py
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/update/public_keys.json
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/update/requirements.txt
+  DESTINATION share/ffido/update COMPONENT ffido)
+
+add_test(NAME UpdateCli COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/test_update_cli.py $<TARGET_FILE:fidoback>)

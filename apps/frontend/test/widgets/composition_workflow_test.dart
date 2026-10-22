@@ -1,3 +1,5 @@
+import 'package:fido/updates/update_controller.dart';
+
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -72,6 +74,24 @@ Future<void> reader(
 }
 
 void main() {
+  testWidgets('открытый редактор защищён от завершения updater', (
+    tester,
+  ) async {
+    final api = transport();
+    final repo = await repository(api);
+    addTearDown(api.dispose);
+    await reader(tester, api, repo);
+    await tap(tester, 'Ответить в эху');
+    expect(appUpdates.canExit, isFalse);
+    final fields = find.byType(TextField);
+    await tester.enterText(fields.last, 'Несохранённый текст');
+    expect(appUpdates.canExit, isFalse);
+    expect(find.text('Несохранённый текст'), findsOneWidget);
+    await tester.pageBack();
+    await tester.pumpAndSettle();
+    expect(appUpdates.canExit, isTrue);
+  });
+
   testWidgets(
     'public reply edits visible nested quote and sends exactly that body',
     (tester) async {

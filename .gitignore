@@ -30,3 +30,6 @@ __pycache__/
 *.jlr
 /apps/backend/tmp/
 /apps/frontend/android/key.properties
+
+# Host updater journals and Compose image overrides
+.ffido-update/

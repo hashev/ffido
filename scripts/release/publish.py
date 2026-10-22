@@ -7,6 +7,7 @@ import os
 import pathlib
 import subprocess
 import tempfile
+from update_metadata import release_metadata, validate_package, validate_container
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 
@@ -15,15 +16,15 @@ def digest(path):
 
 
 def inventory(directory, identity, expected):
+    release_metadata(identity)
     rows = []
     for sidecar in directory.glob('*.package.json'):
         row = json.loads(sidecar.read_text())
-        if row['sha'] != identity['sha'] or row['tag'] != identity['tag']:
-            raise ValueError('Package belongs to a different commit/run')
+        validate_package(row, identity)
         name = row['file']
         if pathlib.Path(name).name != name or not (directory/name).is_file():
             raise ValueError('Invalid/missing package file')
-        if digest(directory/name) != row['sha256']:
+        if (directory/name).stat().st_size != row['size'] or digest(directory/name) != row['sha256']:
             raise ValueError('Package checksum mismatch')
         if row['id'] == 'client-android-universal' and row['signing'] != 'release':
             raise ValueError('Public APK is not release-signed')
@@ -52,20 +53,23 @@ class GitHub:
         return json.loads(result.stdout)
 
 
-def publish(api, directory, identity, rows):
+def publish(api, directory, identity, rows, signing_key=None):
+    from update_signing import appcasts, load_key, sign_manifest
+    key_id, key = signing_key or load_key()
     directory = pathlib.Path(directory)
     marker = f"FFIDO SHA {identity['sha']} tag {identity['tag']}"
     manifest = directory/'release-manifest.json'
-    data = {'identity': identity, 'packages': rows}
+    data = {**release_metadata(identity), 'identity': identity, 'packages': rows}
     container_file = directory/'container.json'
     if container_file.exists():
         container = json.loads(container_file.read_text())
-        if container['sha'] != identity['sha'] or container['release_tag'] != identity['tag']:
-            raise ValueError('Container belongs to a different release')
+        validate_container(container, identity)
         data['container'] = container
-    manifest.write_text(json.dumps(data, indent=2)+'\n')
+    data['macos_appcasts'] = appcasts(directory, identity, rows, key)
+    sign_manifest(directory, data, key_id, key)
     sums = directory/'SHA256SUMS'
-    names = [r['file'] for r in rows]+[manifest.name, 'LICENSE', 'THIRD_PARTY_NOTICES.md']
+    names = [r['file'] for r in rows]+[manifest.name, 'release-manifest.sig', 'LICENSE', 'THIRD_PARTY_NOTICES.md']
+    names += [row['file'] for row in data['macos_appcasts']]
     for name in ('LICENSE', 'THIRD_PARTY_NOTICES.md'):
         (directory/name).write_bytes((ROOT/name).read_bytes())
     sums.write_text(''.join(f'{digest(directory/name)}  {name}\n' for name in names))
@@ -74,11 +78,15 @@ def publish(api, directory, identity, rows):
         if marker not in current['body']:
             raise ValueError('Release identity conflicts with existing version')
         if not current['isDraft']:
-            # Idempotent retry only if the already-public manifest is identical.
+            # A public release is immutable, including signatures and feeds.
             with tempfile.TemporaryDirectory() as tmp:
-                api.run('release', 'download', identity['tag'], '--pattern', manifest.name, '--dir', tmp)
-                if digest(pathlib.Path(tmp)/manifest.name) != digest(manifest):
-                    raise ValueError('Published release differs; use a new version')
+                api.run('release', 'download', identity['tag'], '--dir', tmp)
+                expected = names+[sums.name]
+                if {p.name for p in pathlib.Path(tmp).iterdir()} != set(expected):
+                    raise ValueError('Published release assets differ; use a new version')
+                for name in expected:
+                    if digest(pathlib.Path(tmp)/name) != digest(directory/name):
+                        raise ValueError('Published release differs; use a new version')
             return
     else:
         api.run('release', 'create', identity['tag'], '--draft', '--target', identity['sha'],
@@ -109,6 +117,8 @@ if __name__ == '__main__':
     data = json.loads(a.identity.read_text())
     rows = inventory(a.directory, data, settings['expected_packages'])
     if a.check_only:
+        from update_signing import load_key
+        load_key()
         print('PASS: complete release package inventory')
         raise SystemExit(0)
     publish(GitHub(settings['repository']), a.directory, data, rows)

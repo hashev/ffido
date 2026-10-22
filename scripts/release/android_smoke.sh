@@ -3,7 +3,13 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 SDK="${ANDROID_HOME:?Android SDK is required}"
-IMAGE='system-images;android-35;google_apis;x86_64'
+API="${FFIDO_ANDROID_SMOKE_API:-35}"
+case "$API" in
+  24|25) IMAGE="system-images;android-$API;default;x86_64" ;;
+  35) IMAGE='system-images;android-35;google_apis;x86_64' ;;
+  *) echo "Unsupported smoke API: $API" >&2; exit 1 ;;
+esac
+AVD="ffido-smoke-$API"
 export ANDROID_USER_HOME="$RUNNER_TEMP/ffido-android"
 export ANDROID_AVD_HOME="$ANDROID_USER_HOME/avd"
 mkdir -p "$ANDROID_AVD_HOME"
@@ -11,13 +17,13 @@ if ! "$SDK/cmdline-tools/latest/bin/sdkmanager" 'emulator' "$IMAGE" > "$RUNNER_T
   tail -80 "$RUNNER_TEMP/android-sdk-smoke.log"
   exit 1
 fi
-echo no | "$SDK/cmdline-tools/latest/bin/avdmanager" create avd --force --name ffido-smoke --package "$IMAGE" --path "$ANDROID_AVD_HOME/ffido-smoke.avd"
+echo no | "$SDK/cmdline-tools/latest/bin/avdmanager" create avd --force --name "$AVD" --package "$IMAGE" --path "$ANDROID_AVD_HOME/${AVD}.avd"
 "$SDK/cmdline-tools/latest/bin/avdmanager" list avd
-test -f "$ANDROID_AVD_HOME/ffido-smoke.ini"
+test -f "$ANDROID_AVD_HOME/${AVD}.ini"
 sudo chmod a+rw /dev/kvm
-"$SDK/emulator/emulator" -avd ffido-smoke -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect > "$RUNNER_TEMP/ffido-emulator.log" 2>&1 &
+"$SDK/emulator/emulator" -avd "$AVD" -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect > "$RUNNER_TEMP/ffido-emulator.log" 2>&1 &
 EMULATOR_PID=$!
-trap 'kill "$EMULATOR_PID" 2>/dev/null || true' EXIT
+trap 'kill "$EMULATOR_PID" 2>/dev/null || true; wait "$EMULATOR_PID" 2>/dev/null || true' EXIT
 ADB="$SDK/platform-tools/adb"
 booted=false
 for attempt in $(seq 1 120); do
@@ -41,4 +47,11 @@ if "$ADB" logcat -d -b crash | grep -q 'FATAL EXCEPTION'; then
   "$ADB" logcat -d -b crash
   exit 1
 fi
-echo 'PASS: packaged Android APK installed and running on API 35 x86_64'
+echo "PASS: packaged Android APK installed and running on API $API x86_64"
+
+# Real release A→B through FFIDO and the OS installer, with isolated QA keys.
+# This uses the disposable emulator above and never a user's device.
+python3 "$ROOT/scripts/update/test_android_flow.py" \
+  --flutter "$(command -v flutter)" --sdk "$SDK" \
+  --serial "$("$ADB" get-serialno)" \
+  --directory "$ROOT/build/android-update-qa-api$API"

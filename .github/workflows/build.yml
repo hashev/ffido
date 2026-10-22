@@ -16,7 +16,10 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-      - run: python3 -m unittest discover -s scripts/release -p 'test_*.py' -v
+      - run: python3 -m venv build/update-venv
+      - run: build/update-venv/bin/python -m pip install -r scripts/update/requirements.txt
+      - run: build/update-venv/bin/python -m unittest discover -s scripts/update -p 'test_*.py' -v
+      - run: build/update-venv/bin/python -m unittest discover -s scripts/release -p 'test_*.py' -v
   client:
     strategy:
       fail-fast: false
@@ -69,6 +72,29 @@ jobs:
           else
             flutter build "$TARGET" --release --build-name="$FFIDO_BUILD_NAME" --build-number="$FFIDO_BUILD_NUMBER"
           fi
+      - name: Build standalone desktop updater
+        if: matrix.os == 'windows' || matrix.os == 'linux'
+        run: |
+          python -m pip install -r scripts/update/requirements-desktop.txt
+          python -m unittest discover -s scripts/update -p 'test_desktop.py' -v
+          python scripts/release/desktop_updater.py
+      - name: Smoke managed desktop update
+        if: matrix.os == 'windows' || matrix.os == 'linux'
+        env:
+          TARGET: ${{ matrix.os }}
+        run: |
+          if [[ "$TARGET" == windows ]]; then
+            python scripts/update/test_desktop_flow.py --bundle apps/frontend/build/windows/x64/runner/Release --directory build/desktop-update-qa
+          else
+            xvfb-run -a python scripts/update/test_desktop_flow.py --bundle apps/frontend/build/linux/x64/release/bundle --directory build/desktop-update-qa
+          fi
+      - name: Upload desktop update diagnostics
+        if: always() && (matrix.os == 'windows' || matrix.os == 'linux')
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: desktop-update-qa-${{ matrix.os }}
+          path: build/desktop-update-qa/
+          if-no-files-found: ignore
       - name: Package
         env:
           TARGET: ${{ matrix.os }}
@@ -78,7 +104,11 @@ jobs:
         run: python scripts/release/smoke.py client-${{ matrix.os }}-${{ matrix.arch }}
       - name: Install and launch Android APK
         if: matrix.os == 'android'
-        run: bash scripts/release/android_smoke.sh
+        run: |
+          bash scripts/release/android_smoke.sh
+          for api in 24 25; do
+            FFIDO_ANDROID_SMOKE_API="$api" bash scripts/release/android_smoke.sh
+          done
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: client-${{ matrix.os }}-${{ matrix.arch }}
@@ -183,7 +213,10 @@ jobs:
           ARCH: ${{ matrix.arch }}
         run: python3 scripts/release/package.py server "$TARGET" "$ARCH" --identity build/identity.json
       - name: Smoke packaged server and TLS client
-        run: python3 scripts/release/smoke.py server-${{ matrix.os }}-${{ matrix.arch }}
+        run: |
+          python3 -m venv build/server-update-tools
+          build/server-update-tools/bin/pip install -r scripts/update/requirements.txt
+          build/server-update-tools/bin/python scripts/release/smoke.py server-${{ matrix.os }}-${{ matrix.arch }}
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always() && hashFiles('build/packages/*.package.json') != ''
         with:

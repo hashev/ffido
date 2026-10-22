@@ -121,11 +121,17 @@ jobs:
         run: |
           mkdir -p build/packages
           find build/downloads -type f \( -path '*/client-android-universal/*' -o -path '*/release-identity/*' \) -prune -o -type f -exec cp {} build/packages/ \;
+      - name: Prepare update signing runtime
+        run: |
+          python3 -m venv build/update-venv
+          build/update-venv/bin/python -m pip install -r scripts/update/requirements.txt
       - name: Publish checked container
         env:
+          FFIDO_UPDATE_KEY_ID: ${{ vars.FFIDO_UPDATE_KEY_ID }}
+          FFIDO_UPDATE_PRIVATE_KEY: ${{ secrets.FFIDO_UPDATE_PRIVATE_KEY }}
           FFIDO_PUBLICATION_READY: ${{ vars.FFIDO_PUBLICATION_READY }}
         run: |
-          python3 scripts/release/publish.py build/packages --identity build/container/identity.json --check-only
+          build/update-venv/bin/python scripts/release/publish.py build/packages --identity build/container/identity.json --check-only
           python3 scripts/release/container_publish.py build/container/image.tar \
             --identity build/container/identity.json --output build/packages/container.json
           image=$(python3 -c 'import json; d=json.load(open("build/packages/container.json")); print(d["image"]+"@"+d["digest"])')
@@ -134,6 +140,8 @@ jobs:
           python3 scripts/release/container_smoke.py "$image"
       - name: Publish complete release
         env:
+          FFIDO_UPDATE_KEY_ID: ${{ vars.FFIDO_UPDATE_KEY_ID }}
+          FFIDO_UPDATE_PRIVATE_KEY: ${{ secrets.FFIDO_UPDATE_PRIVATE_KEY }}
           GH_TOKEN: ${{ github.token }}
           FFIDO_PUBLICATION_READY: ${{ vars.FFIDO_PUBLICATION_READY }}
-        run: python3 scripts/release/publish.py build/packages --identity build/downloads/release-identity/identity.json
+        run: build/update-venv/bin/python scripts/release/publish.py build/packages --identity build/downloads/release-identity/identity.json

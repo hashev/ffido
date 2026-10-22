@@ -793,3 +793,484 @@ OpenSSL 3.5.9; macOS CI использует Homebrew OpenSSL CLI. Провер�
 (macOS ad-hoc); APK имеет только тестовую подпись. Постоянный Android release-key
 нужен перед включением публичного выпуска. Apple/Windows сертификаты и
 публичная загрузка Releases в этой задаче не проверялись.
+
+## Управляемые обновления: проверки 21 октября 2026
+
+Изменение `add-managed-updates` находится в реализации. Проверки выполнялись
+с Flutter 3.47.7 / Dart 3.13.5 и Python 3.15 в `build/update-venv`;
+cryptography закреплена на 50.0.2. Production private key не создавался,
+`scripts/update/public_keys.json` пока пуст: публичный выпуск намеренно
+останавливается до настройки доверенного ключа по docs/github-publication.md.
+
+Локальные результаты:
+
+- 34 release-теста и 40 updater-тестов прошли. Проверены подписи, replay,
+  выбор версии/платформы, traversal и лимиты архивов, переключение комплекта,
+  блокировки, отказ миграции, журналы и совместимый rollback.
+- `flutter pub get`, `flutter analyze --no-pub` прошли; 247 Flutter-тестов
+  прошли, два существующих теста пропущены. Проверка форматирования 96 Dart
+  файлов прошла. Использовался SDK `/Users/yurik/development/flutter-3.47.7`.
+- Корневая CMake-сборка прошла. Обязательный wrapper check_ctest.py с
+  FFIDO_TEST_HPT выполнил все 351 тест без пропусков. clang-format/clang-tidy:
+  99 файлов / 51 translation unit. Native TLS gRPC acceptance прошёл,
+  включая отказ readiness при неверном имени сертификата.
+- Android release A→B (versionCode 41001→41002) реально выполнен через
+  FFIDO native bridge / PackageInstaller на изолированных arm64 эмуляторах
+  API 24, API 25 и API 36. Сохранены отдельный sentinel preferences и синтетическая
+  сессия SecureSessionStore. Проверены STATUS_PENDING_USER_ACTION, отмена,
+  чужой сертификат, другой package ID, равный и меньший versionCode; на API 36
+  также отказ и выдача разрешения неизвестного источника. APK собраны с R8
+  в release mode и переподписаны одним эфемерным RSA QA-ключом; это не выпуск
+  с production release-key. Ключи удаляются в finally. Результаты:
+  build/managed-updates-android-release-qa5/result.json и
+  build/managed-updates-android-release-api24/result.json и
+  build/managed-updates-android-release-api25/result.json.
+  На API 36 Play Protect предложил сканирование незнакомого тестового ключа;
+  выбран штатный Install without scanning, APK во внешний сервис не отправлялся.
+  Play Protect глобально не отключался; API 24 использовал штатную глобальную
+  настройку разрешения неизвестных источников в тестовом эмуляторе.
+- Release-проверка выявила и устранила две ошибки: R8 менял имена Kotlin
+  JNI descriptor/runtime classes для shared_preferences 2.5 / jni 1.1,
+  а Directory.systemTemp Dart не совпадал с разрешённым Android cacheDir.
+  Теперь действуют точечные keep rules без отключения shrinker; путь private
+  staging сообщает native bridge. Проверка принадлежности APK кешу сохранена.
+- Собран локальный linux/amd64 Docker image `ffido:managed-updates`.
+  Container smoke проверил TLS, внешнее состояние и сохранность сессии,
+  SQLite, сообщения, metadata/uploads после пересоздания. Дополнительный
+  A→B smoke прошёл с образом B, отличающимся version/build metadata при том
+  же бинарнике; это не проверка обновления между различными версиями кода.
+  Дополнительно из текущих серверных исходников собран
+  ffido:managed-updates-final (v1.0.1/build 41002), Docker build выполнил все
+  351 CTest без пропусков. Container smoke старый A→свежий B прошёл,
+  включая сохранность сессии/SQLite/сообщения/metadata/uploads и readiness
+  с отказом при неверном TLS имени; это два отдельно собранных бинарника.
+  Лог: build/managed-updates-container-final-upgrade.log.
+
+macOS использует Sparkle 2.10.0 и сохраняет sandbox. Ранний Cocoa probe A→B
+с ad-hoc подписями подтвердил замену bundle и ограничение legacy Keychain:
+запись читалась A, а B при запрете системного UI получил errSecAuthFailed
+(-25293). Пользователь согласовал системный запрос Keychain или повторный
+вход после обновления. Настройки остаются на месте, токены не переносятся
+в незащищённое хранилище. Рабочие записи и пароли не использовались;
+отдельная тестовая запись удалена.
+
+Сквозной Flutter macOS QA запускается отдельно:
+
+```sh
+build/update-venv/bin/python scripts/update/test_macos_flow.py \
+  --flutter /path/to/flutter \
+  --directory build/mac-update-qa-arm64 --architecture arm64
+```
+
+Сценарий создаёт два реальных Flutter sandbox bundle A/B с отдельными bundle ID
+и эфемерным ключом, подписывает DMG и appcast, запускает default/p2 и проверяет
+блокировку установки занятым профилем, повтор, восстановление обоих профилей и
+preferences. Loopback HTTP разрешён только при compile-time
+FFIDO_UPDATER_TESTING в QA-сборке; обычная сборка принимает только HTTPS GitHub.
+Для x86_64 используется отдельный каталог и `--architecture x86_64`.
+После QA нужно восстановить обычную сборку `flutter build macos --release`.
+Не считать саму сборку доказательством успешной установки: результат успешного
+QA записывается в result.json, отсутствие этого файла означает незавершённый тест.
+
+Настоящий Flutter A→B с подписанным DMG успешно выполнен на arm64 и
+x86_64 (Rosetta на arm64-хосте), без снятия sandbox. В обоих случаях сначала
+проверен отказ при занятом p2, затем одна установка, перезапуск default/p2 и
+сохранность отдельных preferences. Доказательства:
+`build/managed-updates-macos-qa8/result.json` и
+`build/managed-updates-macos-qa-x64/result.json`.
+Sparkle наблюдает один процесс, поэтому peers согласованно закрываются перед
+созданием его updater и открываются снова при ошибке. Для восстановления
+профилей применяется очередь в private container: sandbox игнорирует
+[NSWorkspace OpenConfiguration.arguments](https://developer.apple.com/documentation/appkit/nsworkspace/openconfiguration/arguments).
+Обычная production-сборка из lib/main.dart восстановлена после QA, без QA
+bundle ID, ключа и loopback-разрешения. Реальный package.py сформировал arm64
+DMG; smoke.py проверил его checksum, identity, build number, embedded Sparkle,
+sandbox/XPC entitlements, обязательную проверку подписанного feed/архива,
+затем запустил извлечённое приложение с изолированным профилем. Проверка прошла
+(`build/managed-updates-macos-package-smoke.log`). Публичный ключ в этой локальной
+сборке пуст, поэтому она не может установить неподписанное обновление.
+
+Системное подтверждение legacy Keychain после настоящего Flutter A→B остаётся
+ручной проверкой; ранний probe подтвердил ожидаемое ограничение ad-hoc.
+
+Остаются обязательными реальные Windows/Linux A→B полного desktop bundle,
+публичный Android release-key и полный запуск CI, проверка macOS на физическом Intel-хосте и запуск итоговой платформенной CI-матрицы. Они не
+отмечаются завершёнными по результатам unit-тестов или одной сборки.
+
+
+Установленный native CLI дополнительно проверен через настоящий fidoback
+(не прямым вызовом Python-функции): macOS arm64 и Linux x86_64. На отдельном
+managed layout с тестовыми доверенными ключами выполнены --version,
+отказ apply при удерживаемом running lock, apply 1.0.0→1.0.1 и rollback.
+Хеши синтетических SQLite/JAM не изменились. Для macOS использован корневой
+CMake install; для Linux — копия полного runtime из свежего образа, без
+container marker только в тестовых копиях native layout. Service managers
+в этой проверке не запускались; stop/start/readiness отдельно проверены
+native/container acceptance. Результаты:
+`build/managed-updates-native-qa/mac-flow2/result.json`,
+`build/managed-updates-native-linux-result.json`.
+
+Проверка отказа SecureSessionStore дополнена тестом реального initializeApp:
+PlatformException не блокирует экран входа и не удаляет адрес/имя/endpoint.
+macOS получает инструкцию Keychain/повторного входа, Android — сообщение о
+защищённом хранилище без упоминания Keychain. Оба случая прошли.
+
+
+macOS negative QA прошёл на настоящих Flutter release bundle: запуск из
+read-only DMG вернул Sparkle 1003 с инструкцией переноса в Applications,
+A и preferences сохранились. Подписанный правильным feed-ключом appcast
+с неверной подписью DMG отклонён Sparkle (4005, improperly signed), A не
+заменён. NSError recovery suggestion теперь передаётся в Flutter вместе
+с domain/code, поэтому пользователь видит способ продолжения.
+Доказательства: build/managed-updates-macos-readonly2/result.json и
+build/managed-updates-macos-bad-signature2/result.json.
+
+
+Linux x86_64: полный Flutter bundle собран на Ubuntu 24.04 в отдельном Docker
+контейнере под эмуляцией amd64. Frozen updater с закреплёнными dependencies
+собран PyInstaller и реально выполнил A→B, проверил подпись и весь tar.gz,
+запустил новый Flutter, получил подтверждение первого рабочего кадра и
+сохранил внешний state и файл preferences. В тесте добавлен sentinel и cache
+в настоящий preferences JSON: B прочитал его, очистил только cache и сохранил
+sentinel. A/B используют один Flutter binary с разными подписанными metadata
+и embedded identity; Windows ZIP ещё требует реального прогона.
+Результат: build/managed-updates-linux-qa/flow3/result.json, A.log/B.log/freeze.log.
+Повторная сборка Linux под эмуляцией остановилась с Unexpected EINTR errno;
+для frozen-flow использован ранее успешно собранный и сохранённый bundle.
+Это ограничение повторной сборки, не успешная проверка всей CI-матрицы.
+
+При проверке desktop исправлены неподдерживаемый --parent, отсутствие
+startup acknowledgement и размещение lock внутри заменяемого каталога.
+Теперь running/operation locks находятся рядом с установкой, operation lock
+удерживается до подтверждения запуска, а running lock не мешает старту B.
+--preflight проверяет права до завершения клиента. Recovery распознаёт
+prepared/switched journal, возвращает прежний комплект и позволяет повторить
+операцию после сбоя между rename; чужой backup/root не заменяется.
+40 updater unit-тестов включают ENOSPC со staging cleanup и повтором,
+read-only parent, live process/operation lock, recovery и отказ чужой identity.
+
+CI дополнен реальными Android release QA на API 24/25/35, frozen desktop QA
+на Linux/Windows и installed native CLI apply/rollback на Linux/macOS.
+Новый CI-код локально проверен actionlint/bash -n, удалённый CI не запускался.
+Windows QA предназначен для одноразового CI-профиля, поскольку Windows known
+folders не изолируются одной подменой APPDATA. Реальный signed registry/Compose
+check→apply→rollback и Windows x86_64 A→B остаются непроверенными.
+
+Итог локального этапа 2026-10-21: пользователь подтвердил отсутствие
+одноразового Windows-окружения и Linux с systemd. Поэтому задачи 5.1–5.3,
+6.5, 7.4 и 8.2 остаются открытыми; успешные частичные проверки выше
+не заменяют их полные критерии. Финально прошли flutter analyze, 247 Flutter
+тестов (2 пропущены), 40 updater и 34 release Python-теста; обычные release
+сборки macOS и Android успешно собраны. Свежая Docker-сборка выполнила
+351 CTest. Коммиты, публикация и удалённый CI не выполнялись.
+
+
+Продолжение локальной приёмки 2026-10-21: registry/Compose полностью прошёл
+на loopback registry: docker run → Compose с теми же четырьмя bind mounts
+и UID/GID → check → apply v1.0.0→v1.0.1 → rollback. После каждого перехода
+реальный Flutter ApiClient восстановил сессию, сообщение, read metadata,
+bookmark и загрузку. Исходный Compose и ID соседнего контейнера не изменились; фактические mounts,
+UID/GID и привязки портов также совпадают после apply и rollback.
+Неверная Ed25519-подпись отклонена до остановки, несовместимая schema — без
+переключения с повторным стартом A. Доказательство:
+`build/managed-updates-compose-qa5/result.json`, команды в `commands.log`.
+Скрипт: `scripts/update/test_compose_flow.py`, повтор по docs/docker.md.
+Этот прогон снимает прежнее ограничение о непроверенном registry/Compose.
+GitHub transport заменён fixture, registry allowlist — адресом loopback только
+в QA-копии; production код/ключи не менялись. Внешней публикации нет.
+A использует старый compiled server с QA-normalized BUILD/OCI identity,
+B — свежий compiled server; bind mounts в этом сценарии работают с UID/GID 0:0.
+
+macOS launchd также проверен: собственный временный LaunchAgent запускает
+полный managed server, running apply отклоняется; bootout → apply → bootstrap
+→ TLS gRPC readiness и bootout → rollback → bootstrap → readiness успешны.
+После остановки скопированы синтетические SQLite/JAM; sentinel и integrity_check
+подтверждены в backup и текущем состоянии после A→B→A. HPT в fixture не работает,
+его совместная остановка не заявляется проверенной. Результат:
+`build/managed-updates-launchd-qa3/service-result.json`, daemon/service-command logs.
+Скрипт: `scripts/update/test_service_flow.py --bundle <native bundle> --directory <new directory>`.
+Задача 6.5 остаётся открытой из-за systemd/Linux и полного сценария с HPT;
+Windows и удалённая CI-матрица также остаются открытыми.
+
+
+Итоговое ревью add-managed-updates (2026-10-21): исправлены следующие ошибки.
+
+- При повторной проверке уже обнаруженного C более старый B, который всё ещё
+  новее установленного A, больше не блокирует результат из-за sequence.
+  Источник только с устаревшими кандидатами по-прежнему даёт ошибку.
+  Исправлены Python discovery и Flutter UpdateService; проверены оба порядка
+  B/C. Исторические версии пропускаются до проверки подписи, чтобы удалённый
+  после ротации старый ключ не блокировал новые выпуски. Новые кандидаты
+  по-прежнему требуют корректную подпись и совпадение manifest/tag/assets.
+- Desktop recovery после ошибки запуска теперь использует общий recover с
+  running lock. Он не заменяет каталог B поверх нового открытого окна и
+  сохраняет сообщение для следующего запуска. Регрессия проверяет сохранность
+  B и backup A при занятой блокировке, без повторного запуска клиента.
+- Compose сохраняет подписанные manifest/signature до остановки A и до
+  публикации prepared journal; ошибка записи этих файлов не останавливает A.
+  Ошибка записи журнала/override после остановки запускает A снова.
+
+Повторный сквозной loopback registry/Compose после исправлений прошёл:
+`build/managed-updates-compose-review/result.json`. Production trust anchors
+и allowlist не менялись. Windows/systemd и полная удалённая CI-матрица
+остаются открытыми; 25/30 задач. Коммиты и внешняя публикация не выполнялись.
+
+Проверки после ревью: flutter analyze без замечаний; 248 Flutter-тестов успешно,
+2 пропущены; 45 updater и 34 release Python-теста успешно; Dart format,
+Python compile, строгая валидация OpenSpec и whitespace-проверка изменённых
+файлов прошли. C++/Kotlin/Swift в этом ревью не менялись; новые платформенные
+сборки и CTest повторно не запускались.
+
+Проверка release-сборок после итогового ревью (2026-10-21): Flutter 3.47.7
+pub get, build macos --release и build apk --release выполнены успешно.
+Android universal APK 55 587 425 байт: apksigner verify успешен (v2),
+io.github.hashev.ffido, minSdk 24, armeabi-v7a/arm64-v8a/x86_64;
+встроенные identity и trust anchors совпадают с исходниками.
+Это локальный release-mode APK с Android Debug certificate, не публичная
+сборка с постоянным release keystore.
+
+macOS arm64: сырой Flutter .app после incremental build не прошёл строгую
+проверку внешнего seal (App.framework); после пересоздания bundle seal также
+не включал добавленный Sparkle.framework. Поэтому проверен именно конечный
+DMG, созданный штатным scripts/release/package.py: его существующий шаг
+ad-hoc codesign --force --deep --preserve-metadata=entitlements --sign -
+формирует окончательный seal. Приложение из read-only mounted DMG успешно
+прошло codesign --verify --deep --strict. Sandbox, application ID,
+Sparkle Installer.xpc/Downloader.xpc и встроенная identity проверены.
+Сырой Flutter .app без финального packaging/signing не предназначен для раздачи.
+В этом прогоне x86_64 macOS не пересобирался, новую установку A→B не выполняли.
+
+Машиночитаемый результат и SHA-256:
+build/managed-updates-release-final-result.json; логи release-final-* в build/.
+Production trust anchors по-прежнему пусты, локальная identity check-only:
+обновления и публичный выпуск не включены. Готовность: локальная реализация
+и доступная приёмка подтверждены, публичный выпуск пока не готов. Остаются
+25/30 задач; Windows (5.1–5.3), systemd/Linux и полный HPT backup-сценарий
+(6.5), полная удалённая CI-матрица (8.2) не закрыты. Ключи выпуска требуют
+отдельного provisioning по docs/github-publication.md. Коммитов, внешней
+публикации и запуска удалённого CI не было.
+
+Реальная установка release A→B после итогового ревью (2026-10-21):
+
+- macOS arm64 и x86_64 (Rosetta на ARM Mac): два настоящих ad-hoc release bundle
+  с разными CFBundleVersion 1→2, подписанный одноразовым QA Ed25519 ключом DMG,
+  установка Sparkle и перезапуск двух профилей default/p2. Занятый p2 блокирует
+  обновление; после разрешения оба процесса запускаются как B. Сохранены marker,
+  endpoint, имя и адрес каждого профиля. A записала и прочитала разные синтетические
+  токены настоящим SecureSessionStore в legacy login Keychain; B не перезаписывала
+  токены и прочитала прежние значения (SecItemCopyMatching status 0 для обоих
+  профилей на обеих архитектурах). Повторный вход в успешных прогонах не потребовался.
+  Проверка чтения B выполняется QA-only native probe с теми же account/service,
+  что у SecureSessionStore; она не обращается к серверу и не проверяет server-side
+  срок действия синтетического токена. Системные настройки Keychain не менялись,
+  SecurityAgent автоматически не подтверждался. В текущем QA probe используется
+  LAContext.interactionNotAllowed; production SecureSessionStore не менялся.
+- Android API 36 arm64 emulator: настоящие release APK 41001→41002, один
+  одноразовый QA сертификат, PackageInstaller и стандартное подтверждение ОС.
+  После запуска B SharedPreferences и токен настоящего SecureSessionStore
+  совпали со значениями A. Пройдены permission denial, permission grant,
+  STATUS_PENDING_USER_ACTION, отмена установки, отказ чужого сертификата,
+  package ID, равного и меньшего versionCode. Play Protect предложил scan
+  неизвестного QA сертификата; использован штатный Install without scanning,
+  APK в Google не отправлялся. Первый прогон прерван конфликтом диагностики
+  UIAutomator (exit 137); повтор прошёл полностью, это не ошибка APK.
+
+Доказательства:
+- build/managed-updates-macos-ab-final-arm64/result.json
+- build/managed-updates-macos-ab-final-x86/result.json
+- build/managed-updates-android-ab-final-api36-retry/result.json и device.log
+
+Сценарии используют отдельные QA entrypoints с текущими production bridge/updater,
+синтетические сессии, уникальный macOS bundle ID и зарезервированный invalid
+endpoint. Live-аккаунты не использовались. Удалены только созданные QA Keychain
+accounts, временные Android keystore/password; эмулятор и QA-процессы закрыты.
+Тестовые публичные ключи в production trust store не добавлялись.
+Эти результаты снимают прежнее ограничение release-final-result.json о том,
+что после последнего ревью новая установка A→B не выполнялась.
+Windows/systemd и полная CI-матрица остаются открытыми; коммитов и внешней
+публикации не выполнялось. Количество закрытых задач остаётся 25/30.
+
+После QA восстановлены обычные main-target release-выходы macOS и Android
+(application ID io.github.hashev.ffido, build 1). Обе сборки успешны.
+Flutter analyze чистый; 248 Flutter-тестов успешно (2 пропущены),
+45 updater Python-тестов успешно, Dart format/Python compile/OpenSpec strict
+и whitespace-проверки прошли.
+
+Подключение production trust anchor (2026-10-21): публичный ключ
+ffido-prod-2026-01 из внешнего update-public.json добавлен в
+scripts/update/public_keys.json и выбран через settings.json:update_key_id.
+Штатным build_identity.py обновлены только публичные client assets и Sparkle
+xcconfig; существующие локальные identity сохранены (check-only build).
+Приватный seed читался только локально в память для --check-only и load_key;
+его содержимое не выводилось, не копировалось в checkout и не передавалось GitHub.
+Проверены совпадение пары и локальная подпись/верификация служебного challenge,
+который не является release manifest. Подпись challenge не сохранялась.
+
+Release macOS и Android собраны с подключённым публичным ключом. Реальные
+встроенные public_keys.json обоих клиентов совпали с источником; macOS
+Info.plist:SUPublicEDKey совпал с выбранным ключом. Android APK в этом локальном
+прогоне использует обычный debug signing, production Android signing job не
+запускался. Flutter analyze чистый, 248 Flutter-тестов успешно (2 пропущены),
+42 release и 45 updater Python-тестов успешно, OpenSpec strict прошёл.
+Тест resume Docker теперь использует изолированный trust anchor вместо
+предположения, что production trust store пуст.
+
+Read-only проверка GitHub на этом этапе:
+- Repository FFIDO_PUBLICATION_READY уже равен true, значение не менялось.
+- Environment release: FFIDO_UPDATE_KEY_ID отсутствует;
+  secret FFIDO_UPDATE_PRIVATE_KEY отсутствует.
+- Четыре Android secrets присутствуют; ANDROID_CERT_SHA256 совпадает с локальным
+  сертификатом ранее использованного release keystore. Содержимое secrets API
+  не возвращает, поэтому их значения удалённо не проверены.
+
+Локальная production-конфигурация согласована, GitHub provisioning не завершён.
+До подготовки полного выпуска рекомендуется FFIDO_PUBLICATION_READY=false.
+Полный publish.py --check-only по inventory не запускался: Windows/полная
+CI-матрица остаются открытыми. Коммитов, запусков workflow, внешней публикации
+и изменений GitHub settings не выполнялось. Результат:
+build/managed-updates-production-config-result.json; read-only GitHub snapshot:
+build/managed-updates-production-github-check.json (только имена secrets и
+публичные variables). Этот этап заменяет прежние записи о пустых trust anchors.
+
+
+Реальный локальный A→B с production-ключами (2026-10-21):
+
+- macOS arm64 и x86_64/Rosetta: appcast и DMG подписаны ключом
+  ffido-prod-2026-01 из внешнего каталога ключей; Sparkle установил release
+  bundle 1→2 и восстановил default/p2. Busy peer блокирует установку до
+  разрешения. Настройки endpoint/name/address/marker обоих профилей сохранились.
+  A записала и прочитала синтетические токены настоящим SecureSessionStore;
+  B не переписывала их, SecItemCopyMatching вернул прежние значения/status 0.
+  Повторный вход в этих прогонах не потребовался.
+- Android API 36 и API 25: APK 41001→41002 подписаны существующим постоянным
+  сертификатом 61f1f10c15f8d3724dfe19938f9923ed2878dd9c81113c90489aded29af3fbd0.
+  QA entrypoint проверяет release-manifest.json/signature библиотекой
+  UpdateManifest.verify со встроенным production Ed25519 anchor, размером и
+  SHA-256 APK перед передачей native installer. PackageInstaller обновил A→B;
+  SharedPreferences и токен реального SecureSessionStore сохранились.
+  На API 25 исходные A-source/B-source собраны непосредственно через Gradle
+  publicRelease/FFIDO_PUBLIC_RELEASE=true; подпись исходников проверена отдельно
+  до/независимо от завершающего apksigner. На API 36 использовано финальное
+  переподписание release-mode APK постоянным ключом.
+- Пройдены отмена, STATUS_PENDING_USER_ACTION, отказы чужого сертификата/ID,
+  равной и меньшей версии; API 36 дополнительно проверяет denial/grant источника.
+  Play Protect на API 36 предложил scan: выбран штатный Install without scanning,
+  APK не отправлялся Google.
+
+На API 25 стенд слишком рано вызвал am start -W: versionCode уже изменился,
+но завершающий broadcast pkg removed остановил ранний запуск. Повтор обычного
+Open после завершения замены запустил B и подтвердил сохранность данных. Это
+гонка стенда; launch_updated теперь повторяет неблокирующее открытие с ограничением
+по времени. Два регрессионных теста проверяют повтор и timeout без ложного успеха.
+
+Доказательства: build/managed-updates-prod-ab-result.json и отдельные result.json
+в managed-updates-prod-ab-macos-arm64, managed-updates-prod-ab-macos-x86,
+managed-updates-prod-ab-android25, managed-updates-prod-ab-android36. Проверка
+Gradle certificates — android25/gradle-signing-result.json.
+
+Это изолированные QA entrypoints с текущими production bridge/updater и настоящими
+ключами; не публичные release candidates. macOS bundle ID уникален для стенда,
+Android запускается только на выбранных одноразовых эмуляторах. Сессии синтетические
+в реальных хранилищах; live-account/server-side token validity не проверяется.
+Fixtures обслуживаются loopback HTTP, GitHub/CDN discovery этим прогоном не
+проверяется. Приватные seed/keystore не копировались в QA output и не выводились;
+пароли передаются apksigner/Gradle через environment, а ключевые файлы читаются
+на месте. Синтетические Keychain accounts и временные foreign keys удалены.
+FFIDO_PUBLICATION_READY проверен read-only: false. Windows/systemd и полная
+CI-матрица открыты; коммитов, workflow dispatch и публикации нет.
+
+Финальные проверки этапа production-key A→B: обычные main-target macOS/Android
+release-выходы восстановлены; Android собран через Gradle publicRelease,
+постоянный сертификат конечного APK подтверждён. Это локальные check-only
+identity, не готовые к публикации release candidates. Flutter analyze чистый,
+248 Flutter-тестов успешно (2 пропущены), 47 updater Python-тестов успешно;
+Dart format, Python compile, OpenSpec strict и whitespace-проверки прошли.
+В 61 текстовом QA output не найдено production seed/паролей Android; SHA-256
+production keystore совпадает с исходными метаданными. Приватные значения при
+проверках не выводились. Количество задач остаётся 25/30.
+
+
+Итоговое ревью после подключения production-ключей (2026-10-21):
+
+1. Исправлен silent fallback build_identity.py: опечатка в update_key_id или
+   несколько anchors без выбора раньше давали пустой SUPublicEDKey. Теперь
+   generator и signer используют select_update_key; проверяются все key IDs,
+   canonical Base64/32 bytes и выбранный ID. Неверная конфигурация останавливает
+   генератор до изменения identity, assets, xcconfig или GITHUB_ENV. Tests
+   запускают настоящий generator в изолированном дереве и проверяют отсутствие
+   частичных записей; отдельный valid case проверяет экранирование slash.
+2. QA output directory теперь обязательно новый, с правами 0700, без пересечения
+   с production key directory. Старый result.json нельзя принять за новый
+   успешный прогон после ошибки. Тесты подтверждают сохранность прежнего отчёта
+   и каталога ключей при отказе.
+3. macOS cleanup находит все процессы точного пути изолированного bundle,
+   включая перезапущенный B до записи status JSON; похожий путь fido2 и
+   обычный /Applications/fido.app не затрагиваются.
+
+Проверены текущие production key selection, локальный signer и настоящий
+generator с публичной конфигурацией в изолированном дереве. Приватный seed
+не выводился и не копировался. Read-only GitHub check подтвердил key ID
+ffido-prod-2026-01, наличие секрета и FFIDO_PUBLICATION_READY=false; удалённые
+настройки не менялись.
+
+Проверки: 46 release и 50 updater Python-тестов успешно; Flutter analyze
+без замечаний, 248 Flutter-тестов успешно (2 пропущены), Python compile и
+OpenSpec strict прошли. Изменены tooling/QA и документация; native/client
+установщики не менялись, release-сборки и реальные A→B в этом ревью повторно
+не запускались. Предыдущие production-key A→B proofs сохраняют силу, ключи
+не изменены. Windows/systemd и полная CI-матрица остаются открытыми; 25/30.
+Коммитов, публикации и workflow dispatch не было.
+
+
+Повторные реальные production-key A→B после последних исправлений (2026-10-22):
+
+- macOS arm64 и x86_64 через Rosetta: release A build 1 → B build 2
+  установлены Sparkle из DMG с production Ed25519-подписью. Настройки двух
+  профилей сохранены; занятый профиль блокирует замену до разрешения.
+  A записала и прочитала сессии через SecureSessionStore, B прочитала те же
+  значения из login Keychain: preserved=true и keychain_status=0 для обоих
+  профилей на обеих архитектурах. Повторный вход не потребовался.
+- Android API 25 и 36: release A versionCode 41001 → B 41002 установлены
+  системным PackageInstaller. Обе пары исходных Gradle APK (A-source/B-source)
+  подписаны постоянным production-сертификатом. Клиент проверил манифест
+  production Ed25519-ключом; настройки и защищённый токен сохранились.
+  Отмена установки, чужие сертификат/applicationId, равная и меньшая версия
+  отклонены; API 36 дополнительно проверяет отказ разрешения установки.
+  На API 25 исправленный retry запуска B сработал без ручного открытия.
+  На API 36 выбрана локальная установка без отправки APK в Play Protect.
+- Каждый прогон использовал новый отдельный каталог; все четыре процесса
+  завершились с кодом 0. Отчёты: build/managed-updates-prod-recheck-{macos-arm64,
+  macos-x86,android25,android36}/result.json; сводный отчёт:
+  build/managed-updates-prod-recheck-result.json. QA-эмуляторы остановлены.
+
+Это реальные release-бинарники с QA entrypoint, локальным HTTP fixture и
+синтетическими сессиями в настоящем защищённом хранилище. Проверена сохранность
+токенов, а не их авторизация на живом сервере; загрузка с публичного GitHub/CDN
+в этот локальный прогон не входит. Windows/systemd и полная CI-матрица остаются
+открытыми; задачи OpenSpec 25/30. Коммитов и публикации не было.
+
+После QA восстановлены обычные main-target release-выходы macOS и Android;
+Android APK повторно проверен по production-сертификату. Identity остаётся
+локальной check-only, эти выходы не предназначены для публикации.
+Дополнительные проверки: 46 release + 50 updater Python-тестов прошли,
+Flutter analyze без замечаний, OpenSpec strict и whitespace checks прошли.
+В 62 текстовых QA output не найдено production seed/паролей; keystore SHA-256
+не изменился. Контролируемых macOS QA-процессов после cleanup не осталось.
+
+
+Отправка add-managed-updates в PR и первые CI findings (2026-10-22):
+
+- В экспорт добавлен deploy/ с regression test: Compose-конфигурация входит
+  в checkout для PR. Несвязанный архив prepare-github-publication исключён.
+- Widget-тест уведомления теперь завершает настоящий desktop startup I/O через
+  tester.runAsync до проверки UI. На Linux/Windows виртуальное время Flutter
+  не дожидалось filesystem futures; проверки уведомления/черновика сохранены.
+  Повторный CI подтвердил 248 passing Flutter tests и 2 существующих skip.
+- Windows smoke выявил WinError 32 при удалении .ffido-ready: Flutter ещё держал
+  handle записи. Теперь маркер публикуется rename временного файла после
+  завершения writeAsString, поэтому updater видит только закрытый целый файл.
+  Локально после исправления analyze и 17 update Flutter-тестов прошли;
+  результат повторной Windows smoke должен оцениваться по последнему CI SHA.
+
+Windows/systemd acceptance остаются открытыми. PR не означает merge или выпуск;
+FFIDO_PUBLICATION_READY=false, публикация и workflow Release не запускались.

@@ -1,0 +1,20 @@
+services:
+  ffido:
+    image: hashev/ffido:${FFIDO_VERSION:?Set a published FFIDO_VERSION}
+    platform: linux/amd64
+    user: "${FFIDO_UID:-10001}:${FFIDO_GID:-10001}"
+    restart: unless-stopped
+    stop_grace_period: 20s
+    ports:
+      - "8080:8080"
+    volumes:
+      - /etc/ffido/config.json:/etc/ffido/config.json:ro
+      - /etc/ffido/tls:/etc/ffido/tls:ro
+      - /var/lib/ffido:/var/lib/ffido
+      - /srv/fido:/srv/fido
+    healthcheck:
+      test: ["CMD", "fidoback", "--check-ready", "127.0.0.1:8080", "/etc/ffido/tls/ca.pem", "${FFIDO_SERVER_NAME:?Set the certificate DNS name}"]
+      interval: 10s
+      timeout: 12s
+      start_period: 15s
+      retries: 3
