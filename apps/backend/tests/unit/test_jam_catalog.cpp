@@ -197,3 +197,31 @@ TEST(JamCatalog, PrivateMetadataIdsFormatsAndAliasBoundary) {
   unsupported.filename = "../outside";
   EXPECT_FALSE(JamCatalog::Build(temporary.path(), {unsupported}));
 }
+
+TEST(JamCatalog, EncodingOverridesBindToRelativeJamAndRequireMatchingAreas) {
+  fidoback::test::TempDirectory temporary;
+  Files(temporary.path() / "nested/base");
+  Files(temporary.path() / "utf-8");
+  auto catalog = JamCatalog::Build(temporary.path(), {Area("ECHO", "nested/base"), Area("UTF", "utf-8")}, {},
+                                   {{"nested/base", "KOI8-R"}, {"utf-8", "UTF-8"}});
+  ASSERT_TRUE(catalog);
+  EXPECT_EQ((*(*catalog)->Resolve("ECHO"))->files->forced_encoding, "KOI8-R");
+  EXPECT_EQ((*(*catalog)->Resolve("UTF"))->files->forced_encoding, "UTF-8");
+  EXPECT_FALSE(JamCatalog::Build(temporary.path(), {Area("ECHO", "nested/base")}, {}, {{"ECHO", "KOI8-R"}}));
+  EXPECT_FALSE(JamCatalog::Build(temporary.path(), {Area("ECHO", "nested/base")}, {}, {{"missing", "KOI8-R"}}));
+  EXPECT_FALSE(JamCatalog::Build(temporary.path(), {Area("SQUISH", "unused", "Squish")}, {}, {{"unused", "KOI8-R"}}));
+}
+
+TEST(JamCatalog, PhysicalAliasesCannotHaveDifferentEncodingPolicies) {
+  fidoback::test::TempDirectory temporary;
+  Files(temporary.path() / "base");
+  for (auto extension : {".jhr", ".jdt", ".jdx"})
+    fs::create_hard_link(temporary.path() / (std::string("base") + extension),
+                         temporary.path() / (std::string("alias") + extension));
+  auto areas = std::vector{Area("A", "base"), Area("B", "alias")};
+  EXPECT_FALSE(JamCatalog::Build(temporary.path(), areas, {}, {{"base", "KOI8-R"}}));
+  EXPECT_FALSE(JamCatalog::Build(temporary.path(), areas, {}, {{"base", "KOI8-R"}, {"alias", "UTF-8"}}));
+  auto catalog = JamCatalog::Build(temporary.path(), areas, {}, {{"base", "KOI8-R"}, {"alias", "KOI8-R"}});
+  ASSERT_TRUE(catalog);
+  EXPECT_EQ((*(*catalog)->Resolve("A"))->files, (*(*catalog)->Resolve("B"))->files);
+}

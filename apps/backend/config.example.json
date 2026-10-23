@@ -17,6 +17,7 @@
     "areacfg_path": "./ftn/areas.cfg",
     "jam_base_path": "./ftn/jam",
     "default_encoding": "cp866",
+    "jam_encoding_overrides": {},
     "path_mappings": [],
     "coordination_lock": "./data/hpt.lock"
   },

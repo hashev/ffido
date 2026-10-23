@@ -24,8 +24,11 @@ std::expected<std::unique_ptr<JamAccess>, JamAccessError> JamAccess::Open(const 
   area = catalog.Resolve(conference);
   if (!area)
     return std::unexpected(JamAccessError(area.error()));
-  auto access = std::unique_ptr<JamAccess>(
-      new JamAccess(std::move(coordination), std::move(*lease), std::move(encoding), deadline, cancellation));
+  const auto& forced = (*area)->files->forced_encoding;
+  if (!forced.empty())
+    encoding = forced;
+  auto access = std::unique_ptr<JamAccess>(new JamAccess(std::move(coordination), std::move(*lease),
+                                                         std::move(encoding), deadline, cancellation, !forced.empty()));
   auto error = access->messages_.Open();
   if (error != msgapi::JamError::kSuccess)
     return std::unexpected(JamAccessError(error));

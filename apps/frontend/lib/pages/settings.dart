@@ -31,6 +31,8 @@ class _SettingsWidgetState extends State<SettingsWidget> {
   final _address = TextEditingController();
   final _password = TextEditingController();
   bool _busy = false;
+  bool _passwordAutofilled = false;
+  String _savedPassword = '';
   String _message = '';
   String _savedName = '', _savedAddress = '', _savedEndpoint = '';
   Map<String, List<String>> _errors = {};
@@ -45,7 +47,7 @@ class _SettingsWidgetState extends State<SettingsWidget> {
       this,
       () =>
           !_busy &&
-          _password.text.isEmpty &&
+          _password.text == _savedPassword &&
           _endpoint.text == _savedEndpoint &&
           _name.text == _savedName &&
           _address.text == _savedAddress,
@@ -68,6 +70,30 @@ class _SettingsWidgetState extends State<SettingsWidget> {
       _savedName = _name.text;
       _savedAddress = _address.text;
     });
+    final endpoint = _endpoint.text;
+    final address = _address.text;
+    try {
+      final password = await SessionManager(
+        _client,
+        prefs,
+        store: widget.store ?? const SecureSessionStore(),
+      ).savedPassword(endpoint, address);
+      if (!mounted ||
+          _busy ||
+          _endpoint.text != endpoint ||
+          _address.text != address ||
+          _password.text.isNotEmpty ||
+          password == null) {
+        return;
+      }
+      setState(() {
+        _password.text = password;
+        _savedPassword = password;
+        _passwordAutofilled = true;
+      });
+    } catch (_) {
+      // Keychain may be unavailable; keep manual login usable without a plaintext fallback.
+    }
   }
 
   @override
@@ -102,7 +128,9 @@ class _SettingsWidgetState extends State<SettingsWidget> {
               password: _password.text,
             );
       if (!mounted) return;
-      _password.clear();
+      if (logout) _password.clear();
+      _savedPassword = _password.text;
+      _passwordAutofilled = !logout && _password.text.isNotEmpty;
       setState(() {
         _message = message;
         if (_client.session != null) {
@@ -150,6 +178,19 @@ class _SettingsWidgetState extends State<SettingsWidget> {
       controller: controller,
       enabled: !_busy,
       obscureText: secret,
+      onChanged: key == 'endpoint' || key == 'address'
+          ? (_) {
+              if (_passwordAutofilled) {
+                _password.clear();
+                _savedPassword = '';
+                _passwordAutofilled = false;
+              }
+            }
+          : key == 'password'
+          ? (_) {
+              _passwordAutofilled = false;
+            }
+          : null,
       autocorrect: false,
       enableSuggestions: false,
       decoration: InputDecoration(

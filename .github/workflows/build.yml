@@ -133,8 +133,12 @@ jobs:
       - name: Linux tools
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y clang-19 clang-tidy-19 clang-format-19 ninja-build libssl-dev libc-ares-dev libre2-dev zlib1g-dev patchelf pkg-config
+          # Azure's Ubuntu mirror has stalled while downloading LLVM packages.
+          # Use the official archive, retaining Ubuntu signatures and package versions.
+          sudo sed -E -i 's@https?://azure\.archive\.ubuntu\.com/ubuntu@https://archive.ubuntu.com/ubuntu@g' /etc/apt/sources.list.d/ubuntu.sources
+          apt_options=(-o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30)
+          sudo apt-get "${apt_options[@]}" update
+          sudo apt-get "${apt_options[@]}" install -y clang-19 clang-tidy-19 clang-format-19 ninja-build libssl-dev libc-ares-dev libre2-dev zlib1g-dev patchelf pkg-config
           echo 'CC=clang-19' >> "$GITHUB_ENV"
           echo 'CXX=clang++-19' >> "$GITHUB_ENV"
           mkdir -p "$RUNNER_TEMP/llvm-bin"

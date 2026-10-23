@@ -44,73 +44,95 @@ class LoginClient extends ApiClient {
 }
 
 void main() {
-  testWidgets(
-    'four fields login stores session but never password and supports logout',
-    (tester) async {
-      SharedPreferences.setMockInitialValues({});
-      final prefs = await SharedPreferences.getInstance();
-      final client = LoginClient();
-      final store = MemoryStore();
-      addTearDown(client.dispose);
-      await tester.pumpWidget(
-        MaterialApp(
-          home: SettingsWidget(
-            client: client,
-            preferences: prefs,
-            store: store,
-          ),
-        ),
-      );
-      await tester.pumpAndSettle();
-      expect(find.byKey(const Key('token')), findsNothing);
-      await tester.enterText(find.byKey(const Key('name')), 'Имя');
-      await tester.enterText(find.byKey(const Key('address')), '2:1/2');
-      await tester.enterText(
-        find.byKey(const Key('password')),
-        'fixture-secret',
-      );
-      await tester.enterText(
-        find.byKey(const Key('endpoint')),
-        'https://other.invalid:8443',
-      );
-      expect(
-        tester.widget<TextField>(find.byKey(const Key('password'))).obscureText,
-        isTrue,
-      );
-      await tester.ensureVisible(find.text('Подключиться'));
-      await tester.tap(find.text('Подключиться'));
-      await tester.pumpAndSettle();
-      expect(client.hasToken, isTrue);
-      expect(store.values['https://other.invalid:8443'], 'a' * 64);
-      expect(
-        prefs.getKeys().any(
-          (key) => prefs.get(key).toString().contains('fixture-secret'),
-        ),
-        isFalse,
-      );
-      expect(prefs.getKeys().any((key) => prefs.get(key) == 'a' * 64), isFalse);
-      expect(
-        tester
-            .widget<TextField>(find.byKey(const Key('password')))
-            .controller!
-            .text,
-        isEmpty,
-      );
-      expect(
-        tester
-            .widget<TextField>(find.byKey(const Key('name')))
-            .controller!
-            .text,
-        'Серверное имя',
-      );
-      await tester.ensureVisible(find.text('Выйти'));
-      await tester.tap(find.text('Выйти'));
-      await tester.pumpAndSettle();
-      expect(client.hasToken, isFalse);
-      expect(store.values, isEmpty);
-      expect(find.text('Вы вышли из сессии'), findsOneWidget);
-    },
-  );
+  testWidgets('four fields login stores secrets securely and supports logout', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({});
+    final prefs = await SharedPreferences.getInstance();
+    final client = LoginClient();
+    final store = MemoryStore();
+    addTearDown(client.dispose);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SettingsWidget(client: client, preferences: prefs, store: store),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('token')), findsNothing);
+    await tester.enterText(find.byKey(const Key('name')), 'Имя');
+    await tester.enterText(find.byKey(const Key('address')), '2:1/2');
+    await tester.enterText(find.byKey(const Key('password')), 'fixture-secret');
+    await tester.enterText(
+      find.byKey(const Key('endpoint')),
+      'https://other.invalid:8443',
+    );
+    expect(
+      tester.widget<TextField>(find.byKey(const Key('password'))).obscureText,
+      isTrue,
+    );
+    await tester.ensureVisible(find.text('Подключиться'));
+    await tester.tap(find.text('Подключиться'));
+    await tester.pumpAndSettle();
+    expect(client.hasToken, isTrue);
+    expect(store.values['https://other.invalid:8443'], 'a' * 64);
+    expect(
+      prefs.getKeys().any(
+        (key) => prefs.get(key).toString().contains('fixture-secret'),
+      ),
+      isFalse,
+    );
+    expect(prefs.getKeys().any((key) => prefs.get(key) == 'a' * 64), isFalse);
+    expect(
+      tester
+          .widget<TextField>(find.byKey(const Key('password')))
+          .controller!
+          .text,
+      'fixture-secret',
+    );
+    expect(
+      tester.widget<TextField>(find.byKey(const Key('name'))).controller!.text,
+      'Серверное имя',
+    );
+    // Reconnecting on the same screen must not require typing the password again.
+    await tester.tap(find.text('Подключиться'));
+    await tester.pumpAndSettle();
+    expect(client.hasToken, isTrue);
+    await tester.ensureVisible(find.text('Выйти'));
+    await tester.tap(find.text('Выйти'));
+    await tester.pumpAndSettle();
+    expect(client.hasToken, isFalse);
+    expect(store.values, isEmpty);
+    expect(find.text('Вы вышли из сессии'), findsOneWidget);
+  });
+  testWidgets('saved password is obscured and cleared when changing server', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({
+      'ffido_name_v1': 'Name',
+      'ffido_address_v1': '2:1/2',
+    });
+    final prefs = await SharedPreferences.getInstance();
+    final client = LoginClient();
+    final store = MemoryStore();
+    addTearDown(client.dispose);
+    final endpoint = client.endpoint.toString();
+    store.values['password:$endpoint'] =
+        '{"address":"2:1/2","password":"saved-secret"}';
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SettingsWidget(client: client, preferences: prefs, store: store),
+      ),
+    );
+    await tester.pumpAndSettle();
+    final field = tester.widget<TextField>(find.byKey(const Key('password')));
+    expect(field.controller!.text, 'saved-secret');
+    expect(field.obscureText, isTrue);
+    await tester.enterText(
+      find.byKey(const Key('endpoint')),
+      'https://another.invalid',
+    );
+    expect(field.controller!.text, isEmpty);
+  });
   testWidgets(
     'bad password preserves current session and shows understandable error',
     (tester) async {

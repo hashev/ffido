@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <expected>
 #include <filesystem>
+#include <map>
 #include <nlohmann/json.hpp>
 #include <string>
 #include <string_view>
@@ -32,6 +33,7 @@ struct FtnConfig {
   std::string areacfg_path;
   std::string jam_base_path;
   std::string default_encoding = "cp866";
+  std::map<std::string, std::string> jam_encoding_overrides;
   std::filesystem::path coordination_lock;
 };
 

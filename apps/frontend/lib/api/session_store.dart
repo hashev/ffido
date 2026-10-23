@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -47,6 +49,37 @@ class SessionManager {
   final SharedPreferences preferences;
   final SessionStore store;
   String _disabled(String endpoint) => 'ffido_session_disabled:$endpoint';
+  String _passwordKey(String endpoint) => 'password:$endpoint';
+  String _passwordDisabled(String endpoint) =>
+      'ffido_password_disabled:$endpoint';
+
+  Future<String?> savedPassword(String endpoint, String address) async {
+    if (kIsWeb || preferences.getBool(_passwordDisabled(endpoint)) == true) {
+      return null;
+    }
+    final value = await store.read(_passwordKey(endpoint));
+    // Logout can finish while Keychain/Keystore is still answering this read.
+    if (value == null ||
+        preferences.getBool(_passwordDisabled(endpoint)) == true) {
+      return null;
+    }
+    try {
+      final record = jsonDecode(value);
+      if (record is Map &&
+          record['address'] == address &&
+          record['password'] is String) {
+        return record['password'] as String;
+      }
+    } on FormatException {
+      return null;
+    }
+    return null;
+  }
+
+  Future<void> _forgetPassword(String endpoint) async {
+    await preferences.setBool(_passwordDisabled(endpoint), true);
+    await store.delete(_passwordKey(endpoint));
+  }
 
   Future<void> restore() async {
     final endpoint = client.endpoint.toString();
@@ -84,6 +117,7 @@ class SessionManager {
     final target = client.endpoint.toString();
     // A tombstone prevents an old secret from returning after a failed write/delete.
     await preferences.setBool(_disabled(target), true);
+    await preferences.setBool(_passwordDisabled(target), true);
     await preferences.setString('ffido_endpoint_v1', target);
     await preferences.setString('ffido_name_v1', result.session.profile.name);
     await preferences.setString(
@@ -93,6 +127,7 @@ class SessionManager {
     if (previous != target) {
       await preferences.setBool(_disabled(previous), true);
       try {
+        await _forgetPassword(previous);
         await store.delete(previous);
       } catch (_) {
         /* Tombstone remains. */
@@ -100,6 +135,16 @@ class SessionManager {
     }
     try {
       await store.write(target, result.sessionSecret);
+      if (!kIsWeb) {
+        await store.write(
+          _passwordKey(target),
+          jsonEncode({
+            'address': result.session.profile.address,
+            'password': password,
+          }),
+        );
+        await preferences.remove(_passwordDisabled(target));
+      }
       await preferences.remove(_disabled(target));
       return kIsWeb
           ? 'Вы подключены. В браузере вход действует до закрытия приложения.'
@@ -122,6 +167,7 @@ class SessionManager {
       await client.clearAuthToken();
     }
     try {
+      await _forgetPassword(endpoint);
       await store.delete(endpoint);
     } catch (_) {
       message += ' Удалить запись из защищённого хранилища не удалось; автоматический вход отключён.';

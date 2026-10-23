@@ -29,12 +29,15 @@ public:
 
 private:
   JamAccess(std::unique_ptr<CoordinationLease> coordination, std::unique_ptr<JamLease> lease, std::string encoding,
-            JamDeadline deadline, std::stop_token cancellation)
+            JamDeadline deadline, std::stop_token cancellation, bool force_encoding)
       : coordination_(std::move(coordination)),
         lease_(std::move(lease)),
-        messages_(lease_->files().descriptors, std::move(encoding), [deadline, cancellation] {
-          return !cancellation.stop_requested() && std::chrono::steady_clock::now() < deadline;
-        }) {
+        messages_(
+            lease_->files().descriptors, std::move(encoding),
+            [deadline, cancellation] {
+              return !cancellation.stop_requested() && std::chrono::steady_clock::now() < deadline;
+            },
+            nullptr, force_encoding) {
   }
   std::unique_ptr<CoordinationLease> coordination_;
   std::unique_ptr<JamLease> lease_;

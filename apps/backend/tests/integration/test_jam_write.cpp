@@ -1069,3 +1069,110 @@ TEST_F(JamWriteIntegrationTest, Koi8FallbackPreservesExplicitCp866AndUtf8) {
   EXPECT_EQ(Contents(test_dir_.string() + ".jhr"), header);
   EXPECT_EQ(Contents(test_dir_.string() + ".jdt"), body);
 }
+
+TEST_F(JamWriteIntegrationTest, ForcedKoi8ReadIgnoresStaleChrsWithoutRewriting) {
+  JamMessage input;
+  input.SetText("Привет Ёё");
+  input.SetSubject("Тема Ёё");
+  input.SetSenderName("Автор Ёё");
+  input.SetReceiverName("Получатель");
+  {
+    JamMessageBase writer(test_dir_.string(), "KOI8-R");
+    ASSERT_EQ(writer.Open(), JamError::kSuccess);
+    ASSERT_EQ(writer.AddMessage(input), JamError::kSuccess);
+  }
+  auto header = Contents(test_dir_.string() + ".jhr");
+  header.replace(header.find("CHRS: KOI8-R 2"), 14, "CHRS: CP866 2 ");
+  std::ofstream(test_dir_.string() + ".jhr", std::ios::binary | std::ios::trunc) << header;
+  const auto body = Contents(test_dir_.string() + ".jdt");
+  const auto index = Contents(test_dir_.string() + ".jdx");
+  {
+    JamMessageBase ordinary(test_dir_.string(), "KOI8-R");
+    ASSERT_EQ(ordinary.Open(), JamError::kSuccess);
+    auto wrong = ordinary.ReadMessage(1);
+    ASSERT_TRUE(wrong);
+    EXPECT_NE(wrong->text(), input.text());
+  }
+  JamMessageBase forced(test_dir_.string(), "KOI8-R", true);
+  ASSERT_EQ(forced.Open(), JamError::kSuccess);
+  auto message = forced.ReadMessage(1);
+  ASSERT_TRUE(message);
+  EXPECT_EQ(message->text(), input.text());
+  EXPECT_EQ(message->subject(), input.subject());
+  EXPECT_EQ(message->sender_name(), input.sender_name());
+  EXPECT_EQ(message->receiver_name(), input.receiver_name());
+  forced.Close();
+  EXPECT_EQ(Contents(test_dir_.string() + ".jhr"), header);
+  EXPECT_EQ(Contents(test_dir_.string() + ".jdt"), body);
+  EXPECT_EQ(Contents(test_dir_.string() + ".jdx"), index);
+}
+
+TEST_F(JamWriteIntegrationTest, ForcedAppendReplacesOnlyChrsAndRejectsLoss) {
+  JamMessage input;
+  input.SetText("Привет Ёё");
+  input.SetSubject("Тема Ёё");
+  input.SetSenderName("Автор");
+  input.SetReceiverName("Получатель");
+  input.AddRawSubField(JamSubFieldType::kFtsKludge, "\1CHRS: UTF-8 4\r\nPID: Original\rCHRS: CP866 2\rTZUTC: 0300");
+  input.AddRawSubField(JamSubFieldType::kFtsKludge, "CHRS: unknown 2");
+  JamMessageBase forced(test_dir_.string(), "KOI8-R", true);
+  ASSERT_EQ(forced.Open(), JamError::kSuccess);
+  ASSERT_EQ(forced.AddMessage(input), JamError::kSuccess);
+  const auto header = Contents(test_dir_.string() + ".jhr");
+  EXPECT_NE(header.find("CHRS: KOI8-R 2"), std::string::npos);
+  EXPECT_EQ(header.find("CHRS: CP866"), std::string::npos);
+  EXPECT_EQ(header.find("CHRS: UTF-8"), std::string::npos);
+  EXPECT_EQ(header.find("CHRS: unknown"), std::string::npos);
+  EXPECT_NE(header.find("PID: Original"), std::string::npos);
+  EXPECT_NE(header.find("TZUTC: 0300"), std::string::npos);
+  const auto body = Contents(test_dir_.string() + ".jdt");
+  EXPECT_EQ(body, "\xf0\xd2\xc9\xd7\xc5\xd4 \xb3\xa3");
+  const auto index = Contents(test_dir_.string() + ".jdx");
+  auto read = forced.ReadMessage(1);
+  ASSERT_TRUE(read);
+  EXPECT_EQ(read->subject(), input.subject());
+  EXPECT_EQ(read->text(), input.text());
+  auto moved = std::move(forced);
+  input.SetText("😀");
+  EXPECT_FALSE(moved.PrepareAppend(input));
+  moved.Close();
+  EXPECT_EQ(Contents(test_dir_.string() + ".jhr"), header);
+  EXPECT_EQ(Contents(test_dir_.string() + ".jdt"), body);
+  EXPECT_EQ(Contents(test_dir_.string() + ".jdx"), index);
+}
+
+TEST_F(JamWriteIntegrationTest, ForcedUtf8RemainsSeparateFromKoi8Default) {
+  JamMessage input;
+  input.SetText("Привет 😀");
+  input.SetSubject("UTF-8 Ёё");
+  input.AddRawSubField(JamSubFieldType::kFtsKludge, "CHRS: CP866 2");
+  JamMessageBase forced(test_dir_.string(), "UTF-8", true);
+  ASSERT_EQ(forced.Open(), JamError::kSuccess);
+  ASSERT_EQ(forced.AddMessage(input), JamError::kSuccess);
+  EXPECT_EQ(Contents(test_dir_.string() + ".jdt"), input.text());
+  auto read = forced.ReadMessage(1);
+  ASSERT_TRUE(read);
+  EXPECT_EQ(read->text(), input.text());
+  EXPECT_NE(Contents(test_dir_.string() + ".jhr").find("CHRS: UTF-8 4"), std::string::npos);
+}
+
+TEST_F(JamWriteIntegrationTest, ForcedAppendDoesNotMistakeOtherKludgeTextForChrs) {
+  JamMessage input;
+  input.SetText("Привет Ёё");
+  input.SetSubject("Тема");
+  input.AddRawSubField(JamSubFieldType::kFtsKludge, "PID: mentions CHRS: UTF-8 4");
+  JamMessageBase forced(test_dir_.string(), "KOI8-R", true);
+  ASSERT_EQ(forced.Open(), JamError::kSuccess);
+  ASSERT_EQ(forced.AddMessage(input), JamError::kSuccess);
+  const auto header = Contents(test_dir_.string() + ".jhr");
+  EXPECT_NE(header.find("PID: mentions CHRS: UTF-8 4"), std::string::npos);
+  EXPECT_NE(header.find("CHRS: KOI8-R 2"), std::string::npos);
+  // An ordinary reader must decode the new record without relying on an override.
+  forced.Close();
+  JamMessageBase reader(test_dir_.string(), "CP866");
+  ASSERT_EQ(reader.Open(), JamError::kSuccess);
+  auto read = reader.ReadMessage(1);
+  ASSERT_TRUE(read);
+  EXPECT_EQ(read->text(), input.text());
+  EXPECT_EQ(read->subject(), input.subject());
+}

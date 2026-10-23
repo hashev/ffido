@@ -521,7 +521,10 @@ private:
   uint32_t reply_to_ = 0;  ///< Номер сообщения-родителя (для reply chain)
 };
 
-inline std::expected<std::string, JamError> MessageEncoding(const JamMessage& message, std::string_view fallback) {
+inline std::expected<std::string, JamError> MessageEncoding(const JamMessage& message, std::string_view fallback,
+                                                            bool force = false) {
+  if (force)
+    return std::string(fallback);
   std::string encoding(fallback);
   bool found = false;
   for (const auto& field : message.subfields()) {
@@ -575,11 +578,18 @@ struct JamAppendPlan {
 class JamMessageBase {
 public:
   // Caller holds a lease on the physical owner for the entire view lifetime.
-  explicit JamMessageBase(const std::array<int, 3>& descriptors, std::string encoding = "cp866", std::function<bool()> active = {}, JamFileIo* io = nullptr)
-      : default_encoding_(std::move(encoding)), jhr_file_(descriptors[0], io),
-        jdt_file_(descriptors[1], io), jdx_file_(descriptors[2], io), active_(std::move(active)) {}
+  explicit JamMessageBase(const std::array<int, 3>& descriptors, std::string encoding = "cp866",
+                          std::function<bool()> active = {}, JamFileIo* io = nullptr, bool force_encoding = false)
+      : default_encoding_(std::move(encoding)),
+        force_encoding_(force_encoding),
+        jhr_file_(descriptors[0], io),
+        jdt_file_(descriptors[1], io),
+        jdx_file_(descriptors[2], io),
+        active_(std::move(active)) {
+  }
 
-  explicit JamMessageBase(std::string_view base_path, std::string_view default_encoding = "cp866");
+  explicit JamMessageBase(std::string_view base_path, std::string_view default_encoding = "cp866",
+                          bool force_encoding = false);
   ~JamMessageBase();  // RAII — автоматически закрывает файлы
 
   JamMessageBase(const JamMessageBase&) = delete;
@@ -624,6 +634,7 @@ private:
 
   std::string base_path_;
   std::string default_encoding_;
+  bool force_encoding_ = false;
   bool is_open_ = false;
   JamBaseHeader base_header_{};
   std::vector<JamIndexRecord> index_structure_;
@@ -724,13 +735,15 @@ inline JamMessageBase::~JamMessageBase() {
 inline JamMessageBase::JamMessageBase(JamMessageBase&& other) noexcept
     : base_path_(std::move(other.base_path_)),
       default_encoding_(std::move(other.default_encoding_)),
+      force_encoding_(other.force_encoding_),
       is_open_(other.is_open_),
       base_header_(other.base_header_),
       index_structure_(std::move(other.index_structure_)),
       jhr_file_(std::move(other.jhr_file_)),
       jdt_file_(std::move(other.jdt_file_)),
       jdx_file_(std::move(other.jdx_file_)),
-      jlr_file_(std::move(other.jlr_file_)), active_(std::move(other.active_)) {
+      jlr_file_(std::move(other.jlr_file_)),
+      active_(std::move(other.active_)) {
   other.is_open_ = false;
 }
 
@@ -739,6 +752,7 @@ inline JamMessageBase& JamMessageBase::operator=(JamMessageBase&& other) noexcep
     Close();
     base_path_ = std::move(other.base_path_);
     default_encoding_ = std::move(other.default_encoding_);
+    force_encoding_ = other.force_encoding_;
     is_open_ = other.is_open_;
     base_header_ = other.base_header_;
     index_structure_ = std::move(other.index_structure_);
@@ -752,8 +766,9 @@ inline JamMessageBase& JamMessageBase::operator=(JamMessageBase&& other) noexcep
   return *this;
 }
 
-inline JamMessageBase::JamMessageBase(std::string_view base_path, std::string_view default_encoding)
-    : base_path_(base_path), default_encoding_(default_encoding) {
+inline JamMessageBase::JamMessageBase(std::string_view base_path, std::string_view default_encoding,
+                                      bool force_encoding)
+    : base_path_(base_path), default_encoding_(default_encoding), force_encoding_(force_encoding) {
 }
 
 [[nodiscard]] inline std::expected<std::vector<uint32_t>, JamError> JamMessageBase::GetMessageNumbers() const {
@@ -867,7 +882,7 @@ inline std::expected<JamMessageHeader, JamError> JamMessageBase::ReadHeader(uint
     message.SetText(std::string(text_data.data(), msg_header.txt_len));
   }
 
-  auto encoding = MessageEncoding(message, default_encoding_);
+  auto encoding = MessageEncoding(message, default_encoding_, force_encoding_);
   if (!encoding)
     return std::unexpected(encoding.error());
   auto decoded = fidoback::storage::ConvertText(message.text_, *encoding, "UTF-8");
@@ -939,7 +954,7 @@ inline std::expected<uint32_t, JamError> JamMessageBase::GetLastRead(std::string
   auto live=GetMessageNumbers();
   if (!live) return std::unexpected(live.error());
 
-  auto selected_encoding = MessageEncoding(input, default_encoding_);
+  auto selected_encoding = MessageEncoding(input, default_encoding_, force_encoding_);
   if (!selected_encoding)
     return std::unexpected(selected_encoding.error());
   JamMessage message = input;
@@ -947,9 +962,40 @@ inline std::expected<uint32_t, JamError> JamMessageBase::GetLastRead(std::string
   if (!body)
     return std::unexpected(JamError::kCorruptedData);
   message.text_ = std::move(*body);
+  // Only the new copy is normalized: local transcoding may have left a stale
+  // CHRS in its source. Preserve other lines sharing the same kludge subfield.
+  if (force_encoding_) {
+    for (auto it = message.subfields_.begin(); it != message.subfields_.end();) {
+      if (it->type() != JamSubFieldType::kFtsKludge || it->high_id() != 0) {
+        ++it;
+        continue;
+      }
+      const auto data = it->ToString();
+      std::string kept;
+      size_t position = 0;
+      while (position < data.size()) {
+        const auto end = data.find_first_of("\r\n", position);
+        const auto next = end == std::string::npos ? data.size() : end + 1;
+        std::string_view line(data.data() + position, (end == std::string::npos ? data.size() : end) - position);
+        if (!line.empty() && line.front() == '\1')
+          line.remove_prefix(1);
+        if (!line.starts_with("CHRS: "))
+          kept.append(data, position, next - position);
+        position = next;
+      }
+      if (kept.empty())
+        it = message.subfields_.erase(it);
+      else {
+        *it = JamSubField(JamSubFieldType::kFtsKludge, std::vector<uint8_t>(kept.begin(), kept.end()));
+        ++it;
+      }
+    }
+  }
   bool has_chrs = false;
   for (auto& field : message.subfields_) {
-    if (field.type() == JamSubFieldType::kFtsKludge && field.ToString().find("CHRS: ") != std::string::npos)
+    // A forced write has removed its old CHRS lines and always needs its own.
+    if (!force_encoding_ && field.type() == JamSubFieldType::kFtsKludge &&
+        field.ToString().find("CHRS: ") != std::string::npos)
       has_chrs = true;
     if (field.high_id() != 0 ||
         (field.type() != JamSubFieldType::kSubject && field.type() != JamSubFieldType::kSenderName &&

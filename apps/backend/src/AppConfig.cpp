@@ -120,14 +120,42 @@ std::expected<AppConfig, ConfigError> ParseAppConfig(const nlohmann::json& j) {
           cfg.ftn.jam_base_path.find('\0') != std::string::npos || cfg.ftn.default_encoding.size() > 64 ||
           cfg.ftn.default_encoding.find("//") != std::string::npos)
         return std::unexpected(ConfigError::kInvalidValue);
-      auto converter = iconv_open("UTF-8", cfg.ftn.default_encoding.c_str());
-      if (converter == reinterpret_cast<iconv_t>(-1))
+      const auto valid_encoding = [](const std::string& encoding) {
+        if (encoding.empty() || encoding.size() > 64 || encoding.find('\0') != std::string::npos ||
+            encoding.find("//") != std::string::npos)
+          return false;
+        for (const auto& direction : {std::pair{"UTF-8", encoding.c_str()}, std::pair{encoding.c_str(), "UTF-8"}}) {
+          auto converter = iconv_open(direction.first, direction.second);
+          if (converter == reinterpret_cast<iconv_t>(-1))
+            return false;
+          iconv_close(converter);
+        }
+        return true;
+      };
+      if (!valid_encoding(cfg.ftn.default_encoding))
         return std::unexpected(ConfigError::kInvalidValue);
-      iconv_close(converter);
-      converter = iconv_open(cfg.ftn.default_encoding.c_str(), "UTF-8");
-      if (converter == reinterpret_cast<iconv_t>(-1))
-        return std::unexpected(ConfigError::kInvalidValue);
-      iconv_close(converter);
+      if (ftn.contains("jam_encoding_overrides")) {
+        const auto& rules = ftn.at("jam_encoding_overrides");
+        if (!rules.is_object() || rules.size() > 10000)
+          return std::unexpected(ConfigError::kInvalidValue);
+        for (const auto& [name, value] : rules.items()) {
+          const std::filesystem::path path(name);
+          if (name.empty() || name.size() > 4096 || name.find('\0') != std::string::npos ||
+              name.find("//") != std::string::npos || path.is_absolute() || path.filename().empty() ||
+              path.generic_string() != name)
+            return std::unexpected(ConfigError::kInvalidValue);
+          for (const auto& part : path)
+            if (part == "." || part == ".." || part.empty())
+              return std::unexpected(ConfigError::kInvalidValue);
+          auto encoding = value.get<std::string>();
+          if (!valid_encoding(encoding))
+            return std::unexpected(ConfigError::kInvalidValue);
+          for (auto& c : encoding)
+            if (c >= 'a' && c <= 'z')
+              c -= 'a' - 'A';
+          cfg.ftn.jam_encoding_overrides.emplace(name, std::move(encoding));
+        }
+      }
     }
 
     if (j.contains("auth")) {

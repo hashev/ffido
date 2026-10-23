@@ -17,6 +17,7 @@
     "areacfg_path": "/srv/fido/areas.cfg",
     "jam_base_path": "/srv/fido",
     "default_encoding": "cp866",
+    "jam_encoding_overrides": {},
     "path_mappings": [],
     "coordination_lock": "/srv/fido/ffido-hpt.lock"
   },

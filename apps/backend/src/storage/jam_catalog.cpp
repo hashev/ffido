@@ -4,6 +4,7 @@
 #include <unistd.h>
 
 #include <cerrno>
+#include <set>
 
 #include "JamMessageBase.h"
 #include "storage/coordination_lock.hpp"
@@ -63,7 +64,7 @@ JamCatalog::~JamCatalog() {
 
 std::expected<std::unique_ptr<JamCatalog>, CatalogError> JamCatalog::Build(
     const std::filesystem::path& root, const std::vector<EchoAreaConfig>& areas,
-    std::shared_ptr<CoordinationLock> coordination) {
+    std::shared_ptr<CoordinationLock> coordination, const std::map<std::string, std::string>& encoding_overrides) {
   std::unique_ptr<CoordinationLease> lease;
   if (coordination) {
     auto acquired = coordination->Shared(std::chrono::steady_clock::now() + std::chrono::seconds(5));
@@ -81,6 +82,7 @@ std::expected<std::unique_ptr<JamCatalog>, CatalogError> JamCatalog::Build(
   auto catalog = std::unique_ptr<JamCatalog>(new JamCatalog(root_fd));
   catalog->coordination_ = std::move(coordination);
   std::map<std::pair<dev_t, ino_t>, std::shared_ptr<JamFiles>> physical;
+  std::set<std::string> matched_overrides;
   for (const auto& config : areas) {
     if (config.kind == AreaKind::kEcho && (config.is_passthrough || config.msgbase_type != "JAM"))
       continue;
@@ -121,6 +123,10 @@ std::expected<std::unique_ptr<JamCatalog>, CatalogError> JamCatalog::Build(
       continue;
     }
     auto files = std::make_shared<JamFiles>();
+    if (auto rule = encoding_overrides.find(relative.generic_string()); rule != encoding_overrides.end()) {
+      files->forced_encoding = rule->second;
+      matched_overrides.insert(rule->first);
+    }
     files->personal_mailbox = !config.mailbox_address.empty();
     files->private_area = config.kind != AreaKind::kEcho;
     files->local_area = config.kind == AreaKind::kLocal;
@@ -158,8 +164,8 @@ std::expected<std::unique_ptr<JamCatalog>, CatalogError> JamCatalog::Build(
     const auto key = std::pair{files->identities[0].st_dev, files->identities[0].st_ino};
     auto [entry, inserted] = physical.emplace(key, files);
     if (!inserted) {
-      if (entry->second->personal_mailbox || files->personal_mailbox ||
-          entry->second->private_area != files->private_area)
+      if (entry->second->forced_encoding != files->forced_encoding || entry->second->personal_mailbox ||
+          files->personal_mailbox || entry->second->private_area != files->private_area)
         return std::unexpected(CatalogError::kInvalidConfiguration);
       // A local alias of a netmail base cannot promise local-only publication.
       entry->second->role_read_only |= files->role_read_only || entry->second->local_area != files->local_area;
@@ -170,6 +176,8 @@ std::expected<std::unique_ptr<JamCatalog>, CatalogError> JamCatalog::Build(
     }
     catalog->areas_.emplace(id, JamArea{config, relative, files});
   }
+  if (matched_overrides.size() != encoding_overrides.size())
+    return std::unexpected(CatalogError::kInvalidConfiguration);
   return catalog;
 }
 

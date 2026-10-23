@@ -24,6 +24,7 @@ enum class CatalogError { kInvalidConfiguration, kNotFound, kChangedBase, kIo, k
 struct JamFiles {
   std::array<int, 3> descriptors{-1, -1, -1};
   std::array<struct stat, 3> identities{};
+  std::string forced_encoding;
   bool private_area = false;
   bool personal_mailbox = false;
   bool local_area = false;
@@ -47,7 +48,8 @@ class JamCatalog {
 public:
   static std::expected<std::unique_ptr<JamCatalog>, CatalogError> Build(
       const std::filesystem::path& root, const std::vector<EchoAreaConfig>& areas,
-      std::shared_ptr<CoordinationLock> coordination = {});
+      std::shared_ptr<CoordinationLock> coordination = {},
+      const std::map<std::string, std::string>& encoding_overrides = {});
   ~JamCatalog();
   JamCatalog(const JamCatalog&) = delete;
   JamCatalog& operator=(const JamCatalog&) = delete;
