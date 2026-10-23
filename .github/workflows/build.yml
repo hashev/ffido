@@ -135,7 +135,11 @@ jobs:
         run: |
           # Azure's Ubuntu mirror has stalled while downloading LLVM packages.
           # Use the official archive, retaining Ubuntu signatures and package versions.
-          sudo sed -E -i 's@https?://azure\.archive\.ubuntu\.com/ubuntu@https://archive.ubuntu.com/ubuntu@g' /etc/apt/sources.list.d/ubuntu.sources
+          for source in /etc/apt/sources.list.d/ubuntu.sources /etc/apt/apt-mirrors*.txt; do
+            if [[ -f "$source" ]]; then
+              sudo sed -E -i 's@https?://azure\.archive\.ubuntu\.com/ubuntu@https://archive.ubuntu.com/ubuntu@g' "$source"
+            fi
+          done
           apt_options=(-o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30)
           sudo apt-get "${apt_options[@]}" update
           sudo apt-get "${apt_options[@]}" install -y clang-19 clang-tidy-19 clang-format-19 ninja-build libssl-dev libc-ares-dev libre2-dev zlib1g-dev patchelf pkg-config
