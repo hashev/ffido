@@ -79,6 +79,7 @@ class _SettingsWidgetState extends State<SettingsWidget> {
         store: widget.store ?? const SecureSessionStore(),
       ).savedPassword(endpoint, address);
       if (!mounted ||
+          _busy ||
           _endpoint.text != endpoint ||
           _address.text != address ||
           _password.text.isNotEmpty ||

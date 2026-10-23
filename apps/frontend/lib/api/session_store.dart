@@ -58,7 +58,11 @@ class SessionManager {
       return null;
     }
     final value = await store.read(_passwordKey(endpoint));
-    if (value == null) return null;
+    // Logout can finish while Keychain/Keystore is still answering this read.
+    if (value == null ||
+        preferences.getBool(_passwordDisabled(endpoint)) == true) {
+      return null;
+    }
     try {
       final record = jsonDecode(value);
       if (record is Map &&

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter/services.dart';
 import 'package:fido/platform/desktop_profile.dart';
@@ -10,8 +12,10 @@ import 'package:fido/api/session_store.dart';
 class MemoryStore implements SessionStore {
   final values = <String, String>{};
   bool failWrites = false, failDelete = false;
+  Future<String?> Function(String)? onRead;
   @override
-  Future<String?> read(String endpoint) async => values[endpoint];
+  Future<String?> read(String endpoint) async =>
+      onRead == null ? values[endpoint] : await onRead!(endpoint);
   @override
   Future<void> write(String endpoint, String secret) async {
     if (failWrites) throw StateError('unavailable');
@@ -193,6 +197,26 @@ void main() {
       expect(await manager.savedPassword(endpoint, '2:1/2'), isNull);
     },
   );
+  test('logout blocks a password read that was already in flight', () async {
+    final manager = SessionManager(client, prefs, store: store);
+    final endpoint = client.endpoint.toString();
+    await manager.connect(
+      endpoint: endpoint,
+      name: 'Name',
+      address: '2:1/2',
+      password: 'remember-me',
+    );
+    final gate = Completer<void>();
+    store.onRead = (key) async {
+      final stale = store.values[key];
+      await gate.future;
+      return stale;
+    };
+    final pending = manager.savedPassword(endpoint, '2:1/2');
+    await manager.logout();
+    gate.complete();
+    expect(await pending, isNull);
+  });
   test('secure profile sessions isolate connect, restore, endpoint changes and logout', () async {
     const channel = MethodChannel(
       'plugins.it_nomads.com/flutter_secure_storage',
