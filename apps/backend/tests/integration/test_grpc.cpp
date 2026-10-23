@@ -32,6 +32,12 @@ protected:
   virtual std::string Encoding() const {
     return "cp866";
   }
+  virtual std::map<std::string, std::string> EncodingOverrides() const {
+    return {};
+  }
+  virtual std::shared_ptr<const service::EchoAccess> AccessPolicy() const {
+    return test::EchoAccess(*catalog, temp.path());
+  }
   void SetUp() override {
     test::GenerateTlsCertificate(temp.path());
     auto base = temp.path() / "file";
@@ -54,7 +60,7 @@ protected:
     area.msgbase_type = "JAM";
     auto coordination = storage::CoordinationLock::Open(temp.path() / "hpt.lock");
     ASSERT_TRUE(coordination);
-    auto opened = storage::JamCatalog::Build(temp.path(), {area}, *coordination);
+    auto opened = storage::JamCatalog::Build(temp.path(), {area}, *coordination, EncodingOverrides());
     ASSERT_TRUE(opened);
     catalog = std::shared_ptr<storage::JamCatalog>(std::move(*opened));
     metadata = storage::CreateSQLiteStore(temp.path() / "metadata.db");
@@ -69,8 +75,7 @@ protected:
     issued = auth.Provision("B", domain::Profile{"Борис", "2:5015/1.2", "", "2026-01-01T00:00:00Z"}, expiry);
     ASSERT_TRUE(issued);
     b = *issued;
-    service =
-        std::make_unique<service::GrpcService>(catalog, metadata, test::EchoAccess(*catalog, temp.path()), Encoding());
+    service = std::make_unique<service::GrpcService>(catalog, metadata, AccessPolicy(), Encoding());
     grpc::SslServerCredentialsOptions tls;
     tls.pem_key_cert_pairs.push_back(
         {test::ReadFile(temp.path() / "key.pem"), test::ReadFile(temp.path() / "certificate.pem")});
@@ -1009,4 +1014,139 @@ TEST_F(Koi8GrpcTest, UueRoundTripKeepsPayloadAndHash) {
   Auth(get_context, a);
   ASSERT_TRUE(client->GetUueChunk(&get_context, get, &bytes).ok());
   EXPECT_EQ(bytes.data(), "abc");
+}
+
+namespace {
+class ForcedKoi8GrpcTest : public GrpcTest {
+protected:
+  std::map<std::string, std::string> EncodingOverrides() const override {
+    return {{"file", "KOI8-R"}};
+  }
+};
+class ForcedUtf8GrpcTest : public GrpcTest {
+protected:
+  std::string Encoding() const override {
+    return "KOI8-R";
+  }
+  std::map<std::string, std::string> EncodingOverrides() const override {
+    return {{"file", "UTF-8"}};
+  }
+};
+}  // namespace
+TEST_F(ForcedKoi8GrpcTest, RpcReadsStaleChrsAndPublishesInAreaEncoding) {
+  auto request = Request("area-override");
+  request.set_subject("Тема Ёё");
+  request.set_body("Привет Ёё");
+  wire::CreateMessageResponse created;
+  grpc::ClientContext create;
+  Auth(create, a);
+  ASSERT_TRUE(client->CreateMessage(&create, request, &created).ok());
+  auto raw = test::ReadJamWireRecord(temp.path() / "file", 0);
+  EXPECT_TRUE(raw.HasField(2000, "CHRS: KOI8-R 2"));
+  EXPECT_EQ(raw.Field(6), "\xf4\xc5\xcd\xc1 \xb3\xa3");
+  auto header = test::ReadFile(temp.path() / "file.jhr");
+  const auto at = header.find("CHRS: KOI8-R 2");
+  ASSERT_NE(at, std::string::npos);
+  header.replace(at, 14, "CHRS: CP866 2 ");
+  std::ofstream(temp.path() / "file.jhr", std::ios::binary | std::ios::trunc) << header;
+  const auto body = test::ReadFile(temp.path() / "file.jdt");
+  const auto index = test::ReadFile(temp.path() / "file.jdx");
+  wire::Message decoded;
+  grpc::ClientContext read;
+  Auth(read, a);
+  ASSERT_TRUE(client->GetMessage(&read, created.message(), &decoded).ok());
+  EXPECT_EQ(decoded.subject(), request.subject());
+  EXPECT_EQ(decoded.from_name(), "Алексей");
+  EXPECT_TRUE(decoded.body().starts_with("Привет Ёё"));
+  EXPECT_EQ(test::ReadFile(temp.path() / "file.jhr"), header);
+  EXPECT_EQ(test::ReadFile(temp.path() / "file.jdt"), body);
+  EXPECT_EQ(test::ReadFile(temp.path() / "file.jdx"), index);
+}
+TEST_F(ForcedUtf8GrpcTest, RpcAreaUtf8OverridesGlobalKoi8ForNewMessages) {
+  auto request = Request("utf8-override");
+  request.set_body("Привет 😀");
+  wire::CreateMessageResponse created;
+  grpc::ClientContext create;
+  Auth(create, a);
+  ASSERT_TRUE(client->CreateMessage(&create, request, &created).ok());
+  auto raw = test::ReadJamWireRecord(temp.path() / "file", 0);
+  EXPECT_TRUE(raw.HasField(2000, "CHRS: UTF-8 4"));
+  EXPECT_TRUE(raw.body.starts_with("Привет 😀"));
+  wire::Message decoded;
+  grpc::ClientContext read;
+  Auth(read, a);
+  ASSERT_TRUE(client->GetMessage(&read, created.message(), &decoded).ok());
+  EXPECT_TRUE(decoded.body().starts_with("Привет 😀"));
+}
+
+namespace {
+class OwnerEchoGrpcTest : public GrpcTest {
+protected:
+  std::string owner;
+  std::shared_ptr<const service::EchoAccess> AccessPolicy() const override {
+    service::HptConfiguration config;
+    config.credentials.emplace("2:5015/1", "fixture-owner-password");
+    config.echoes = {{"RU.TEST", temp.path() / "file", {{"2:5015/1.1", {true, false}}}}};
+    return service::EchoAccess::Build(config, *catalog, {"2:5015/1"}).value();
+  }
+  void SetUp() override {
+    GrpcTest::SetUp();
+    if (::testing::Test::HasFatalFailure())
+      return;
+    service::AuthService auth(metadata);
+    const auto expiry =
+        std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count() +
+        3600;
+    auto issued = auth.Provision("owner", domain::Profile{"Owner", "2:5015/1", "", ""}, expiry);
+    ASSERT_TRUE(issued);
+    owner = *issued;
+  }
+};
+}  // namespace
+TEST_F(OwnerEchoGrpcTest, OwnerWithoutHptSubscriptionCanReadPostAndReplyWhilePointsStayRestricted) {
+  wire::ListConferencesRequest list;
+  list.mutable_page()->set_limit(20);
+  list.set_sort(wire::CONFERENCE_SORT_NAME);
+  wire::ListConferencesResponse result;
+  grpc::ClientContext owner_list;
+  Auth(owner_list, owner);
+  ASSERT_TRUE(client->ListConferences(&owner_list, list, &result).ok());
+  ASSERT_EQ(result.conferences_size(), 1);
+  EXPECT_TRUE(result.conferences(0).can_read());
+  EXPECT_TRUE(result.conferences(0).can_post());
+  auto request = Request("owner-unsubscribed");
+  wire::CreateMessageResponse created;
+  grpc::ClientContext write;
+  Auth(write, owner);
+  ASSERT_TRUE(client->CreateMessage(&write, request, &created).ok());
+  wire::Message decoded;
+  grpc::ClientContext read;
+  Auth(read, owner);
+  ASSERT_TRUE(client->GetMessage(&read, created.message(), &decoded).ok());
+  EXPECT_EQ(decoded.from_address(), "2:5015/1");
+  request.set_operation_id("owner-reply");
+  request.set_in_reply_to(created.message().message_id());
+  grpc::ClientContext reply;
+  Auth(reply, owner);
+  wire::CreateMessageResponse replied;
+  ASSERT_TRUE(client->CreateMessage(&reply, request, &replied).ok());
+  for (const auto& point : {a, b}) {
+    grpc::ClientContext write_point;
+    Auth(write_point, point);
+    wire::CreateMessageResponse denied;
+    EXPECT_EQ(client->CreateMessage(&write_point, Request("point-denied"), &denied).error_code(),
+              grpc::StatusCode::PERMISSION_DENIED);
+  }
+  grpc::ClientContext readonly_point;
+  Auth(readonly_point, a);
+  ASSERT_TRUE(client->GetMessage(&readonly_point, created.message(), &decoded).ok());
+  grpc::ClientContext unsubscribed;
+  Auth(unsubscribed, b);
+  EXPECT_EQ(client->GetMessage(&unsubscribed, created.message(), &decoded).error_code(),
+            grpc::StatusCode::PERMISSION_DENIED);
+  grpc::ClientContext point_list;
+  Auth(point_list, b);
+  ASSERT_TRUE(client->ListConferences(&point_list, list, &result).ok());
+  EXPECT_EQ(result.conferences_size(), 0);
+  EXPECT_EQ(test::ReadFile(temp.path() / "file.jdx").size(), 16);
 }

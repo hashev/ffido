@@ -91,7 +91,8 @@ int RunMailStage(const std::filesystem::path& configuration, const std::filesyst
   if (!mailboxes)
     return 1;
   areas->insert(areas->end(), mailboxes->begin(), mailboxes->end());
-  auto opened = storage::JamCatalog::Build(config->ftn.jam_base_path, *areas, *coordination);
+  auto opened =
+      storage::JamCatalog::Build(config->ftn.jam_base_path, *areas, *coordination, config->ftn.jam_encoding_overrides);
   if (!opened)
     return 1;
   auto catalog = std::shared_ptr<storage::JamCatalog>(std::move(*opened));

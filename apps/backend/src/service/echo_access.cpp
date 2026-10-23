@@ -58,6 +58,7 @@ std::expected<std::shared_ptr<const EchoAccess>, domain::ApiError> EchoAccess::B
         return std::unexpected(domain::ApiError::Server("HPT and JAM echo paths disagree"));
     }
     policy->echoes_.emplace(id, echo.links);
+    policy->owner_echoes_.emplace(id, EchoPermissions{true, area.files->writable && !area.files->role_read_only, true});
   }
   return policy;
 }
@@ -79,6 +80,8 @@ std::expected<EchoPermissions, domain::ApiError> EchoAccess::Permissions(storage
   auto echo = echoes_.find(conference);
   if (echo == echoes_.end())
     return EchoPermissions{};
+  if (owners_.contains(*address))
+    return owner_echoes_.at(echo->first);
   auto link = echo->second.find(*address);
   return link == echo->second.end() ? EchoPermissions{} : link->second;
 }

@@ -306,3 +306,19 @@ TEST(PathMapping, LongestComponentPrefixAppliesOnce) {
   EXPECT_FALSE(MapPath("/container/jam/../escape", *rules));
   EXPECT_FALSE(MapPath("relative", *rules));
 }
+
+TEST(AppConfig, JamEncodingOverridesValidatePathsAndCodecs) {
+  using nlohmann::json;
+  ASSERT_TRUE(ParseAppConfig(json::object())->ftn.jam_encoding_overrides.empty());
+  auto config =
+      ParseAppConfig({{"ftn", {{"jam_encoding_overrides", {{"nested/echo", "koi8-r"}, {"utf-8", "UTF-8"}}}}}});
+  ASSERT_TRUE(config);
+  EXPECT_EQ(config->ftn.jam_encoding_overrides.at("nested/echo"), "KOI8-R");
+  for (const auto& rules :
+       {json(nullptr), json::array(), json(5), json{{"echo", 1}}, json{{"echo", "unknown-codec"}},
+        json{{"echo", "UTF-8//IGNORE"}}, json{{"echo", ""}}, json{{"echo", std::string("KOI8-R\0x", 8)}}})
+    EXPECT_FALSE(ParseAppConfig({{"ftn", {{"jam_encoding_overrides", rules}}}})) << rules;
+  for (auto path : {"", "/echo", "../echo", "x/../echo", "./echo", "x//echo", "echo/"})
+    EXPECT_FALSE(ParseAppConfig({{"ftn", {{"jam_encoding_overrides", {{path, "KOI8-R"}}}}}})) << path;
+  EXPECT_FALSE(ParseAppConfig({{"ftn", {{"jam_encoding_overrides", {{std::string("a\0b", 3), "KOI8-R"}}}}}}));
+}

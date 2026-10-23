@@ -1,0 +1,127 @@
+--- a/src/scanarea.c
++++ b/src/scanarea.c
+@@ -35,6 +35,7 @@
+  */
+ #include <stdlib.h>
+ #include <string.h>
++#include <strings.h>
+ #include <ctype.h>
+ #include <errno.h>
+
+@@ -65,6 +66,43 @@
+ #ifdef DO_PERL
+ #include <hptperl.h>
+ #endif
++
++/* Local amster2 policy: JAM is KOI8-R except the UTF-8 echo. Opt in only. */
++static int ffidoCharsetPolicy(void)
++{
++    const char *value = getenv("FFIDO_HPT_KOI8_CP866");
++    return value != NULL && strcmp(value, "1") == 0;
++}
++
++static void ffidoTransportChrs(s_message *msg, const char *chrs)
++{
++    const char *p = msg->text, *end;
++    char *text = safe_malloc(strlen(p) + strlen(chrs) + 10), *out = text;
++    /* AREA must remain the first line; CHRS must precede the message body. */
++    if(strncmp(p, "AREA:", 5) == 0 && (end = strchr(p, '\r')) != NULL)
++    {
++        memcpy(out, p, end - p + 1);
++        out += end - p + 1;
++        p = end + 1;
++    }
++    out += sprintf(out, "\001CHRS: %s\r", chrs);
++    while(*p)
++    {
++        end = strchr(p, '\r');
++        if(end == NULL) end = p + strlen(p);
++        else end++;
++        if(strncasecmp(p, "\001CHRS:", 6) != 0)
++        {
++            memcpy(out, p, end - p);
++            out += end - p;
++        }
++        p = end;
++    }
++    *out = '\0';
++    nfree(msg->text);
++    msg->text = text;
++    msg->textLength = (UINT32)(out - text);
++}
+
+ void makeMsg(HMSG hmsg, const XMSG * pxmsg, s_message * msg, s_area * echo, int action)
+ {
+@@ -166,7 +204,8 @@
+     }
+
+     /*  recoding from internal to transport charSet */
+-    if(config->outtab != NULL && action != 2)
++    if(config->outtab != NULL && action != 2 &&
++       !(ffidoCharsetPolicy() && strcasecmp(echo->areaName, "utf-8") == 0))
+     {
+         recodeToTransportCharset((char *)msg->fromUserName);
+         recodeToTransportCharset((char *)msg->toUserName);
+@@ -176,6 +215,14 @@
+     else
+     {
+         msg->recode |= (REC_HDR | REC_TXT);
++    }
++
++    if(ffidoCharsetPolicy() && action != 2)
++    {
++        int utf8 = strcasecmp(echo->areaName, "utf-8") == 0;
++        ffidoTransportChrs(msg, utf8 ? "UTF-8 4" : "CP866 2");
++        /* UTF-8 has never been recoded to the internal single-byte charset. */
++        if(utf8) msg->recode &= ~(REC_HDR | REC_TXT);
+     }
+
+     nfree(seenByPath);
+--- a/src/toss.c
++++ b/src/toss.c
+@@ -39,6 +39,7 @@
+  * $Id$
+  */
+ #include <string.h>
++#include <strings.h>
+ #include <stdlib.h>
+ #include <errno.h>
+ #include <ctype.h>
+@@ -248,7 +249,10 @@
+         if(hmsg != NULL)
+         {
+             /*  recode from TransportCharset to internal Charset */
+-            if((config->recodeMsgBase) && (recode && config->intab != NULL))
++            if((config->recodeMsgBase) && (recode && config->intab != NULL) &&
++               !(getenv("FFIDO_HPT_KOI8_CP866") != NULL &&
++                 strcmp(getenv("FFIDO_HPT_KOI8_CP866"), "1") == 0 &&
++                 strcasecmp(echo->areaName, "utf-8") == 0))
+             {
+                 if((msg->recode & REC_HDR) == 0)
+                 {
+--- a/src/hpt.c
++++ b/src/hpt.c
+@@ -526,6 +526,8 @@
+ void processConfig(void)
+ {
+     char * buff = NULL;
++    int charsetStatus;
++    const char * charsetPolicy;
+
+ /* #if !defined(__OS2__) && !defined(UNIX) */
+ /*    time_t   time_cur, locklife = 0; */
+@@ -718,6 +720,13 @@
+             NULL);
+     /*  load recoding tables */
+     initCharsets();
+-    getctabs(config->intab, config->outtab);
++    charsetStatus = getctabs(config->intab, config->outtab);
++    charsetPolicy = getenv("FFIDO_HPT_KOI8_CP866");
++    if(charsetPolicy != NULL && strcmp(charsetPolicy, "1") == 0 &&
++       (!config->recodeMsgBase || config->intab == NULL || config->outtab == NULL || charsetStatus != 0))
++    {
++        fprintf(stderr, "FFIDO charset policy requires RecodeMsgBase on and readable valid intab/outtab tables\n");
++        exit(EX_CONFIG);
++    }
+     w_log(LL_START, "Start");
+ } /* processConfig */

@@ -956,3 +956,29 @@ TEST_F(PrivateAreasTest, UueOwnerAndPointNetmailPublishAllPartsWithFrozenRecipie
     EXPECT_EQ(uue.Chunk(file->id, 0, 65536, user)->bytes, bytes);
   }
 }
+
+TEST_F(PrivateAreasTest, CompletedIngressSurvivesEncodingPolicyChangeWithoutReappend) {
+  auto config = Mailboxes();
+  Incoming("2:1/2.2", "2:1/9.7 encoding-change", "Привет Ёё");
+  service::MailBridge original(config, hpt, catalog, metadata);
+  ASSERT_TRUE(original.Dispatch());
+  ASSERT_EQ(metadata->MailTransfers()->size(), 1u);
+  const auto mailbox = temp.path() / "points/p1";
+  const auto body = test::ReadFile(mailbox.string() + ".jdt");
+  const auto index = test::ReadFile(mailbox.string() + ".jdx");
+  const auto header = test::ReadFile(mailbox.string() + ".jhr");
+  std::vector<EchoAreaConfig> areas;
+  for (const auto& [id, area] : catalog->areas())
+    areas.push_back(area.config);
+  config.ftn.jam_encoding_overrides = {{"MAIL", "KOI8-R"}};
+  auto rebuilt = storage::JamCatalog::Build(temp.path(), areas, {}, config.ftn.jam_encoding_overrides);
+  ASSERT_TRUE(rebuilt);
+  auto next = std::shared_ptr<storage::JamCatalog>(std::move(*rebuilt));
+  service::MailBridge changed(config, hpt, next, metadata);
+  ASSERT_TRUE(changed.Dispatch());
+  ASSERT_TRUE(changed.Dispatch());
+  EXPECT_EQ(metadata->MailTransfers()->size(), 1u);
+  EXPECT_EQ(test::ReadFile(mailbox.string() + ".jdt"), body);
+  EXPECT_EQ(test::ReadFile(mailbox.string() + ".jdx"), index);
+  EXPECT_EQ(test::ReadFile(mailbox.string() + ".jhr"), header);
+}

@@ -20,6 +20,7 @@ private:
   std::set<std::string> owners_;
   std::map<std::string, std::pair<std::string, EchoPermissions>, std::less<>> mailboxes_;
   std::map<std::string, EchoPermissions, std::less<>> private_;
+  std::map<std::string, EchoPermissions, std::less<>> owner_echoes_;
   std::map<std::string, std::map<std::string, EchoPermissions>, std::less<>> echoes_;
 };
 }  // namespace fidoback::service

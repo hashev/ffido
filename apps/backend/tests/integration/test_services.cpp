@@ -1169,3 +1169,69 @@ TEST_F(ServicesTest, UueDoesNotTurnEmptySubjectIntoOnlyPartNumbering) {
   EXPECT_FALSE(uue.Commit("echo.one", request, "A"));
   EXPECT_EQ(messages->GetMessages("echo.one", {}, "oldest", "A")->total, 0);
 }
+
+TEST_F(ServicesTest, OwnerPublishesWithoutEchoSubscriptionAndRevocationRestoresPointPolicy) {
+  ASSERT_TRUE(metadata->SaveProfile("A", domain::Profile{"Owner", "2:5015/1", "", ""}));
+  service::HptConfiguration config;
+  config.credentials.emplace("2:5015/1", "fixture-owner-password");
+  config.echoes = {
+      {"echo.one", temp.path() / "different-file", {{"2:5015/1.2", {true, false}}, {"2:5015/1", {false, false}}}},
+      {"echo.two", temp.path() / "second", {}}};
+  auto built = service::EchoAccess::Build(config, *catalog, {"2:5015/1"});
+  ASSERT_TRUE(built);
+  service::ConferenceService owner_conferences(catalog, metadata, *built);
+  service::MessageService owner_messages(catalog, metadata, *built);
+  auto page = owner_conferences.GetConferences({0, 1}, {}, "A");
+  ASSERT_TRUE(page);
+  EXPECT_EQ(page->total, 2);
+  EXPECT_TRUE(page->has_more);
+  for (auto id : {"echo.one", "echo.two"}) {
+    auto conference = owner_conferences.GetConference(id, "A");
+    ASSERT_TRUE(conference);
+    EXPECT_TRUE(conference->can_read);
+    EXPECT_TRUE(conference->can_post);
+  }
+  auto created = owner_messages.CreateMessage("echo.two", Request("owner-send"), "A");
+  ASSERT_TRUE(created);
+  auto message = owner_messages.GetMessage("echo.two", created->id, "A");
+  ASSERT_TRUE(message);
+  EXPECT_EQ(message->from_address, "2:5015/1");
+  EXPECT_EQ(owner_conferences.GetConferences({}, {}, "B")->total, 1);
+  EXPECT_TRUE(owner_conferences.GetConference("echo.one", "B")->can_read);
+  EXPECT_FALSE(owner_conferences.GetConference("echo.one", "B")->can_post);
+  EXPECT_FALSE(owner_conferences.GetConference("echo.two", "B"));
+  EXPECT_FALSE(owner_messages.CreateMessage("echo.one", Request("point-denied"), "B"));
+  EXPECT_FALSE(owner_messages.GetMessage("echo.two", created->id, "B"));
+  auto revoked = service::EchoAccess::Build(config, *catalog);
+  ASSERT_TRUE(revoked);
+  service::MessageService after_revoke(catalog, metadata, *revoked);
+  auto retry = after_revoke.CreateMessage("echo.two", Request("owner-send"), "A");
+  ASSERT_FALSE(retry);
+  EXPECT_EQ(retry.error().code, domain::ErrorCode::kForbidden);
+  EXPECT_FALSE(after_revoke.GetMessage("echo.two", created->id, "A"));
+  auto count = owner_conferences.GetConference("echo.two", "A");
+  ASSERT_TRUE(count);
+  EXPECT_EQ(count->total_count, 1);
+}
+
+TEST_F(ServicesTest, OwnerCannotBypassReadOnlyFilesOrMissingHptCorrespondence) {
+  service::HptConfiguration config;
+  config.credentials.emplace("2:5015/1.1", "fixture-owner-password");
+  config.echoes = {{"echo.one", temp.path() / "different-file", {}}};
+  catalog->Resolve("echo.one").value()->files->writable = false;
+  auto built = service::EchoAccess::Build(config, *catalog, {"2:5015/1.1"});
+  ASSERT_TRUE(built);
+  auto permission = (*built)->Permissions(*metadata, "A", "echo.one");
+  ASSERT_TRUE(permission);
+  EXPECT_TRUE(permission->read);
+  EXPECT_FALSE(permission->post);
+  permission = (*built)->Permissions(*metadata, "A", "echo.two");
+  ASSERT_TRUE(permission);
+  EXPECT_FALSE(permission->read);
+  EXPECT_FALSE(permission->post);
+  service::MessageService limited(catalog, metadata, *built);
+  EXPECT_FALSE(limited.CreateMessage("echo.one", Request("readonly-owner"), "A"));
+  EXPECT_FALSE(metadata->FindOperation("A", "readonly-owner")->has_value());
+  config.echoes.front().filename = temp.path() / "second";
+  EXPECT_FALSE(service::EchoAccess::Build(config, *catalog, {"2:5015/1.1"}));
+}

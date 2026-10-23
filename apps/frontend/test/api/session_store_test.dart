@@ -143,6 +143,56 @@ void main() {
     expect(client.hasToken, isFalse);
     expect(store.values, isEmpty);
   });
+  test(
+    'password survives restart and expired session only in secure storage',
+    () async {
+      final manager = SessionManager(client, prefs, store: store);
+      final endpoint = client.endpoint.toString();
+      await manager.connect(
+        endpoint: endpoint,
+        name: 'Name',
+        address: '2:1/2',
+        password: 'remember-me',
+      );
+      expect(await manager.savedPassword(endpoint, '2:1/2'), 'remember-me');
+      expect(await manager.savedPassword(endpoint, '2:1/3'), isNull);
+      expect(
+        await manager.savedPassword('https://other.invalid', '2:1/2'),
+        isNull,
+      );
+      expect(
+        prefs.getKeys().any(
+          (key) => prefs.get(key).toString().contains('remember-me'),
+        ),
+        isFalse,
+      );
+      client.restoreFailure = const UnauthorizedException();
+      await expectLater(
+        manager.restore(),
+        throwsA(isA<UnauthorizedException>()),
+      );
+      expect(await manager.savedPassword(endpoint, '2:1/2'), 'remember-me');
+      await manager.logout();
+      expect(await manager.savedPassword(endpoint, '2:1/2'), isNull);
+      expect(store.values, isEmpty);
+    },
+  );
+  test(
+    'failed deletion cannot restore a saved password after logout',
+    () async {
+      final manager = SessionManager(client, prefs, store: store);
+      final endpoint = client.endpoint.toString();
+      await manager.connect(
+        endpoint: endpoint,
+        name: 'Name',
+        address: '2:1/2',
+        password: 'remember-me',
+      );
+      store.failDelete = true;
+      await manager.logout();
+      expect(await manager.savedPassword(endpoint, '2:1/2'), isNull);
+    },
+  );
   test('secure profile sessions isolate connect, restore, endpoint changes and logout', () async {
     const channel = MethodChannel(
       'plugins.it_nomads.com/flutter_secure_storage',

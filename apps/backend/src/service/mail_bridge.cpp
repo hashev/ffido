@@ -1,5 +1,6 @@
 #include "service/mail_bridge.hpp"
 
+#include <map>
 #include <stdexcept>
 
 #include "service/crypto.hpp"
@@ -242,6 +243,12 @@ std::expected<void, domain::ApiError> MailBridge::Dispatch() {
       managed.insert(point.address);
     for (const auto& [address, aka] : hpt_.transport.link_akas)
       links.insert(address);
+    // The raw source identity is stable across local decoding-policy changes.
+    // Reuse completed journal entries instead of reinterpreting their payload hash.
+    std::map<std::string, MailTransfer> completed;
+    for (const auto& transfer : Value(metadata_->MailTransfers()))
+      if (transfer.state == TransferState::kDone)
+        completed.emplace(transfer.source_key, transfer);
     for (const auto& name : config_.point_mail.ingress_areas) {
       const auto id = AreaId(name);
       auto source = Open(*catalog_, id, false, config_.ftn.default_encoding);
@@ -265,6 +272,10 @@ std::expected<void, domain::ApiError> MailBridge::Dispatch() {
         input.source_hash = snapshot.hash;
         input.source_key =
             "in:" + Hex(Value(Sha256(id + ":" + generation + ":" + std::to_string(number) + ":" + Hex(snapshot.hash))));
+        if (auto previous = completed.find(input.source_key); previous != completed.end()) {
+          Finish(previous->second);
+          continue;
+        }
         auto envelope = InspectMail(snapshot.message, managed, own, links);
         if (!envelope) {
           input.delivery_key = "quarantine:" + input.source_key;

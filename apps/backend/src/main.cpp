@@ -155,7 +155,8 @@ int RunBackend(int argc, char** argv) {
     spdlog::error("HPT coordination lock is required and must be accessible");
     return 1;
   }
-  auto opened = fidoback::storage::JamCatalog::Build(config->ftn.jam_base_path, *areas, *coordination);
+  auto opened = fidoback::storage::JamCatalog::Build(config->ftn.jam_base_path, *areas, *coordination,
+                                                     config->ftn.jam_encoding_overrides);
   if (!opened) {
     spdlog::error("JAM catalog unavailable");
     return 1;
