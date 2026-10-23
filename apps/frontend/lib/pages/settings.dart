@@ -127,9 +127,9 @@ class _SettingsWidgetState extends State<SettingsWidget> {
               password: _password.text,
             );
       if (!mounted) return;
-      _password.clear();
-      _savedPassword = '';
-      _passwordAutofilled = false;
+      if (logout) _password.clear();
+      _savedPassword = _password.text;
+      _passwordAutofilled = !logout && _password.text.isNotEmpty;
       setState(() {
         _message = message;
         if (_client.session != null) {

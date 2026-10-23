@@ -87,12 +87,16 @@ void main() {
           .widget<TextField>(find.byKey(const Key('password')))
           .controller!
           .text,
-      isEmpty,
+      'fixture-secret',
     );
     expect(
       tester.widget<TextField>(find.byKey(const Key('name'))).controller!.text,
       'Серверное имя',
     );
+    // Reconnecting on the same screen must not require typing the password again.
+    await tester.tap(find.text('Подключиться'));
+    await tester.pumpAndSettle();
+    expect(client.hasToken, isTrue);
     await tester.ensureVisible(find.text('Выйти'));
     await tester.tap(find.text('Выйти'));
     await tester.pumpAndSettle();
