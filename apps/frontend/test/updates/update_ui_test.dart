@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -21,6 +22,28 @@ void main() {
     );
   });
   tearDown(() => controller.dispose());
+  testWidgets('оболочка загрузки не публикует подтверждение запуска', (
+    tester,
+  ) async {
+    await tester.runAsync(controller.start);
+    final io = _StartupProbeOverrides();
+    await IOOverrides.runWithIOOverrides(() async {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        File('qa-control/.ffido-launch-probe');
+      });
+      await tester.pumpWidget(
+        MaterialApp(
+          home: UpdateShell(
+            controller: controller,
+            child: const Text('Загрузка'),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('Загрузка'), findsOneWidget);
+      expect(io.startupProbes, ['qa-control/.ffido-launch-probe']);
+    }, io);
+  });
   testWidgets(
     'уведомление сохраняет экран и текст, Позже скрывает до нового запуска',
     (tester) async {
@@ -113,4 +136,14 @@ void main() {
       expect(controller.busy, isFalse);
     },
   );
+}
+
+final class _StartupProbeOverrides extends IOOverrides {
+  final startupProbes = <String>[];
+
+  @override
+  File createFile(String path) {
+    if (path.endsWith('.ffido-launch-probe')) startupProbes.add(path);
+    return super.createFile(path);
+  }
 }

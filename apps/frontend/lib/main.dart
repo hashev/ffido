@@ -73,6 +73,7 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await update_host.acquireDesktopLease();
   final initialized = initializeApp().then((_) {
+    // Only initialization publishes readiness; loading shells may be rebuilt.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       unawaited(update_host.confirmDesktopStartup());
     });
