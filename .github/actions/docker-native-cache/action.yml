@@ -1,0 +1,118 @@
+name: Docker native component cache
+description: Transfer verified component snapshots to and from the current BuildKit daemon
+inputs:
+  operation:
+    description: prepare or save
+    required: true
+runs:
+  using: composite
+  steps:
+    - if: inputs.operation == 'prepare'
+      shell: bash
+      run: |
+        mkdir -p build/docker-native-cache
+        docker buildx build --platform linux/amd64 --target native-profile --cache-from type=gha,version=2,scope=ffido-server-amd64 --output type=local,dest=build/docker-native-profile .
+    - id: profile
+      shell: bash
+      run: python3 scripts/release/docker_cache.py profile
+    - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
+      id: restore-abseil
+      if: inputs.operation == 'prepare'
+      with:
+        path: build/docker-native-cache/abseil
+        key: docker-native-v1-abseil-${{ steps.profile.outputs.abseil }}
+    - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
+      id: restore-protobuf
+      if: inputs.operation == 'prepare'
+      with:
+        path: build/docker-native-cache/protobuf
+        key: docker-native-v1-protobuf-${{ steps.profile.outputs.protobuf }}
+    - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
+      id: restore-grpc
+      if: inputs.operation == 'prepare'
+      with:
+        path: build/docker-native-cache/grpc
+        key: docker-native-v1-grpc-${{ steps.profile.outputs.grpc }}
+    - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
+      id: restore-huskylib
+      if: inputs.operation == 'prepare'
+      with:
+        path: build/docker-native-cache/huskylib
+        key: docker-native-v1-huskylib-${{ steps.profile.outputs.huskylib }}
+    - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
+      id: restore-smapi
+      if: inputs.operation == 'prepare'
+      with:
+        path: build/docker-native-cache/smapi
+        key: docker-native-v1-smapi-${{ steps.profile.outputs.smapi }}
+    - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
+      id: restore-fidoconf
+      if: inputs.operation == 'prepare'
+      with:
+        path: build/docker-native-cache/fidoconf
+        key: docker-native-v1-fidoconf-${{ steps.profile.outputs.fidoconf }}
+    - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
+      id: restore-areafix
+      if: inputs.operation == 'prepare'
+      with:
+        path: build/docker-native-cache/areafix
+        key: docker-native-v1-areafix-${{ steps.profile.outputs.areafix }}
+    - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
+      id: restore-hpt
+      if: inputs.operation == 'prepare'
+      with:
+        path: build/docker-native-cache/hpt
+        key: docker-native-v1-hpt-${{ steps.profile.outputs.hpt }}
+    - if: inputs.operation == 'prepare'
+      shell: bash
+      env:
+        CACHE_STEPS: ${{ toJSON(steps) }}
+      run: |
+        python3 scripts/release/docker_cache.py lookups
+        docker buildx build --platform linux/amd64 --target native-cache-import --build-context native-cache-input=build/docker-native-cache --build-arg "FFIDO_CACHE_SESSION=$GITHUB_RUN_ID.$GITHUB_RUN_ATTEMPT" --output type=cacheonly .
+    - if: inputs.operation == 'save'
+      id: complete
+      shell: bash
+      run: |
+        docker buildx build --platform linux/amd64 --target native-cache-snapshot --build-arg "FFIDO_CACHE_SESSION=$GITHUB_RUN_ID.$GITHUB_RUN_ATTEMPT" --output type=local,dest=build/docker-native-cache-export .
+        python3 scripts/release/docker_cache.py save
+    - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
+      if: inputs.operation == 'save' && steps.complete.outputs.abseil == 'true'
+      with:
+        path: build/docker-native-cache/abseil
+        key: docker-native-v1-abseil-${{ steps.profile.outputs.abseil }}
+    - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
+      if: inputs.operation == 'save' && steps.complete.outputs.protobuf == 'true'
+      with:
+        path: build/docker-native-cache/protobuf
+        key: docker-native-v1-protobuf-${{ steps.profile.outputs.protobuf }}
+    - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
+      if: inputs.operation == 'save' && steps.complete.outputs.grpc == 'true'
+      with:
+        path: build/docker-native-cache/grpc
+        key: docker-native-v1-grpc-${{ steps.profile.outputs.grpc }}
+    - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
+      if: inputs.operation == 'save' && steps.complete.outputs.huskylib == 'true'
+      with:
+        path: build/docker-native-cache/huskylib
+        key: docker-native-v1-huskylib-${{ steps.profile.outputs.huskylib }}
+    - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
+      if: inputs.operation == 'save' && steps.complete.outputs.smapi == 'true'
+      with:
+        path: build/docker-native-cache/smapi
+        key: docker-native-v1-smapi-${{ steps.profile.outputs.smapi }}
+    - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
+      if: inputs.operation == 'save' && steps.complete.outputs.fidoconf == 'true'
+      with:
+        path: build/docker-native-cache/fidoconf
+        key: docker-native-v1-fidoconf-${{ steps.profile.outputs.fidoconf }}
+    - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
+      if: inputs.operation == 'save' && steps.complete.outputs.areafix == 'true'
+      with:
+        path: build/docker-native-cache/areafix
+        key: docker-native-v1-areafix-${{ steps.profile.outputs.areafix }}
+    - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
+      if: inputs.operation == 'save' && steps.complete.outputs.hpt == 'true'
+      with:
+        path: build/docker-native-cache/hpt
+        key: docker-native-v1-hpt-${{ steps.profile.outputs.hpt }}

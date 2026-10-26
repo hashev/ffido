@@ -1311,3 +1311,155 @@ FFIDO_PUBLICATION_READY=false, публикация и workflow Release не з�
 **6.5 остаётся открытым:** настоящая systemd-проверка не выполнена.
 Эта сверка изменяет документацию и чек-лист, новых сборок/установок,
 коммитов и публикации не выполняет. Итог: 29/30 задач, без архивации.
+
+## Закреплённые входы CI
+
+`scripts/release/dependencies.lock.json` — перечень существующих native-ревизий,
+CMake-зависимостей и выбранных инструментов. Изменение версии делается явно в lock,
+с проверкой совместимого набора Protobuf/gRPC. Не запускайте обновление зависимостей
+для устранения промаха кеша. Flutter по-прежнему устанавливает `pubspec.lock` с
+`--enforce-lockfile`.
+
+```sh
+python3 scripts/release/dependency_lock.py native grpc revision
+python3 scripts/release/cache_key.py --describe
+python3 -m unittest discover -s scripts/release -p test_cache_key.py -v
+```
+
+Fingerprint проверяет профиль Linux Clang 19 либо Xcode 26.3 на macOS и включает
+фактические compiler/SDK, target, ABI стандартной библиотеки, версии системных
+библиотек и параметры. Нужны C/C++ compiler, CMake, pkg-config и системные re2,
+c-ares, OpenSSL, zlib. Для macOS выбирайте требуемый Xcode через `DEVELOPER_DIR`.
+Неподдерживаемое окружение завершается с указанием ожидаемого и фактического
+профиля; lock не меняется. Метка образа runner и ядро ОС не являются входами.
+Подробные значимые входы записываются в `build/native-profile.json`.
+
+Тесты `test_cache_key.py` проверяют совпадение поддерживаемого профиля, отказ для
+другого компилятора/Xcode и инвалидацию компонентов по транзитивным зависимостям.
+На текущей локальной машине SDK 27.0 отличается от выбранного CI Xcode 26.3;
+успешный fingerprint этого CI-профиля локально не подтверждён.
+
+### Кеши сборки и анализа
+
+Workflow `native-dependencies.yml` прогревает компоненты из master (или вручную).
+Каждый компонент содержит prefix и соответствующие исходники с completion
+manifest. Восстановление проверяет все файлы и checksums, затем собирает общий
+prefix и заново создаёт `ffido-cache.cmake`. Cache hit не запускает CMake для
+библиотек. Частичный или повреждённый компонент пересобирается; отсутствие кеша
+разрешено. Для локального cold build выберите новый `FFIDO_DEPS_WORK`; для CI
+удалите соответствующий `native-v2-*` cache через GitHub Actions. Не копируйте
+PR-кеши в доверенный namespace. В snapshots входят только сборочные исходники и
+prefix, без конфигурации пользователя, FTN-баз и production-ключей.
+
+Backend использует закреплённый ccache 4.14.2 (500 MiB на платформу), который сам
+проверяет compiler content, flags и заголовки. Широкое восстановление object cache
+не означает совместимость native-prefix: для него разрешены только точные ключи.
+C++-анализ кешируется целиком по платформе, исходникам/заголовкам, generated
+contracts, compile database, lock, compiler/SDK/ABI, clang-tidy и правилам проверки.
+Отрицательные/неполные записи не принимаются. Тесты, сборки и smoke не заменяются
+кешированным статусом. После configure/build можно принудительно повторить анализ:
+
+```sh
+python3 scripts/release/analysis_cache.py run --force
+```
+
+Для команды необходим `build/native-profile.json` текущей сборки. Проверка ключей
+и обхода кеша без подходящего SDK выполняется через `test_analysis_cache.py`.
+
+### Общие Android fixtures
+
+В CI producer готовит два QA APK A/B и негативные варианты, затем три отдельных
+runner проверяют API 24/25/35. Полный набор пяти APK и `fixtures.json` передаётся
+artifact с retention 2 дня; закрытые QA-ключи и password удаляются и не загружаются.
+Изменённый SHA, origin, версия или checksum отклоняются. Production-ключи с этим
+режимом несовместимы; прежний отдельный ручной production-сценарий сохранён.
+
+```sh
+(cd apps/frontend && flutter pub get --enforce-lockfile)
+python3 scripts/update/test_android_flow.py --prepare-only --flutter "$(command -v flutter)" --sdk "$ANDROID_HOME" --directory build/android-fixtures
+python3 scripts/update/test_android_flow.py --fixtures build/android-fixtures --sdk "$ANDROID_HOME" --serial emulator-5554 --directory build/android-update-qa-local
+FFIDO_ANDROID_SMOKE_API=24 FFIDO_ANDROID_FIXTURES="$PWD/build/android-fixtures" bash scripts/release/android_smoke.sh
+```
+
+Второй шаг выполнения требует явно выбранного одноразового эмулятора. Полный smoke
+также требует Linux/KVM, `RUNNER_TEMP` и упакованный validation APK в build/packages.
+QA origin всегда `http://127.0.0.1:8765`; занятый порт считается ошибкой.
+Build-tools — 36.0.0. Emulator Linux 37.2.12 и образы x86_64 API 24/default r8,
+25/default r1, 35/google_apis r9 закреплены URL и опубликованной Google SHA1 в lock.
+`scripts/release/android_sdk.py` проверяет архив и revision перед заменой SDK;
+готовые версии кешируются раздельно. ADB повторяет только безопасные команды при
+распознанной потере транспорта (не более трёх попыток, конечные таймауты). Ошибки
+установки, приложения и assertions остаются ошибками. Диагностики — artifacts
+`android-qa-api*`, `android-fixture-build-logs`; исходная ошибка не маскируется
+ошибкой получения logcat.
+
+### Измерение ускорения
+
+Исходный стабильный run: [40305500091](https://github.com/hashev/ffido/actions/runs/40305500091),
+SHA `835af21fb1f5fe26c68474c369c13339de1cc880`: native Linux 46м22с, clang-tidy
+macOS Intel 19м01с, Android smoke 10м24с, release APK после матрицы 4м21с.
+Это baseline одного запуска. После внедрения требуются холодный запуск и три
+сопоставимых тёплых PR-прогона без backend-изменений, отдельно backend-изменение.
+Сравниваются SHA/матрица, queue/execution, `ci-metrics`, native restore и
+runner-minutes. Цель: медиана тёплого execution critical path ≤20 минут,
+native restore ≤3 минут. Эти цели пока не подтверждены GitHub-прогонами;
+локальные unit-тесты и сборки не заменяют измерение CI.
+
+Онлайн-сводка timings предварительная, пока выполняются metrics и финальные
+агрегаторы. Для приёмки нужны окончательные данные Jobs API завершённого запуска:
+они включают длительности metrics/gates. Время ожидания зависимостей вычитается
+из ожидания runner; runner-minutes означают сумму исполнения без тарифного округления.
+На macOS brew не обновляет metadata и уже установленные формулы автоматически;
+фактические версии по-прежнему входят в fingerprint.
+
+### Локальная проверка реализации, 26 октября 2026
+
+- Flutter 3.47.7: установка с enforce-lockfile, analyze без замечаний,
+  275 пройденных тестов и 2 существующих skip.
+- Корневой Debug backend на macOS: 364/364 CTest с настоящим HPT.
+- Из одного producer-комплекта fixtures выполнены реальные системные обновления
+  A→B на отдельных одноразовых ARM64-эмуляторах API 24 и 25, с сохранением настроек
+  и secure session и отклонением негативных APK. API 35 и x86_64 здесь не проверены.
+- ccache 4.14.2: повтор идентичной компиляции дал hit, смена flags и compiler —
+  miss; результат объекта с изменённым define отличается.
+- Native Linux ARM64/Clang 19: холодная сборка всех восьми компонентов прошла;
+  повторная проверка/сборка prefix заняла 4,94 с, восемь hits без CMake для библиотек.
+  Это локальный BuildKit cache mount, а не время загрузки GitHub cache.
+- Архивы Linux emulator 37.2.12 и API 24 x86_64 r8 скачаны и проверены;
+  avdmanager создал AVD из установленного таким способом комплекта. Для emulator
+  installer создаёт package.xml, который обычно создаётся sdkmanager; без этой
+  регистрации generic package не распознаётся. Сам Linux-эмулятор на macOS не запускался.
+
+Первый полный Docker/Linux ARM64 CTest дал 363/364: SIGABRT в
+`ProcessTest.SignalsAtIdleAndInstanceLockIsReleased`. Двадцать изолированных
+повторов этого теста прошли; причина первого сбоя не установлена. Это ограничение
+проверки, а не основание отключать тест или автоматически повторять CI.
+
+Повторный полный Linux ARM64 CTest прошёл 364/364; исходный единичный SIGABRT
+остаётся отмеченным как невоспроизведённый сбой. Нативный prefix затем перенесён
+в другой каталог с удалением старого пути и build directories библиотек;
+CMake заново создал и собрал сервер и helper с новым prefix. Обычная Docker-упаковка
+на ARM64 ожидаемо отклонена: поддерживаемый контейнерный пакет — Linux x86_64.
+Его сборка/упаковка и полная CI-матрица требуют GitHub runner; обход архитектурной
+проверки для локального теста не добавлялся.
+
+Docker использует отдельный профиль, рассчитанный внутри toolchain image.
+Компоненты `docker-native-v1-*` переносятся GitHub cache → import target →
+BuildKit cache mount; после сборки snapshot target экспортирует их обратно,
+и сохраняются только новые завершённые компоненты с совпавшими входами.
+Основной image build сохраняет обычный BuildKit cache. Это необходимо потому,
+что сам `type=gha` не переносит cache mounts между daemon.
+
+Локально экспортированы 424 MB snapshots, создан новый BuildKit daemon без
+локальных слоёв, восстановлены все восемь компонентов, проверены manifest и
+точные ключи. Сборка native-prefix на этом daemon дала восемь hits за около
+5 секунд без компиляции библиотек. Тестовый builder после проверки удалён.
+Workflow прогрева включает Docker-профиль и выполняется из master; его manual
+запуск также выбирает master. Эти проверки не заменяют измерение GitHub cache
+transfer и целевой Linux x86_64-сборки.
+
+Итоговые локальные проверки: 80 release-tools и 60 updater Python-тестов,
+`actionlint`, Python compile и `git diff --check` пройдены. Итоговый набор изменений
+проверен на случайные секреты; рабочие конфигурации и FTN-данные не включены.
+Целевая Linux x86_64-упаковка, Windows/macOS Intel и GitHub cache transfer/тайминги
+остаются предметом CI-приёмки.

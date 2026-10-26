@@ -1,0 +1,96 @@
+name: Warm native dependencies
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'scripts/release/dependencies*'
+      - 'scripts/release/native_cache.py'
+      - 'scripts/release/cache_key.py'
+      - 'scripts/release/run_logged.py'
+      - '.github/actions/native-dependencies/**'
+      - '.github/actions/docker-native-cache/**'
+      - 'scripts/release/docker_cache.py'
+      - 'Dockerfile'
+      - '.github/workflows/native-dependencies.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  native:
+    if: github.ref == 'refs/heads/master'
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, macos-15, macos-15-intel]
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - id: dependency-lock
+        run: python scripts/release/dependency_lock.py --github-output
+      - name: Linux tools
+        if: runner.os == 'Linux'
+        run: |
+          # Azure's Ubuntu mirror has stalled while downloading LLVM packages.
+          # Use the official archive, retaining Ubuntu signatures and package versions.
+          for source in /etc/apt/sources.list.d/ubuntu.sources /etc/apt/apt-mirrors*.txt; do
+            if [[ -f "$source" ]]; then
+              sudo sed -E -i 's@https?://azure\.archive\.ubuntu\.com/ubuntu@https://archive.ubuntu.com/ubuntu@g' "$source"
+            fi
+          done
+          apt_options=(-o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30)
+          sudo apt-get "${apt_options[@]}" update
+          sudo apt-get "${apt_options[@]}" install -y clang-${{ steps.dependency-lock.outputs.linux_clang }} ninja-build libssl-dev libc-ares-dev libre2-dev zlib1g-dev patchelf pkg-config
+          echo 'CC=clang-${{ steps.dependency-lock.outputs.linux_clang }}' >> "$GITHUB_ENV"
+          echo 'CXX=clang++-${{ steps.dependency-lock.outputs.linux_clang }}' >> "$GITHUB_ENV"
+      - name: macOS tools
+        if: runner.os == 'macOS'
+        run: |
+          export DEVELOPER_DIR=/Applications/Xcode_${{ steps.dependency-lock.outputs.xcode }}.app/Contents/Developer
+          xcodebuild -version
+          HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_UPGRADE=1 brew install cmake ninja llvm openssl@3 c-ares re2 pkgconf
+          {
+            echo "$(brew --prefix llvm)/bin"
+            echo "$(brew --prefix openssl@3)/bin"
+          } >> "$GITHUB_PATH"
+          {
+            echo "DEVELOPER_DIR=$DEVELOPER_DIR"
+            echo "MACOSX_DEPLOYMENT_TARGET=15.0"
+            echo "CC=$(xcrun --find clang)"
+            echo "CXX=$(xcrun --find clang++)"
+            echo "CMAKE_PREFIX_PATH=$(brew --prefix openssl@3):$(brew --prefix c-ares):$(brew --prefix re2)"
+            echo "PKG_CONFIG_PATH=$(brew --prefix openssl@3)/lib/pkgconfig:$(brew --prefix c-ares)/lib/pkgconfig:$(brew --prefix re2)/lib/pkgconfig"
+          } >> "$GITHUB_ENV"
+      - uses: ./.github/actions/native-dependencies
+  docker-native:
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+      - name: Expose BuildKit cache runtime
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            for (const name of ['ACTIONS_RESULTS_URL', 'ACTIONS_RUNTIME_TOKEN']) {
+              const value = process.env[name];
+              if (!value) throw new Error(`Missing ${name} for BuildKit cache`);
+              core.setSecret(value);
+              core.exportVariable(name, value);
+            }
+      - uses: ./.github/actions/docker-native-cache
+        id: docker-native
+        with:
+          operation: prepare
+      - name: Warm Docker-native dependencies
+        run: docker buildx build --platform linux/amd64 --target native-dependencies --cache-from type=gha,version=2,scope=ffido-server-amd64 --output type=cacheonly .
+      - uses: ./.github/actions/docker-native-cache
+        if: always() && steps.docker-native.outcome == 'success'
+        with:
+          operation: save

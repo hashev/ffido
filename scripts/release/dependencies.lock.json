@@ -1,0 +1,100 @@
+{
+  "schema": 1,
+  "tools": {
+    "flutter": "3.47.7",
+    "java": "17",
+    "python": "3.12",
+    "linux_clang": "19",
+    "xcode": "26.3"
+  },
+  "native": {
+    "abseil": {
+      "url": "https://github.com/abseil/abseil-cpp.git",
+      "revision": "2065f4ded0558c6f89fee67c8e5228feb4eb960e"
+    },
+    "protobuf": {
+      "url": "https://github.com/protocolbuffers/protobuf.git",
+      "revision": "2c74169b34066ceb8ddb6b882fcb3fb32d737a55"
+    },
+    "grpc": {
+      "url": "https://github.com/grpc/grpc.git",
+      "revision": "3252a89f10d8e92997862167ca7d095ecda85973"
+    },
+    "huskylib": {
+      "url": "https://github.com/huskyproject/huskylib.git",
+      "revision": "d3c0c1c3b643d7fce45f82d6c8378802e85d9205"
+    },
+    "smapi": {
+      "url": "https://github.com/huskyproject/smapi.git",
+      "revision": "c2fc9ecb0dd1ec8909e9e9709bfdd0031d5b9bf2"
+    },
+    "fidoconf": {
+      "url": "https://github.com/huskyproject/fidoconf.git",
+      "revision": "62c963a6f078905660f2c0b3a6929383823190c5"
+    },
+    "areafix": {
+      "url": "https://github.com/huskyproject/areafix.git",
+      "revision": "cd178f92e01d73b39bfc00b4d6359efd543dd990"
+    },
+    "hpt": {
+      "url": "https://github.com/huskyproject/hpt.git",
+      "revision": "c2a91d64cee0e6cd357376d30c9285ee3f9c624f"
+    }
+  },
+  "cmake": {
+    "spdlog": {
+      "revision": "6fa36017cfd5731d617e1a934f0e5ea9c4445b13",
+      "url": "https://codeload.github.com/gabime/spdlog/tar.gz/6fa36017cfd5731d617e1a934f0e5ea9c4445b13",
+      "sha256": "5097fb362e79a2bd7247beaf1f8377ed60e274fbe83a4b33e7b73383f0279022"
+    },
+    "nlohmann_json": {
+      "revision": "55f93686c01528224f448c19128836e7df245f72",
+      "url": "https://codeload.github.com/nlohmann/json/tar.gz/55f93686c01528224f448c19128836e7df245f72",
+      "sha256": "67f4cdd9ca930c9c1e130af4a437c7fc98fab77a2846fc2d2a14b4943831f8ef"
+    },
+    "sqlite3": {
+      "url": "https://www.sqlite.org/2025/sqlite-autoconf-3490100.tar.gz",
+      "sha256": "106642d8ccb36c5f7323b64e4152e9b719f7c0215acf5bfeac3d5e7f97b59254"
+    },
+    "googletest": {
+      "revision": "6910c9d9165801d8827d628cb72eb7ea9dd538c5",
+      "url": "https://codeload.github.com/google/googletest/tar.gz/6910c9d9165801d8827d628cb72eb7ea9dd538c5",
+      "sha256": "bde221be7f3841fcbc3971665d77d717116394a42155d988ee6407dfc39f1f09"
+    },
+    "protobuf": {
+      "version": "36.2.0"
+    },
+    "grpc": {
+      "version": "1.84.0"
+    }
+  },
+  "android": {
+    "emulator": {
+      "revision": "37.2.12",
+      "url": "https://dl.google.com/android/repository/emulator-linux_x64-16428233.zip",
+      "sha1": "cd7362ea55dfb86a418958138dc396e74165dd01"
+    },
+    "24": {
+      "package": "system-images;android-24;default;x86_64",
+      "revision": "8",
+      "url": "https://dl.google.com/android/repository/sys-img/android/x86_64-24_r08.zip",
+      "sha1": "f6559e1949a5879f31a9662f4f0e50ad60181684"
+    },
+    "25": {
+      "package": "system-images;android-25;default;x86_64",
+      "revision": "1",
+      "url": "https://dl.google.com/android/repository/sys-img/android/x86_64-25_r01.zip",
+      "sha1": "7093d7b39216020226ff430a3b7b81c94d31ad37"
+    },
+    "35": {
+      "package": "system-images;android-35;google_apis;x86_64",
+      "revision": "9",
+      "url": "https://dl.google.com/android/repository/sys-img/google_apis/x86_64-35_r09.zip",
+      "sha1": "0103e6dab21290c4b9d16550a3ce99476f884eef"
+    }
+  },
+  "compiler_cache": {
+    "version": "4.14.2",
+    "revision": "360543256991b0df7b5ad1822bd08f8d4ae2aa90"
+  }
+}

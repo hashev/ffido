@@ -1,0 +1,125 @@
+name: Native dependencies
+description: Verify and restore pinned native components
+outputs:
+  toolchain:
+    description: Verified native toolchain fingerprint
+    value: ${{ steps.profile.outputs.toolchain }}
+runs:
+  using: composite
+  steps:
+    - id: profile
+      shell: bash
+      run: python3 scripts/release/cache_key.py --describe
+    - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
+      id: restore-abseil
+      with:
+        path: build/release-deps/components/abseil
+        key: native-v2-abseil-${{ steps.profile.outputs.abseil }}
+    - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
+      id: restore-protobuf
+      with:
+        path: build/release-deps/components/protobuf
+        key: native-v2-protobuf-${{ steps.profile.outputs.protobuf }}
+    - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
+      id: restore-grpc
+      with:
+        path: build/release-deps/components/grpc
+        key: native-v2-grpc-${{ steps.profile.outputs.grpc }}
+    - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
+      id: restore-huskylib
+      with:
+        path: build/release-deps/components/huskylib
+        key: native-v2-huskylib-${{ steps.profile.outputs.huskylib }}
+    - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
+      id: restore-smapi
+      with:
+        path: build/release-deps/components/smapi
+        key: native-v2-smapi-${{ steps.profile.outputs.smapi }}
+    - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
+      id: restore-fidoconf
+      with:
+        path: build/release-deps/components/fidoconf
+        key: native-v2-fidoconf-${{ steps.profile.outputs.fidoconf }}
+    - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
+      id: restore-areafix
+      with:
+        path: build/release-deps/components/areafix
+        key: native-v2-areafix-${{ steps.profile.outputs.areafix }}
+    - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
+      id: restore-hpt
+      with:
+        path: build/release-deps/components/hpt
+        key: native-v2-hpt-${{ steps.profile.outputs.hpt }}
+    - name: Explain native cache lookups
+      shell: bash
+      run: python3 scripts/release/cache_report.py
+    - name: Prepare verified native dependencies
+      shell: bash
+      env:
+        JOBS: '3'
+      run: python3 scripts/release/run_logged.py build/native-dependencies.log bash scripts/release/dependencies.sh
+    - name: Verify completed components
+      id: complete
+      if: always()
+      shell: bash
+      run: |
+        python3 - <<'PY'
+        import json, os, sys
+        from pathlib import Path
+        sys.path.insert(0, 'scripts/release')
+        from native_cache import verify
+        profile = Path('build/native-profile.json')
+        if profile.is_file():
+            with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
+                for name, key in json.loads(profile.read_text())['components'].items():
+                    if verify(Path('build/release-deps/components')/name, key):
+                        out.write(name+'=true\n')
+        PY
+    - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
+      if: always() && steps.complete.outputs.abseil == 'true' && steps.restore-abseil.outputs.cache-hit != 'true'
+      with:
+        path: build/release-deps/components/abseil
+        key: native-v2-abseil-${{ steps.profile.outputs.abseil }}
+    - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
+      if: always() && steps.complete.outputs.protobuf == 'true' && steps.restore-protobuf.outputs.cache-hit != 'true'
+      with:
+        path: build/release-deps/components/protobuf
+        key: native-v2-protobuf-${{ steps.profile.outputs.protobuf }}
+    - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
+      if: always() && steps.complete.outputs.grpc == 'true' && steps.restore-grpc.outputs.cache-hit != 'true'
+      with:
+        path: build/release-deps/components/grpc
+        key: native-v2-grpc-${{ steps.profile.outputs.grpc }}
+    - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
+      if: always() && steps.complete.outputs.huskylib == 'true' && steps.restore-huskylib.outputs.cache-hit != 'true'
+      with:
+        path: build/release-deps/components/huskylib
+        key: native-v2-huskylib-${{ steps.profile.outputs.huskylib }}
+    - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
+      if: always() && steps.complete.outputs.smapi == 'true' && steps.restore-smapi.outputs.cache-hit != 'true'
+      with:
+        path: build/release-deps/components/smapi
+        key: native-v2-smapi-${{ steps.profile.outputs.smapi }}
+    - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
+      if: always() && steps.complete.outputs.fidoconf == 'true' && steps.restore-fidoconf.outputs.cache-hit != 'true'
+      with:
+        path: build/release-deps/components/fidoconf
+        key: native-v2-fidoconf-${{ steps.profile.outputs.fidoconf }}
+    - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
+      if: always() && steps.complete.outputs.areafix == 'true' && steps.restore-areafix.outputs.cache-hit != 'true'
+      with:
+        path: build/release-deps/components/areafix
+        key: native-v2-areafix-${{ steps.profile.outputs.areafix }}
+    - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
+      if: always() && steps.complete.outputs.hpt == 'true' && steps.restore-hpt.outputs.cache-hit != 'true'
+      with:
+        path: build/release-deps/components/hpt
+        key: native-v2-hpt-${{ steps.profile.outputs.hpt }}
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: always()
+      with:
+        name: native-log-${{ runner.os }}-${{ runner.arch }}
+        path: |
+          build/native-dependencies.log.gz
+          build/native-profile.json
+        if-no-files-found: ignore

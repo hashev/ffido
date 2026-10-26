@@ -16,10 +16,37 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+      - id: dependency-lock
+        run: python scripts/release/dependency_lock.py --github-output
       - run: python3 -m venv build/update-venv
       - run: build/update-venv/bin/python -m pip install -r scripts/update/requirements.txt
       - run: build/update-venv/bin/python -m unittest discover -s scripts/update -p 'test_*.py' -v
       - run: build/update-venv/bin/python -m unittest discover -s scripts/release -p 'test_*.py' -v
+  portable-checks:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - id: dependency-lock
+        run: python scripts/release/dependency_lock.py --github-output
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
+        with:
+          flutter-version: ${{ steps.dependency-lock.outputs.flutter }}
+          channel: stable
+          cache: true
+      - name: Portable client checks
+        working-directory: apps/frontend
+        run: |
+          flutter pub get --enforce-lockfile
+          flutter analyze --no-pub
+      - run: python3 scripts/check_dart.py --check
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-format-${{ steps.dependency-lock.outputs.linux_clang }}
+          mkdir -p "$RUNNER_TEMP/format-bin"
+          ln -s /usr/bin/clang-format-${{ steps.dependency-lock.outputs.linux_clang }} "$RUNNER_TEMP/format-bin/clang-format"
+          PATH="$RUNNER_TEMP/format-bin:$PATH" python3 scripts/check_cpp.py --format-check
   client:
     strategy:
       fail-fast: false
@@ -38,17 +65,19 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
+      - id: dependency-lock
+        run: python scripts/release/dependency_lock.py --github-output
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
-          python-version: '3.12'
+          python-version: ${{ steps.dependency-lock.outputs.python }}
       - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3
         if: matrix.os == 'android'
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: ${{ steps.dependency-lock.outputs.java }}
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
         with:
-          flutter-version: '3.47.7'
+          flutter-version: ${{ steps.dependency-lock.outputs.flutter }}
           channel: stable
           cache: true
       - if: matrix.os == 'linux'
@@ -59,9 +88,7 @@ jobs:
       - working-directory: apps/frontend
         run: |
           flutter pub get --enforce-lockfile
-          flutter analyze --no-pub
           flutter test --no-pub
-      - run: python scripts/check_dart.py --check
       - name: Build client
         working-directory: apps/frontend
         env:
@@ -102,18 +129,94 @@ jobs:
         run: python scripts/release/package.py client "$TARGET" "$ARCH" --identity build/identity.json
       - name: Smoke packaged client
         run: python scripts/release/smoke.py client-${{ matrix.os }}-${{ matrix.arch }}
-      - name: Install and launch Android APK
-        if: matrix.os == 'android'
-        run: |
-          bash scripts/release/android_smoke.sh
-          for api in 24 25; do
-            FFIDO_ANDROID_SMOKE_API="$api" bash scripts/release/android_smoke.sh
-          done
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: client-${{ matrix.os }}-${{ matrix.arch }}
           path: build/packages/*
           if-no-files-found: error
+  android-fixtures:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - id: dependency-lock
+        run: python scripts/release/dependency_lock.py --github-output
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3
+        with:
+          distribution: temurin
+          java-version: ${{ steps.dependency-lock.outputs.java }}
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
+        with:
+          flutter-version: ${{ steps.dependency-lock.outputs.flutter }}
+          channel: stable
+          cache: true
+      - working-directory: apps/frontend
+        run: flutter pub get --enforce-lockfile
+      - name: Prepare QA APK A and B once
+        run: |
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" 'build-tools;36.0.0'
+          python3 scripts/update/test_android_flow.py --prepare-only --flutter "$(command -v flutter)" --sdk "$ANDROID_HOME" --directory build/android-fixtures
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: android-fixtures
+          path: |
+            build/android-fixtures/www/
+            build/android-fixtures/fixtures.json
+          retention-days: 2
+          if-no-files-found: error
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: android-fixture-build-logs
+          path: build/android-fixtures/*.log
+          retention-days: 2
+          if-no-files-found: ignore
+  android-qa:
+    needs: [client, android-fixtures]
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        api: [24, 25, 35]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - id: dependency-lock
+        run: python scripts/release/dependency_lock.py --github-output
+      - id: sdk
+        run: echo "root=$ANDROID_HOME" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: ${{ steps.sdk.outputs.root }}/emulator
+          key: android-emulator-${{ steps.dependency-lock.outputs.android_emulator_key }}
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: ${{ steps.sdk.outputs.root }}/${{ steps.dependency-lock.outputs[format('android_{0}_path', matrix.api)] }}
+          key: android-image-${{ steps.dependency-lock.outputs[format('android_{0}_key', matrix.api)] }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: client-android-universal
+          path: build/packages
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: android-fixtures
+          path: build/android-fixtures
+      - name: Packaged launch and real system update
+        env:
+          FFIDO_ANDROID_SMOKE_API: ${{ matrix.api }}
+          FFIDO_ANDROID_FIXTURES: ${{ github.workspace }}/build/android-fixtures
+        run: bash scripts/release/android_smoke.sh
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: android-qa-api${{ matrix.api }}
+          path: |
+            build/android-update-qa-api${{ matrix.api }}/*.json
+            build/android-update-qa-api${{ matrix.api }}/*.log
+            ${{ runner.temp }}/ffido-emulator.log
+          if-no-files-found: ignore
   backend:
     strategy:
       fail-fast: false
@@ -130,6 +233,8 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
+      - id: dependency-lock
+        run: python scripts/release/dependency_lock.py --github-output
       - name: Linux tools
         if: runner.os == 'Linux'
         run: |
@@ -142,25 +247,25 @@ jobs:
           done
           apt_options=(-o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30)
           sudo apt-get "${apt_options[@]}" update
-          sudo apt-get "${apt_options[@]}" install -y clang-19 clang-tidy-19 clang-format-19 ninja-build libssl-dev libc-ares-dev libre2-dev zlib1g-dev patchelf pkg-config
-          echo 'CC=clang-19' >> "$GITHUB_ENV"
-          echo 'CXX=clang++-19' >> "$GITHUB_ENV"
+          sudo apt-get "${apt_options[@]}" install -y clang-${{ steps.dependency-lock.outputs.linux_clang }} clang-tidy-${{ steps.dependency-lock.outputs.linux_clang }} ninja-build libssl-dev libc-ares-dev libre2-dev zlib1g-dev patchelf pkg-config
+          echo 'CC=clang-${{ steps.dependency-lock.outputs.linux_clang }}' >> "$GITHUB_ENV"
+          echo 'CXX=clang++-${{ steps.dependency-lock.outputs.linux_clang }}' >> "$GITHUB_ENV"
           mkdir -p "$RUNNER_TEMP/llvm-bin"
-          ln -s /usr/bin/clang-format-19 "$RUNNER_TEMP/llvm-bin/clang-format"
-          ln -s /usr/bin/clang-tidy-19 "$RUNNER_TEMP/llvm-bin/clang-tidy"
+          ln -s /usr/bin/clang-tidy-${{ steps.dependency-lock.outputs.linux_clang }} "$RUNNER_TEMP/llvm-bin/clang-tidy"
           echo "$RUNNER_TEMP/llvm-bin" >> "$GITHUB_PATH"
       - name: macOS tools
         if: runner.os == 'macOS'
         run: |
-          export DEVELOPER_DIR=/Applications/Xcode_26.3.app/Contents/Developer
+          export DEVELOPER_DIR=/Applications/Xcode_${{ steps.dependency-lock.outputs.xcode }}.app/Contents/Developer
           xcodebuild -version
-          brew install cmake ninja llvm openssl@3 c-ares re2 pkgconf
+          HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_UPGRADE=1 brew install cmake ninja llvm openssl@3 c-ares re2 pkgconf
           {
             echo "$(brew --prefix llvm)/bin"
             echo "$(brew --prefix openssl@3)/bin"
           } >> "$GITHUB_PATH"
           {
             echo "DEVELOPER_DIR=$DEVELOPER_DIR"
+            echo "MACOSX_DEPLOYMENT_TARGET=15.0"
             echo "CC=$(xcrun --find clang)"
             echo "CXX=$(xcrun --find clang++)"
             echo "CMAKE_PREFIX_PATH=$(brew --prefix openssl@3):$(brew --prefix c-ares):$(brew --prefix re2)"
@@ -168,49 +273,54 @@ jobs:
           } >> "$GITHUB_ENV"
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
         with:
-          flutter-version: '3.47.7'
+          flutter-version: ${{ steps.dependency-lock.outputs.flutter }}
           cache: true
-      - id: native-toolchain
-        run: python3 scripts/release/cache_key.py
+      - uses: ./.github/actions/native-dependencies
+        id: native
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
-        id: native-cache
         with:
-          path: build/release-deps
-          key: native-${{ matrix.runner }}-${{ matrix.arch }}-${{ steps.native-toolchain.outputs.key }}-${{ hashFiles('scripts/release/dependencies.sh', 'scripts/release/dependency_record.py', 'scripts/release/cache_key.py', 'cmake/deps.cmake') }}
-      - name: Build pinned native dependencies
-        env:
-          JOBS: '3'
+          path: build/compiler-cache-tool/prefix
+          key: compiler-cache-tool-v1-${{ steps.native.outputs.toolchain }}-${{ steps.dependency-lock.outputs.compiler_cache_key }}-${{ hashFiles('scripts/release/compiler_cache.sh') }}
+      - run: bash scripts/release/compiler_cache.sh
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: build/compiler-cache
+          key: compiler-v1-${{ steps.native.outputs.toolchain }}-${{ steps.dependency-lock.outputs.compiler_cache_key }}-${{ github.sha }}
+          restore-keys: |
+            compiler-v1-${{ steps.native.outputs.toolchain }}-${{ steps.dependency-lock.outputs.compiler_cache_key }}-
+      - name: Configure compiler cache
         run: |
-          mkdir -p build
-          trap 'gzip -f build/native-dependencies.log' EXIT
-          if ! bash scripts/release/dependencies.sh > build/native-dependencies.log 2>&1; then
-            tail -100 build/native-dependencies.log
-            exit 1
-          fi
-          tail -20 build/native-dependencies.log
-      - name: Save completed native dependencies
-        if: steps.native-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
-        with:
-          path: build/release-deps
-          key: native-${{ matrix.runner }}-${{ matrix.arch }}-${{ steps.native-toolchain.outputs.key }}-${{ hashFiles('scripts/release/dependencies.sh', 'scripts/release/dependency_record.py', 'scripts/release/cache_key.py', 'cmake/deps.cmake') }}
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        if: always()
-        with:
-          name: native-log-${{ matrix.os }}-${{ matrix.arch }}
-          path: build/native-dependencies.log.gz
-          if-no-files-found: error
+          {
+            echo "CCACHE_DIR=$PWD/build/compiler-cache"
+            echo "CCACHE_BASEDIR=$PWD"
+            echo "CCACHE_COMPILERCHECK=content"
+            echo 'CCACHE_MAXSIZE=500M'
+          } >> "$GITHUB_ENV"
       - run: python3 scripts/release/build_identity.py
         env:
           IDENTITY_JSON: ${{ inputs.identity }}
       - name: Configure and build
         run: |
-          cmake -S . -B build/backend -C build/release-deps/prefix/ffido-cache.cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+          cmake -S . -B build/backend -C build/release-deps/prefix/ffido-cache.cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           cmake --build build/backend --parallel 3
+      - run: ccache --show-stats
       - name: Test including HPT
         run: FFIDO_TEST_HPT="$PWD/build/release-deps/prefix/bin/hpt" python3 scripts/release/check_ctest.py build/backend
+      - name: Compute complete platform analysis inputs
+        id: analysis-inputs
+        run: python3 scripts/release/analysis_cache.py key
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
+        id: analysis-cache
+        with:
+          path: build/analysis/result
+          key: analysis-v1-${{ matrix.os }}-${{ matrix.arch }}-${{ steps.analysis-inputs.outputs.key }}
       - name: C++ checks
-        run: python3 scripts/check_cpp.py --build-dir build/backend
+        run: python3 scripts/release/analysis_cache.py run
+      - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
+        if: steps.analysis-cache.outputs.cache-hit != 'true'
+        with:
+          path: build/analysis/result
+          key: analysis-v1-${{ matrix.os }}-${{ matrix.arch }}-${{ steps.analysis-inputs.outputs.key }}
       - name: Contract generation
         run: |
           (cd tools/proto && dart pub get --enforce-lockfile)
@@ -237,9 +347,11 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
+      - id: dependency-lock
+        run: python scripts/release/dependency_lock.py --github-output
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
         with:
-          flutter-version: '3.47.7'
+          flutter-version: ${{ steps.dependency-lock.outputs.flutter }}
           channel: stable
           cache: true
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
@@ -257,11 +369,16 @@ jobs:
       - run: python3 scripts/release/build_identity.py
         env:
           IDENTITY_JSON: ${{ inputs.identity }}
+      - uses: ./.github/actions/docker-native-cache
+        id: docker-native
+        with:
+          operation: prepare
       - name: Build OCI archive and verify remote cache
         run: |
           mkdir -p build/container
           build_args=(
             --platform linux/amd64 --provenance=false
+            --build-arg "FFIDO_TEST_RUN=${{ github.run_id }}.${{ github.run_attempt }}"
             --build-arg "FFIDO_REVISION=$(jq -r .sha build/identity.json)"
             --build-arg "FFIDO_VERSION=$(jq -r .version build/identity.json)"
             --build-arg "FFIDO_TAG=$(jq -r .tag build/identity.json)"
@@ -278,6 +395,10 @@ jobs:
           docker buildx create --name "$cache_builder" --driver docker-container
           timeout 600s docker buildx build --builder "$cache_builder" "${build_args[@]}" \
             --cache-from "$cache" --target builder --output type=cacheonly .
+      - uses: ./.github/actions/docker-native-cache
+        if: always() && steps.docker-native.outcome == 'success'
+        with:
+          operation: save
       - name: Smoke the archived image
         run: |
           skopeo copy oci-archive:build/container/image.tar docker-daemon:ffido:check
@@ -291,10 +412,35 @@ jobs:
           path: build/container/*
           if-no-files-found: error
           compression-level: 0
+  metrics:
+    if: always()
+    needs: [release-tools, portable-checks, client, android-fixtures, android-qa, backend, container]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
+        with:
+          script: |
+            const fs = require('fs');
+            const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRun, {
+              ...context.repo, run_id: context.runId, filter: 'latest', per_page: 100
+            });
+            fs.mkdirSync('build/ci-metrics', {recursive: true});
+            fs.writeFileSync('build/ci-metrics/jobs.json', JSON.stringify(jobs));
+      - run: python3 scripts/release/ci_metrics.py build/ci-metrics/jobs.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ci-metrics
+          path: build/ci-metrics/
   build-required:
     name: build-required
     if: always()
-    needs: [release-tools, client, backend, container]
+    needs: [release-tools, portable-checks, client, android-fixtures, android-qa, backend, container, metrics]
     runs-on: ubuntu-24.04
     steps:
       - name: Reject failure, cancellation and skips
