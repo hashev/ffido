@@ -150,7 +150,9 @@ def prepare_apks(args, directory, port):
             if stage == 'B' and args.prebuilt_b:
                 source = args.prebuilt_b.resolve()
             else:
-                command = [str(args.flutter.resolve()), '--no-version-check', 'build', 'apk', '--no-pub', '--release', '--target', 'integration_test/android_update_driver.dart', '--build-number', str(number), '--build-name', '1.0.0' if stage == 'A' else '1.0.1', '--dart-define', 'FFIDO_QA_VERIFY_MANIFEST='+str(bool(args.production_keys)).lower(), '--dart-define', 'FFIDO_QA_STAGE='+stage, '--dart-define', f'FFIDO_QA_ORIGIN=http://127.0.0.1:{port}']
+                # Flutter must regenerate the release registrant after pub get,
+                # which includes dev plugins that Gradle excludes from release.
+                command = [str(args.flutter.resolve()), '--no-version-check', 'build', 'apk', '--release', '--target', 'integration_test/android_update_driver.dart', '--build-number', str(number), '--build-name', '1.0.0' if stage == 'A' else '1.0.1', '--dart-define', 'FFIDO_QA_VERIFY_MANIFEST='+str(bool(args.production_keys)).lower(), '--dart-define', 'FFIDO_QA_STAGE='+stage, '--dart-define', f'FFIDO_QA_ORIGIN=http://127.0.0.1:{port}']
                 build_environment = environment
                 if args.production_keys:
                     build_environment = {**environment, 'FFIDO_PUBLIC_RELEASE': 'true',

@@ -63,3 +63,23 @@ class CacheKeyTest(unittest.TestCase):
         with patch.object(cache_key.subprocess, 'run', side_effect=subprocess.CalledProcessError(1, ['compiler'])):
             with self.assertRaises(subprocess.CalledProcessError):
                 cache_key.probe(['compiler'])
+
+    def test_macos_abi_probe_uses_selected_sdk(self):
+        import subprocess
+        for explicit_sdk in ('', '/custom/SDK'):
+            with self.subTest(sdk=explicit_sdk), patch.dict(os.environ, {'SDKROOT': explicit_sdk}), \
+                    patch.object(cache_key.platform, 'system', return_value='Darwin'), \
+                    patch.object(cache_key, 'probe', side_effect=lambda cmd: '/selected/SDK' if cmd == ['xcrun', '--show-sdk-path'] else 'tool-version'), \
+                    patch.object(cache_key.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, stdout='#define _LIBCPP_VERSION 1')) as run:
+                values = cache_key.collect()
+                command = run.call_args.args[0]
+                self.assertEqual(command[command.index('-isysroot') + 1], explicit_sdk or '/selected/SDK')
+                self.assertIn('_LIBCPP_VERSION', values['abi'])
+
+    def test_abi_probe_reports_compiler_diagnostic(self):
+        import subprocess
+        with patch.object(cache_key.platform, 'system', return_value='Linux'), \
+                patch.object(cache_key, 'probe', return_value='tool-version'), \
+                patch.object(cache_key.subprocess, 'run', side_effect=subprocess.CalledProcessError(1, [], stderr='header missing')):
+            with self.assertRaisesRegex(RuntimeError, 'header missing'):
+                cache_key.collect()

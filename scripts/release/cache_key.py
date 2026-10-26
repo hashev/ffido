@@ -52,8 +52,12 @@ def collect():
               'system_libraries': {name: probe(['pkg-config', '--modversion', name])
                                    for name in ('re2', 'libcares', 'openssl', 'zlib')}}
     # Predefined macros cover the selected standard-library ABI and compiler target.
-    result = subprocess.run([*cxx, '-std=c++23', '-dM', '-E', '-x', 'c++', '-'],
-                            input='#include <version>\n', capture_output=True, text=True, check=True)
+    sdk_flags = ['-isysroot', os.environ.get('SDKROOT') or probe(['xcrun', '--show-sdk-path'])] if system == 'Darwin' else []
+    try:
+        result = subprocess.run([*cxx, *sdk_flags, '-std=c++23', '-dM', '-E', '-x', 'c++', '-'],
+                                input='#include <version>\n', capture_output=True, text=True, check=True)
+    except subprocess.CalledProcessError as error:
+        raise RuntimeError(f'Cannot determine C++ ABI: {error.stderr}') from error
     values['abi'] = '\n'.join(sorted(line for line in result.stdout.splitlines()
                                    if re.search(r'LIBCPP|GLIBCXX|__GLIBC|__SIZEOF_POINTER__|__BYTE_ORDER__', line)))
     if system == 'Darwin':
