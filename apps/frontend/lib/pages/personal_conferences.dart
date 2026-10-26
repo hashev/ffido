@@ -222,12 +222,41 @@ class _PersonalConferencesState extends State<PersonalConferences>
                     '${entry.conference.kind.groupLabel} · ${entry.conference.description}',
                   ),
                   trailing: !widget.history
-                      ? IconButton(
-                          tooltip: 'Удалить из закладок',
-                          onPressed: removing.contains(entry.conference.id)
-                              ? null
-                              : () => remove(entry),
-                          icon: const Icon(Icons.bookmark_remove),
+                      ? Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            if (entry.conference.kind == AreaKind.echo)
+                              Padding(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 8,
+                                ),
+                                child: Semantics(
+                                  container: true,
+                                  label: entry.conference.statisticsKnown
+                                      ? 'Непрочитанных: ${entry.conference.unreadCount}'
+                                      : 'Количество непрочитанных неизвестно',
+                                  excludeSemantics: true,
+                                  child: Tooltip(
+                                    message: entry.conference.statisticsKnown
+                                        ? 'Непрочитанных: ${entry.conference.unreadCount}'
+                                        : 'Количество непрочитанных неизвестно',
+                                    child: Text(
+                                      entry.conference.statisticsKnown
+                                          ? entry.conference.unreadCount
+                                                .toString()
+                                          : '—',
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            IconButton(
+                              tooltip: 'Удалить из закладок',
+                              onPressed: removing.contains(entry.conference.id)
+                                  ? null
+                                  : () => remove(entry),
+                              icon: const Icon(Icons.bookmark_remove),
+                            ),
+                          ],
                         )
                       : entry.date == null
                       ? null

@@ -2,6 +2,54 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:fido/models/conference.dart';
 
 void main() {
+  test(
+    'catalog order prioritizes types, then unread presence, name and ID',
+    () {
+      Conference item(
+        String id,
+        String name, {
+        AreaKind kind = AreaKind.echo,
+        int unread = 0,
+        bool known = true,
+      }) => Conference(
+        id: id,
+        name: name,
+        description: '',
+        unreadCount: unread,
+        totalCount: unread,
+        kind: kind,
+        statisticsKnown: known,
+      );
+      final items = [
+        item('read', 'Beta'),
+        item('unread-z', 'Zulu', unread: 100),
+        item('unread-a', 'alpha', unread: 1),
+        item('unknown', 'alpha', unread: 900, known: false),
+        item('net-z', 'Zulu', kind: AreaKind.netmail),
+        item('net-a2', 'ALPHA', kind: AreaKind.netmail),
+        item('net-a1', 'alpha', kind: AreaKind.netmail),
+        item('local', 'local', kind: AreaKind.local),
+        item('bad', 'bad', kind: AreaKind.bad),
+        item('dupe', 'dupe', kind: AreaKind.dupe),
+        item('robots', 'robots', kind: AreaKind.robots),
+      ]..sort(Conference.compareForCatalog);
+      expect(items.map((c) => c.id), [
+        'net-a1',
+        'net-a2',
+        'net-z',
+        'local',
+        'bad',
+        'dupe',
+        'robots',
+        'unread-a',
+        'unread-z',
+        'unknown',
+        'read',
+      ]);
+      expect(<Conference>[]..sort(Conference.compareForCatalog), isEmpty);
+    },
+  );
+
   group('Conference', () {
     test('permissions default to denied and survive JSON and copies', () {
       final legacy = Conference.fromJson({'id': 'echo', 'name': 'Echo'});

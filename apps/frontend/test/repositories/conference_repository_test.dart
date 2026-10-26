@@ -25,6 +25,149 @@ void main() {
     await repo.dispose();
     await api.dispose();
   });
+  test('full catalog bypasses cache, preserves query and raw offsets, deduplicates', () async {
+    await repo.fetchConferences();
+    api.calls.clear();
+    api.conferences = (request) async {
+      expect(request.query, 'echo');
+      expect(request.sort, wire.ConferenceSort.CONFERENCE_SORT_NAME);
+      expect(request.page.limit, 20);
+      final offset = request.page.offset.toInt();
+      expect(offset, anyOf(0, 2));
+      return wire.ListConferencesResponse(
+        conferences: offset == 0
+            ? [wire.Conference(id: 'a'), wire.Conference(id: 'b')]
+            : [
+                wire.Conference(id: 'b', name: 'updated'),
+                wire.Conference(id: 'c'),
+              ],
+        hasMore: offset == 0,
+      );
+    };
+    final result = await repo.fetchAllConferences(query: ' echo ');
+    expect(result.conferences.map((c) => c.id), ['a', 'b', 'c']);
+    expect(result.conferences[1].name, 'updated');
+    expect(result.hasMore, isFalse);
+    expect(result.total, 3);
+    expect(api.calls.length, 2);
+    expect((await repo.fetchConferences()).conferences.single.name, 'network');
+  });
+  test('full catalog empty result and first-page-only cache', () async {
+    api.conferences = (_) async => wire.ListConferencesResponse();
+    expect((await repo.fetchAllConferences()).conferences, isEmpty);
+    api.conferences = (r) async => wire.ListConferencesResponse(
+      conferences: [wire.Conference(id: 'id-${r.page.offset}')],
+      hasMore: r.page.offset.toInt() == 0,
+    );
+    expect((await repo.fetchAllConferences()).conferences.length, 2);
+    api.conferences = (_) async => throw const NetworkException();
+    final fallback = await repo.fetchAllConferences();
+    expect(fallback.conferences.length, 1);
+    expect(fallback.hasMore, isTrue);
+  });
+  test(
+    'late failure never returns partial result or cached first page',
+    () async {
+      await repo.fetchConferences();
+      api.conferences = (r) async {
+        if (r.page.offset.toInt() != 0) throw const NetworkException();
+        return wire.ListConferencesResponse(
+          conferences: [wire.Conference(id: 'partial')],
+          hasMore: true,
+        );
+      };
+      await expectLater(
+        repo.fetchAllConferences(),
+        throwsA(isA<NetworkException>()),
+      );
+    },
+  );
+  for (final empty in [false, true]) {
+    test('full catalog rejects no progress (empty=$empty)', () async {
+      api.conferences = (_) async => wire.ListConferencesResponse(
+        conferences: empty ? [] : [wire.Conference(id: 'repeated')],
+        hasMore: true,
+      );
+      await expectLater(
+        repo.fetchAllConferences(),
+        throwsA(isA<ServerException>()),
+      );
+      expect(api.calls.length, empty ? 1 : 2);
+    });
+  }
+  for (final sessionChange in [false, true]) {
+    test(
+      'full catalog cancels between pages (session=$sessionChange)',
+      () async {
+        final cancellation = RpcCancellation();
+        api.conferences = (_) async {
+          if (sessionChange) {
+            api.switchSession();
+          } else {
+            await cancellation.cancel();
+          }
+          return wire.ListConferencesResponse(
+            conferences: [wire.Conference(id: 'old')],
+            hasMore: true,
+          );
+        };
+        await expectLater(
+          repo.fetchAllConferences(cancellation: cancellation),
+          throwsA(isA<CancelledException>()),
+        );
+        expect(api.calls.length, 1);
+      },
+    );
+  }
+  test('full private catalog never persists its echo first page', () async {
+    await repo.fetchConferences();
+    api.conferences = (r) async => wire.ListConferencesResponse(
+      conferences: [
+        wire.Conference(
+          id: 'id-${r.page.offset}',
+          kind: r.page.offset.toInt() == 0
+              ? wire.AreaKind.AREA_KIND_ECHO
+              : wire.AreaKind.AREA_KIND_NETMAIL,
+        ),
+      ],
+      hasMore: r.page.offset.toInt() == 0,
+    );
+    await repo.fetchAllConferences();
+    expect(prefs.getKeys(), isEmpty);
+  });
+  for (final error in [
+    const UnauthorizedException(),
+    const CancelledException(),
+    const ServerException(),
+    const ApiException(message: 'Denied', statusCode: 7),
+  ]) {
+    test(
+      'full catalog never hides status ${error.statusCode} behind cache',
+      () async {
+        await repo.fetchConferences();
+        api.conferences = (_) async => throw error;
+        await expectLater(
+          repo.fetchAllConferences(),
+          throwsA(
+            isA<ApiException>().having(
+              (e) => e.statusCode,
+              'status',
+              error.statusCode,
+            ),
+          ),
+        );
+        if (error.isAccessDenied) expect(prefs.getKeys(), isEmpty);
+      },
+    );
+  }
+  test('full search has no fallback to unfiltered cache', () async {
+    await repo.fetchConferences();
+    api.conferences = (_) async => throw const NetworkException();
+    await expectLater(
+      repo.fetchAllConferences(query: 'new'),
+      throwsA(isA<NetworkException>()),
+    );
+  });
   test('denied refresh removes cache and cannot fallback later', () async {
     await repo.fetchConferences();
     api.conferences = (_) async =>

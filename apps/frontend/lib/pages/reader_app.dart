@@ -45,7 +45,7 @@ class _MainScreenState extends State<MainScreen>
   int _requestVersion = 0;
   RpcCancellation? _cancellation;
   StreamSubscription<int>? _sessionSubscription;
-  bool _hasMore = false;
+  bool _catalogIncomplete = false;
   final Set<String> _pendingBookmarks = {};
   String? _bookmarkError;
   late final AccountRepository _account;
@@ -79,34 +79,25 @@ class _MainScreenState extends State<MainScreen>
     super.dispose();
   }
 
-  Future<void> _loadConferences({
-    bool forceRefresh = false,
-    bool more = false,
-  }) async {
+  Future<void> _loadConferences() async {
     final version = ++_requestVersion;
     unawaited(_cancellation?.cancel());
     final cancellation = _cancellation = RpcCancellation();
-    final offset = more ? conferences.length : 0;
     final query = _searchController.text.trim();
     try {
       setState(() {
         isLoading = true;
         errorMessage = '';
       });
-      final response = query.isEmpty
-          ? await _repository.fetchConferences(
-              forceRefresh: forceRefresh,
-              offset: offset,
-              cancellation: cancellation,
-            )
-          : await _repository.searchConferences(
-              query: query,
-              offset: offset,
-              cancellation: cancellation,
-            );
+      final response = await _repository.fetchAllConferences(
+        query: query,
+        cancellation: cancellation,
+      );
       if (!mounted || version != _requestVersion) return;
 
-      final loadedConferences = response.conferences
+      final sorted = [...response.conferences]
+        ..sort(Conference.compareForCatalog);
+      final loadedConferences = sorted
           .map(
             (conf) => FidoConference(
               id: conf.id,
@@ -126,16 +117,8 @@ class _MainScreenState extends State<MainScreen>
           )
           .toList();
       setState(() {
-        conferences = more
-            ? [...conferences, ...loadedConferences]
-            : loadedConferences;
-        conferences.sort((a, b) {
-          final group = a.kind.groupLabel.compareTo(b.kind.groupLabel);
-          return group == 0
-              ? a.name.compareTo(b.name)
-              : a.kind.index.compareTo(b.kind.index);
-        });
-        _hasMore = response.hasMore;
+        conferences = loadedConferences;
+        _catalogIncomplete = response.hasMore;
         isLoading = false;
       });
     } catch (e) {
@@ -170,7 +153,7 @@ class _MainScreenState extends State<MainScreen>
 
   Future<void> _refreshConferences() async {
     _debouncer.cancel();
-    await _loadConferences(forceRefresh: true);
+    await _loadConferences();
   }
 
   // Метод для перехода к экрану сообщений
@@ -357,6 +340,19 @@ class _MainScreenState extends State<MainScreen>
             padding: const EdgeInsets.all(16),
             child: Text(_bookmarkError!),
           ),
+        if (_catalogIncomplete && !isLoading && errorMessage.isEmpty)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Column(
+              children: [
+                const Text('Показана только сохранённая часть списка.'),
+                TextButton(
+                  onPressed: _refreshConferences,
+                  child: const Text('Повторить загрузку'),
+                ),
+              ],
+            ),
+          ),
         Expanded(child: _buildConferenceList()),
       ],
     );
@@ -422,14 +418,8 @@ class _MainScreenState extends State<MainScreen>
     return RefreshIndicator(
       onRefresh: _refreshConferences,
       child: ListView.builder(
-        itemCount: conferences.length + (_hasMore ? 1 : 0),
+        itemCount: conferences.length,
         itemBuilder: (context, index) {
-          if (index == conferences.length) {
-            return TextButton(
-              onPressed: () => _loadConferences(more: true),
-              child: const Text("Загрузить ещё"),
-            );
-          }
           final conference = conferences[index];
           return Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,

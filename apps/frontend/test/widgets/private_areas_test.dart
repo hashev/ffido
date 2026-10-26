@@ -124,6 +124,18 @@ void main() {
       for (final label in ['Эхи', 'Личная почта', 'Локальные', 'Служебные']) {
         expect(find.text(label), findsOneWidget);
       }
+      expect(
+        tester.getTopLeft(find.text('Mail')).dy,
+        lessThan(tester.getTopLeft(find.text('Local')).dy),
+      );
+      expect(
+        tester.getTopLeft(find.text('Local')).dy,
+        lessThan(tester.getTopLeft(find.text('Old')).dy),
+      );
+      expect(
+        tester.getTopLeft(find.text('Old')).dy,
+        lessThan(tester.getTopLeft(find.text('Public')).dy),
+      );
       expect(find.textContaining('Squish не поддерживается'), findsOneWidget);
       await tester.tap(find.text('Old'));
       await tester.pumpAndSettle();

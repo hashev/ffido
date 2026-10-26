@@ -100,6 +100,75 @@ class ConferenceRepository {
     return mapConferences(result);
   }
 
+  /// Loads a catalog without mixing cached and live pages. A cached fallback
+  /// retains hasMore so callers can explicitly identify an incomplete catalog.
+  Future<ConferenceListResponse> fetchAllConferences({
+    String query = '',
+    RpcCancellation? cancellation,
+  }) async {
+    final captured = epoch;
+    final filter = query.trim();
+    _check(captured, cancellation);
+    await _cacheQueue;
+    _check(captured, cancellation);
+    final items = <String, Conference>{};
+    ConferenceListResponse? firstPage;
+    var offset = 0;
+    try {
+      while (true) {
+        final response = await _apiClient.listConferences(
+          wire.ListConferencesRequest(
+            page: _page(offset, ApiConstants.defaultLimit),
+            query: filter,
+            sort: wire.ConferenceSort.CONFERENCE_SORT_NAME,
+          ),
+          cancellation: cancellation,
+        );
+        _check(captured, cancellation);
+        final page = mapConferences(response);
+        firstPage ??= page;
+        final previousCount = items.length;
+        for (final conference in page.conferences) {
+          items[conference.id] = conference;
+        }
+        if (!page.hasMore) break;
+        if (items.length == previousCount) {
+          throw const ServerException(
+            message: 'Загрузка каталога не продвигается',
+          );
+        }
+        offset += page.conferences.length;
+        _check(captured, cancellation);
+      }
+      if (filter.isEmpty) {
+        if (items.values.any((c) => c.kind != AreaKind.echo)) {
+          await clearCache();
+        } else {
+          await _cacheConferences(
+            firstPage,
+            ApiConstants.defaultLimit,
+            captured,
+          );
+        }
+      }
+      _check(captured, cancellation);
+      return ConferenceListResponse(
+        conferences: items.values.toList(),
+        total: items.length,
+        hasMore: false,
+      );
+    } on ApiException catch (error) {
+      _check(captured, cancellation);
+      if (error.isAccessDenied) await clearCache();
+      _check(captured, cancellation);
+      if (firstPage == null && filter.isEmpty && error.allowsCacheFallback) {
+        final cached = _getCachedConferences(ApiConstants.defaultLimit);
+        if (cached != null) return cached;
+      }
+      rethrow;
+    }
+  }
+
   Future<Conference?> getConferenceById(
     String id, {
     RpcCancellation? cancellation,
