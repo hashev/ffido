@@ -58,6 +58,22 @@ class Conference {
     this.positionRevision = 0,
   });
 
+  int get _catalogGroup => switch (kind) {
+    AreaKind.netmail => 0,
+    AreaKind.local => 1,
+    AreaKind.bad => 2,
+    AreaKind.dupe => 3,
+    AreaKind.robots => 4,
+    AreaKind.echo => statisticsKnown && unreadCount > 0 ? 5 : 6,
+  };
+
+  static int compareForCatalog(Conference a, Conference b) {
+    final group = a._catalogGroup.compareTo(b._catalogGroup);
+    if (group != 0) return group;
+    final name = a.name.toLowerCase().compareTo(b.name.toLowerCase());
+    return name != 0 ? name : a.id.compareTo(b.id);
+  }
+
   /// Создание из JSON (ответ API)
   factory Conference.fromJson(Map<String, dynamic> json) {
     return Conference(

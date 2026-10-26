@@ -1,5 +1,8 @@
 import 'dart:async';
 
+import 'package:fixnum/fixnum.dart';
+import 'package:fido/conference_card.dart';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -52,6 +55,214 @@ Future<void> close(WidgetTester tester) async {
 }
 
 void main() {
+  testWidgets(
+    'cached first page is explicitly incomplete and can retry full catalog',
+    (tester) async {
+      SharedPreferences.setMockInitialValues({});
+      final api = FakeTransport();
+      addTearDown(api.dispose);
+      final repo = ConferenceRepository(
+        apiClient: api,
+        prefs: await SharedPreferences.getInstance(),
+      );
+      addTearDown(repo.dispose);
+      api.conferences = (_) async => wire.ListConferencesResponse(
+        conferences: [wire.Conference(id: 'cached', name: 'Cached')],
+        hasMore: true,
+      );
+      await repo.fetchConferences();
+      api.conferences = (_) async => throw const NetworkException();
+      await tester.pumpWidget(MaterialApp(home: MainScreen(repository: repo)));
+      await tester.pumpAndSettle();
+      expect(find.text('Cached'), findsOneWidget);
+      expect(
+        find.text('Показана только сохранённая часть списка.'),
+        findsOneWidget,
+      );
+      expect(find.text('Загрузить ещё'), findsNothing);
+      api.conferences = (_) async => conferenceData('Complete');
+      await tester.tap(find.text('Повторить загрузку'));
+      await tester.pumpAndSettle();
+      expect(find.text('Complete'), findsOneWidget);
+      expect(
+        find.text('Показана только сохранённая часть списка.'),
+        findsNothing,
+      );
+      await close(tester);
+    },
+  );
+
+  for (final bulk in [false, true]) {
+    testWidgets(
+      'reading updates global order and preserves search (bulk=$bulk)',
+      (tester) async {
+        SharedPreferences.setMockInitialValues({});
+        var unread = true;
+        final api = FakeTransport();
+        addTearDown(api.dispose);
+        api.conferences = (_) async => wire.ListConferencesResponse(
+          conferences: [
+            wire.Conference(id: 'a', name: 'Alpha', canRead: true),
+            wire.Conference(
+              id: 'z',
+              name: 'Zulu',
+              canRead: true,
+              unreadCount: Int64(unread ? 1 : 0),
+            ),
+          ],
+        );
+        api.messages = (_) async => wire.ListMessagesResponse(
+          messages: [wire.Message(id: 'g#1', subject: 'Message')],
+        );
+        api.message = (r) async {
+          unread = false;
+          return wire.Message(
+            id: r.messageId,
+            subject: 'Message',
+            body: 'Body',
+          );
+        };
+        api.bulkRead = (_) async {
+          unread = false;
+          return wire.MarkConferenceReadResponse();
+        };
+        final repo = ConferenceRepository(
+          apiClient: api,
+          prefs: await SharedPreferences.getInstance(),
+        );
+        addTearDown(repo.dispose);
+        await tester.pumpWidget(
+          MaterialApp(home: MainScreen(repository: repo)),
+        );
+        await tester.pumpAndSettle();
+        await search(tester, 'filter');
+        await tester.pumpAndSettle();
+        expect(
+          tester
+              .widgetList<ConferenceCard>(find.byType(ConferenceCard))
+              .map((c) => c.conference.name),
+          ['Zulu', 'Alpha'],
+        );
+        await tester.tap(find.text('Zulu'));
+        await tester.pumpAndSettle();
+        if (bulk) {
+          await tester.tap(find.byTooltip('Действия эхи'));
+          await tester.pumpAndSettle();
+          await tester.tap(find.text('Отметить всё прочитанным'));
+          await tester.pumpAndSettle();
+          await tester.tap(find.text('Отметить'));
+          await tester.pumpAndSettle();
+        } else {
+          await tester.tap(find.text('Message'));
+          await tester.pumpAndSettle();
+        }
+        await tester.pageBack();
+        await tester.pumpAndSettle();
+        expect(
+          tester
+              .widgetList<ConferenceCard>(find.byType(ConferenceCard))
+              .map((c) => c.conference.name),
+          ['Alpha', 'Zulu'],
+        );
+        expect(
+          api.calls.whereType<wire.ListConferencesRequest>().last.query,
+          'filter',
+        );
+        expect(
+          tester.widget<TextField>(find.byType(TextField)).controller!.text,
+          'filter',
+        );
+        await close(tester);
+      },
+    );
+  }
+
+  testWidgets('catalog sorts across pages before displaying results', (
+    tester,
+  ) async {
+    final calls = await start(tester);
+    calls[0].completer.complete(
+      wire.ListConferencesResponse(
+        conferences: [wire.Conference(id: 'read', name: 'Beta', canRead: true)],
+        hasMore: true,
+      ),
+    );
+    await tester.pump();
+    expect(find.text('Beta'), findsNothing);
+    expect(calls.length, 2);
+    expect(calls[1].request.page.offset.toInt(), 1);
+    calls[1].completer.complete(
+      wire.ListConferencesResponse(
+        conferences: [
+          wire.Conference(id: 'z', name: 'Zulu', unreadCount: Int64(10)),
+          wire.Conference(id: 'a', name: 'alpha', unreadCount: Int64(1)),
+          wire.Conference(
+            id: 'net',
+            name: 'Mail',
+            kind: wire.AreaKind.AREA_KIND_NETMAIL,
+          ),
+        ],
+      ),
+    );
+    await tester.pumpAndSettle();
+    final names = tester
+        .widgetList<ConferenceCard>(find.byType(ConferenceCard))
+        .map((c) => c.conference.name);
+    expect(names, ['Mail', 'alpha', 'Zulu', 'Beta']);
+    expect(find.text('Загрузить ещё'), findsNothing);
+    expect(find.text('Эхи'), findsOneWidget);
+    expect(find.text('Служебные'), findsNothing);
+    await close(tester);
+  });
+  testWidgets(
+    'late page failure has retry and never publishes partial catalog',
+    (tester) async {
+      final calls = await start(tester);
+      await search(tester, 'filtered');
+      calls[0].succeed('stale');
+      calls[1].completer.complete(
+        wire.ListConferencesResponse(
+          conferences: [wire.Conference(id: 'partial', name: 'Partial')],
+          hasMore: true,
+        ),
+      );
+      await tester.pump();
+      expect(calls[2].request.query, 'filtered');
+      calls[2].fail();
+      await tester.pumpAndSettle();
+      expect(find.text('Partial'), findsNothing);
+      await tester.tap(find.text('Повторить').first);
+      await tester.pump();
+      expect(calls[3].request.page.offset.toInt(), 0);
+      expect(calls[3].request.query, 'filtered');
+      calls[3].succeed('Complete');
+      await tester.pumpAndSettle();
+      expect(find.text('Complete'), findsOneWidget);
+      await close(tester);
+    },
+  );
+  testWidgets('search change during later page ignores stale page and error', (
+    tester,
+  ) async {
+    final calls = await start(tester);
+    calls[0].completer.complete(
+      wire.ListConferencesResponse(
+        conferences: [wire.Conference(id: 'old', name: 'Old')],
+        hasMore: true,
+      ),
+    );
+    await tester.pump();
+    await search(tester, 'new');
+    calls[2].succeed('Current');
+    await tester.pump();
+    calls[1].fail();
+    await tester.pumpAndSettle();
+    expect(find.text('Current'), findsOneWidget);
+    expect(find.text('Old'), findsNothing);
+    expect(find.textContaining('Ошибка'), findsNothing);
+    await close(tester);
+  });
+
   testWidgets(
     'bottom tabs use icons, tooltips, accessible labels and 48px targets',
     (tester) async {
