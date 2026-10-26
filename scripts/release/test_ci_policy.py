@@ -39,6 +39,14 @@ class CIPolicyTest(unittest.TestCase):
         self.assertNotIn('run-id:', publish)
         self.assertNotIn('repository:', publish)
 
+    def test_all_ci_apt_installations_use_bounded_official_mirror(self):
+        for name in ('build.yml', 'release.yml', 'native-dependencies.yml'):
+            text = workflow(name)
+            self.assertNotIn('sudo apt-get', text)
+            self.assertIn('bash scripts/release/linux_packages.sh ', text)
+        portable = workflow('build.yml').split('  portable-checks:')[1].split('  client:')[0]
+        self.assertIn('linux_packages.sh clang-format-${{ steps.dependency-lock.outputs.linux_clang }}', portable)
+
     def test_sdk_archives_do_not_evict_native_or_analysis_caches(self):
         for name in ('build.yml', 'release.yml'):
             blocks = workflow(name).split('      - uses: subosito/flutter-action@')[1:]

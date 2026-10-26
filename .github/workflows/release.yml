@@ -110,7 +110,7 @@ jobs:
           expected = json.loads(Path('build/downloads/release-identity/identity.json').read_text())
           assert json.loads(Path('build/container/identity.json').read_text()) == expected
           PY
-      - run: sudo apt-get update && sudo apt-get install -y skopeo
+      - run: bash scripts/release/linux_packages.sh skopeo
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
         with:
           flutter-version: ${{ steps.dependency-lock.outputs.flutter }}
