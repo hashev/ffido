@@ -1,7 +1,5 @@
 #pragma once
 
-// CI acceptance: verify backend header invalidates analysis only.
-
 #include <cstdint>
 #include <expected>
 #include <optional>
