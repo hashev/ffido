@@ -39,6 +39,14 @@ class CIPolicyTest(unittest.TestCase):
         self.assertNotIn('run-id:', publish)
         self.assertNotIn('repository:', publish)
 
+    def test_backend_smoke_uses_locked_python_after_brew(self):
+        backend = workflow('build.yml').split('  backend:\n')[1].split('  container:\n')[0]
+        self.assertIn('python-version: ${{ steps.dependency-lock.outputs.python }}', backend)
+        self.assertIn('cache: pip', backend)
+        self.assertIn('cache-dependency-path: scripts/update/requirements.txt', backend)
+        self.assertLess(backend.index('name: macOS tools'), backend.index('name: Pinned backend Python'))
+        self.assertLess(backend.index('name: Pinned backend Python'), backend.index('uses: ./.github/actions/native-dependencies'))
+
     def test_portable_checks_once_platform_tests_preserved(self):
         text = workflow('build.yml')
         self.assertEqual(text.count('flutter analyze --no-pub'), 1)

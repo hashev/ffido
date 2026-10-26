@@ -9,7 +9,7 @@
 ## 2. Готовые native-зависимости и доверенный прогрев
 
 - [x] 2.1 Разделить подготовку native-компонентов в `scripts/release/dependencies.sh` по DAG, с completion manifests, staging и проверкой конфликтов; тестами проверить транзитивную инвалидацию и отсутствие пересборки Abseil/Protobuf/gRPC при изменении Husky.
-- [ ] 2.2 Реализовать проверку состава, происхождения и checksums, восстановление helper sources/legal metadata и генерацию актуального `ffido-cache.cmake`; проверить hit без configure/build/install, повреждённый/незавершённый кеш и восстановление в другом checkout с реальной backend-сборкой и упаковкой.
+- [x] 2.2 Реализовать проверку состава, происхождения и checksums, восстановление helper sources/legal metadata и генерацию актуального `ffido-cache.cmake`; проверить hit без configure/build/install, повреждённый/незавершённый кеш и восстановление в другом checkout с реальной backend-сборкой и упаковкой.
 - [ ] 2.3 Подключить компонентные кеши и доверенный master/manual workflow прогрева в `.github/workflows/`; проверить точные ключи, отсутствие продвижения PR-кешей в release и сохранение готового компонента только после полного успеха тестами политики workflow и пробным CI-прогоном.
 - [x] 2.4 В `docs/testing.md` описать прогрев, cold fallback, доверенные scopes и очистку кеша; проверить работу fallback без кеша и отсутствие секретов/FTN-данных в сохраняемом составе.
 
@@ -18,12 +18,12 @@
 - [ ] 3.1 Подключить закреплённый compiler cache к backend CMake и workflow; проверить Linux и обе macOS, повторную сборку с cache hits и корректный miss при смене compiler/flags, сохранив обязательный запуск CTest.
 - [x] 3.2 Добавить точный ключ и проверяемую запись полного успешного платформенного анализа в `scripts/check_cpp.py` и `scripts/release/`; тестами покрыть source/header/contracts/config/toolchain/dependency изменения, нормализацию checkout и отказ для failed/partial/untrusted записей.
 - [x] 3.3 В `.github/workflows/build.yml` выполнять переносимые форматирование и Flutter analyze один раз, сохранив платформенные C++-анализ, сборки, Flutter tests, CTest, contracts и smoke; тестами workflow проверить полный набор required jobs и запрет зелёного агрегатора при failed/cancelled/skipped зависимости.
-- [ ] 3.4 Описать уровни повторного использования и способы принудительного нового анализа в `docs/testing.md`; проверить documented cache-bypass и подтвердить по CI-логам, что успех тестов никогда не берётся из кеша.
+- [x] 3.4 Описать уровни повторного использования и способы принудительного нового анализа в `docs/testing.md`; проверить documented cache-bypass и подтвердить по CI-логам, что успех тестов никогда не берётся из кеша.
 
 ## 4. Android QA
 
 - [x] 4.1 Разделить `scripts/update/test_android_flow.py` на подготовку APK A/B и выполнение с готовыми fixtures, фиксированным QA origin и manifest; тестами проверить входы/hashes/версии, неверный комплект, конфликт порта и отсутствие production/закрытых QA-ключей в artifacts.
-- [ ] 4.2 Разделить Android smoke в `.github/workflows/build.yml` и `scripts/release/android_smoke.sh` на producer и независимые API 24/25/35; CI должен показать ровно две QA-сборки A/B и успешные реальные установку, запуск, обновление и сохранение состояния на всех API.
+- [x] 4.2 Разделить Android smoke в `.github/workflows/build.yml` и `scripts/release/android_smoke.sh` на producer и независимые API 24/25/35; CI должен показать ровно две QA-сборки A/B и успешные реальные установку, запуск, обновление и сохранение состояния на всех API.
 - [ ] 4.3 Добавить ограниченное восстановление транспорта ADB и сохранение диагностики; тестами с имитацией ADB проверить таймаут, восстановление соединения и отсутствие повторов при crash/assertion, а в CI проверить наличие logs при ошибке.
 - [x] 4.4 Обновить `docs/testing.md` командами подготовки fixtures и запуска отдельного API, версиями emulator/system image и диагностикой; выполнить описанный сценарий на доступном устройстве/CI и явно записать недоступные локальные проверки.
 

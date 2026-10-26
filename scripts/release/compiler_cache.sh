@@ -14,9 +14,13 @@ if [[ ! -x "$WORK/prefix/bin/ccache" ]] || ! "$WORK/prefix/bin/ccache" --version
   git -C "$WORK/source" checkout --detach FETCH_HEAD
   [[ "$(git -C "$WORK/source" rev-parse HEAD)" == "$REVISION" ]]
   git -C "$WORK/source" tag "v$VERSION" "$REVISION"
-  cmake -S "$WORK/source" -B "$WORK/build" -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$WORK/prefix" -DCCACHE_DEV_MODE=OFF -DDEPS=DOWNLOAD -DDEP_FMT=BUNDLED -DREDIS_STORAGE_BACKEND=OFF -DENABLE_TESTING=OFF -DENABLE_DOCUMENTATION=OFF
-  cmake --build "$WORK/build" --parallel 3
-  cmake --install "$WORK/build"
+  # Ccache must derive its version from its pinned Git tag, not FFIDO PR metadata.
+  (
+    unset GITHUB_REF
+    cmake -S "$WORK/source" -B "$WORK/build" -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$WORK/prefix" -DCCACHE_DEV_MODE=OFF -DDEPS=DOWNLOAD -DDEP_FMT=BUNDLED -DREDIS_STORAGE_BACKEND=OFF -DENABLE_TESTING=OFF -DENABLE_DOCUMENTATION=OFF
+    cmake --build "$WORK/build" --parallel 3
+    cmake --install "$WORK/build"
+  )
 fi
 "$WORK/prefix/bin/ccache" --version
 if [[ -n "${GITHUB_PATH:-}" ]]; then
