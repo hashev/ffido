@@ -81,6 +81,41 @@ def adb_command(adb, serial, command, attempts=3):
                            stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
 
 
+class QAEvents:
+    """Keep app events even when Android rotates its busy main log buffer."""
+    def __init__(self, adb, serial, directory):
+        self.path = directory/'flutter-stream.log'
+        self.output = self.path.open('wb')
+        try:
+            self.process = subprocess.Popen([str(adb), '-s', serial, 'logcat', '-b', 'main',
+                                             '-v', 'brief', '-s', 'flutter:I', '*:S'],
+                                            stdout=self.output, stderr=subprocess.STDOUT)
+        except OSError:
+            self.output.close()
+            raise
+
+    def records(self):
+        if self.process.poll() is not None:
+            raise RuntimeError('ADB app event stream stopped; see flutter-stream.log')
+        records = []
+        for line in self.path.read_bytes().splitlines(keepends=True):
+            if line.endswith(b'\n') and b'FFIDO_UPDATE_QA ' in line:
+                records.append(json.loads(line.split(b'FFIDO_UPDATE_QA ', 1)[1]))
+        return records
+
+    def close(self):
+        try:
+            if self.process.poll() is None:
+                self.process.terminate()
+                try:
+                    self.process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    self.process.kill()
+                    self.process.wait(timeout=5)
+        finally:
+            self.output.close()
+
+
 def window_nodes(device, directory):
     device('shell', 'uiautomator', 'dump', '/sdcard/ffido-update-qa.xml')
     # Old Android shell streams can truncate XML and return status 255.
@@ -254,6 +289,7 @@ def run(args):
     adb = args.sdk.resolve()/'platform-tools/adb'
     def device(*command):
         return adb_command(adb, args.serial, command)
+    events = None
     try:
         assert device('shell', 'getprop', 'ro.kernel.qemu').strip() == '1'
         wait(lambda: device('shell', 'getprop', 'sys.boot_completed').strip() == '1')
@@ -263,14 +299,10 @@ def run(args):
         device('uninstall', PACKAGE) if PACKAGE in device('shell', 'pm', 'list', 'packages', PACKAGE) else None
         device('install', str(web/'A.apk'))
         device('logcat', '-b', 'main', '-c')
+        events = QAEvents(adb, args.serial, directory)
         device('shell', 'am', 'start', '-W', '-n', PACKAGE+'/.MainActivity')
         def records():
-            lines = device('logcat', '-d', '-s', 'flutter:I', '*:S').splitlines()
-            values = []
-            for line in lines:
-                if 'FFIDO_UPDATE_QA ' in line:
-                    values.append(json.loads(line.split('FFIDO_UPDATE_QA ', 1)[1]))
-            return values
+            return events.records()
         def ready(stage):
             return next((value for value in records() if value.get('stage') == stage and value.get('preferences') and value.get('secureSession')), None)
         wait(lambda: ready('A'))
@@ -319,6 +351,11 @@ def run(args):
         (directory/'device.log').write_text(device('logcat', '-d', '-s', 'flutter:I', '*:S'))
         print(json.dumps(result))
     finally:
+        if events is not None:
+            try:
+                events.close()
+            except (OSError, subprocess.SubprocessError) as error:
+                (directory/'stream-cleanup.log').write_text(str(error))
         try:
             (directory/'device-all.log').write_text(device('logcat', '-d'))
         except (subprocess.SubprocessError, OSError) as error:

@@ -131,3 +131,46 @@ class ADBRecoveryTest(unittest.TestCase):
         with patch.object(android.subprocess, 'check_output', side_effect=subprocess.TimeoutExpired([], 30)):
             with self.assertRaises(subprocess.TimeoutExpired):
                 android.adb_command('adb', 'emulator-5554', ('logcat', '-c'))
+
+
+class QAEventsTest(unittest.TestCase):
+    def test_events_survive_buffer_rotation_and_partial_writes(self):
+        with tempfile.TemporaryDirectory() as temporary, patch.object(android.subprocess, 'Popen') as spawn:
+            spawn.return_value.poll.return_value = None
+            events = android.QAEvents('adb', 'emulator-5554', pathlib.Path(temporary))
+            try:
+                events.output.write(b'I/flutter: FFIDO_UPDATE_QA {"stage":"A"}\n')
+                events.output.flush()
+                self.assertEqual(events.records(), [{'stage':'A'}])
+                # Device ring-buffer contents may disappear; captured events remain.
+                events.output.write(b'other message\n'*20000)
+                events.output.write(b'I/flutter: FFIDO_UPDATE_QA {"result":"rejected"')
+                events.output.flush()
+                self.assertEqual(len(events.records()), 1)
+                events.output.write(b'}\n')
+                events.output.flush()
+                self.assertEqual(events.records(), [{'stage':'A'}, {'result':'rejected'}])
+                events.output.write(b'I/flutter: FFIDO_UPDATE_QA not-json\n')
+                events.output.flush()
+                with self.assertRaises(json.JSONDecodeError):
+                    events.records()
+            finally:
+                events.close()
+            spawn.return_value.terminate.assert_called_once()
+            spawn.return_value.wait.assert_called_once_with(timeout=5)
+            self.assertTrue(events.output.closed)
+
+    def test_dead_stream_fails_and_shutdown_is_bounded(self):
+        with tempfile.TemporaryDirectory() as temporary, patch.object(android.subprocess, 'Popen') as spawn:
+            process = spawn.return_value
+            process.poll.return_value = 1
+            events = android.QAEvents('adb', 'emulator-5554', pathlib.Path(temporary))
+            with self.assertRaisesRegex(RuntimeError, 'stream stopped'):
+                events.records()
+            process.poll.return_value = None
+            process.wait.side_effect = [subprocess.TimeoutExpired([], 5), 0]
+            events.close()
+            process.kill.assert_called_once()
+            self.assertEqual(process.wait.call_count, 2)
+            spawn.assert_called_once()
+            self.assertTrue(events.output.closed)
