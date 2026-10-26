@@ -92,6 +92,34 @@ class ADBRecoveryTest(unittest.TestCase):
                 self.assertEqual(output.call_count, 1)
                 recovery.assert_not_called()
 
+    def test_window_dump_uses_file_transfer_and_rejects_truncated_xml(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = pathlib.Path(temporary)
+            for content in ('<hierarchy><node text="Install"/></hierarchy>', '<hierarchy><node'):
+                calls = []
+                def device(*command):
+                    calls.append(command)
+                    if command[0] == 'pull':
+                        pathlib.Path(command[2]).write_text(content)
+                if content.endswith('</hierarchy>'):
+                    self.assertEqual(android.window_nodes(device, directory)[0].get('text'), 'Install')
+                else:
+                    with self.assertRaises(android.ET.ParseError):
+                        android.window_nodes(device, directory)
+                self.assertEqual(calls[0][:3], ('shell', 'uiautomator', 'dump'))
+                self.assertEqual(calls[1][0], 'pull')
+                self.assertEqual(len(calls), 2)
+
+    def test_install_has_bounded_package_timeout_without_retry(self):
+        error = subprocess.TimeoutExpired(['adb', 'install'], 120)
+        with patch.object(android.subprocess, 'check_output', side_effect=error) as output, \
+                patch.object(android.subprocess, 'run') as recovery:
+            with self.assertRaises(subprocess.TimeoutExpired):
+                android.adb_command('adb', 'emulator-5554', ('install', 'A.apk'))
+            self.assertEqual(output.call_args.kwargs['timeout'], 120)
+            self.assertEqual(output.call_count, 1)
+            recovery.assert_not_called()
+
     def test_recovery_is_bounded_and_timeout_is_not_success(self):
         error = subprocess.CalledProcessError(1, [], output='device offline')
         with patch.object(android.subprocess, 'check_output', side_effect=error) as output, \

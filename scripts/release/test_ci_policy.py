@@ -39,10 +39,20 @@ class CIPolicyTest(unittest.TestCase):
         self.assertNotIn('run-id:', publish)
         self.assertNotIn('repository:', publish)
 
+    def test_sdk_archives_do_not_evict_native_or_analysis_caches(self):
+        for name in ('build.yml', 'release.yml'):
+            blocks = workflow(name).split('      - uses: subosito/flutter-action@')[1:]
+            self.assertTrue(blocks)
+            for block in blocks:
+                setup = block.split('      - ', 1)[0]
+                self.assertIn('cache: false', setup)
+                self.assertIn('pub-cache: true', setup)
+
     def test_backend_smoke_uses_locked_python_after_brew(self):
         backend = workflow('build.yml').split('  backend:\n')[1].split('  container:\n')[0]
         self.assertIn('python-version: ${{ steps.dependency-lock.outputs.python }}', backend)
         self.assertIn('cache: pip', backend)
+        self.assertIn('-DPython3_EXECUTABLE="$(command -v python3)"', backend)
         self.assertIn('cache-dependency-path: scripts/update/requirements.txt', backend)
         self.assertLess(backend.index('name: macOS tools'), backend.index('name: Pinned backend Python'))
         self.assertLess(backend.index('name: Pinned backend Python'), backend.index('uses: ./.github/actions/native-dependencies'))

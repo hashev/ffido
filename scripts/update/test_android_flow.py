@@ -68,16 +68,26 @@ def adb_command(adb, serial, command, attempts=3):
     for attempt in range(attempts):
         try:
             return subprocess.check_output([str(adb), '-s', serial, *command], text=True,
-                                           stderr=subprocess.STDOUT, timeout=30)
+                                           stderr=subprocess.STDOUT, timeout=120 if command[0] == 'install' else 30)
         except subprocess.CalledProcessError as error:
             transport = any(marker in (error.output or '').lower() for marker in
                             ('device offline', 'device not found', 'no devices/emulators',
                              'transport error', 'protocol fault'))
             if not recoverable or not transport or attempt+1 == attempts:
+                print(f'ADB command failed: {command}: {error.output}', flush=True)
                 raise
             print(f'ADB transport recovery {attempt+1}/{attempts}: {serial}', flush=True)
             subprocess.run([str(adb), '-s', serial, 'wait-for-device'], check=True, timeout=30,
                            stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+
+
+def window_nodes(device, directory):
+    device('shell', 'uiautomator', 'dump', '/sdcard/ffido-update-qa.xml')
+    # Old Android shell streams can truncate XML and return status 255.
+    # File transfer preserves the full dump; malformed XML remains an error.
+    path = directory/'window.xml'
+    device('pull', '/sdcard/ffido-update-qa.xml', str(path))
+    return list(ET.parse(path).iter('node'))
 
 
 QA_PORT = 8765
@@ -252,7 +262,7 @@ def run(args):
         # Do not silently replace a real device install: this emulator is explicit.
         device('uninstall', PACKAGE) if PACKAGE in device('shell', 'pm', 'list', 'packages', PACKAGE) else None
         device('install', str(web/'A.apk'))
-        device('logcat', '-c')
+        device('logcat', '-b', 'main', '-c')
         device('shell', 'am', 'start', '-W', '-n', PACKAGE+'/.MainActivity')
         def records():
             lines = device('logcat', '-d', '-s', 'flutter:I', '*:S').splitlines()
@@ -265,8 +275,7 @@ def run(args):
             return next((value for value in records() if value.get('stage') == stage and value.get('preferences') and value.get('secureSession')), None)
         wait(lambda: ready('A'))
         def nodes():
-            device('shell', 'uiautomator', 'dump', '/sdcard/ffido-update-qa.xml')
-            return list(ET.fromstring(device('shell', 'cat', '/sdcard/ffido-update-qa.xml')).iter('node'))
+            return window_nodes(device, directory)
         def click(label):
             labels = {value.casefold() for value in (label if isinstance(label, tuple) else (label,))}
             def find():

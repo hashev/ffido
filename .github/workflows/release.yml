@@ -50,7 +50,8 @@ jobs:
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
         with:
           flutter-version: ${{ steps.dependency-lock.outputs.flutter }}
-          cache: true
+          cache: false
+          pub-cache: true
       - run: python3 scripts/release/build_identity.py
         env:
           IDENTITY_JSON: ${{ needs.identity.outputs.json }}
@@ -114,7 +115,8 @@ jobs:
         with:
           flutter-version: ${{ steps.dependency-lock.outputs.flutter }}
           channel: stable
-          cache: true
+          cache: false
+          pub-cache: true
       - name: Check Docker Hub scope
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
