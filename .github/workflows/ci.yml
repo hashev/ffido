@@ -5,6 +5,10 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+  actions: read
+concurrency:
+  group: ffido-pr-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   verify:
     uses: ./.github/workflows/build.yml

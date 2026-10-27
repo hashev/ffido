@@ -1,12 +1,44 @@
-FROM ubuntu:24.04@sha256:68ee22004a9109b44973313b02ff7b1de250f1de0f5ecb628d73f579aaff33ac AS builder
-ENV DEBIAN_FRONTEND=noninteractive CC=clang-19 CXX=clang++-19
+FROM ubuntu:24.04@sha256:68ee22004a9109b44973313b02ff7b1de250f1de0f5ecb628d73f579aaff33ac AS native-toolchain
+ENV DEBIAN_FRONTEND=noninteractive
+COPY scripts/release/dependencies.lock.json /tmp/ffido-dependencies.lock.json
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates git cmake make clang-19 libssl-dev libc-ares-dev libre2-dev \
-    zlib1g-dev patchelf pkg-config python3 texinfo && rm -rf /var/lib/apt/lists/*
+    ca-certificates git cmake make python3 libssl-dev libc-ares-dev libre2-dev \
+    zlib1g-dev patchelf pkg-config texinfo \
+    && compiler=$(python3 -c 'import json; print(json.load(open("/tmp/ffido-dependencies.lock.json"))["tools"]["linux_clang"])') \
+    && apt-get install -y --no-install-recommends "clang-$compiler" \
+    && ln -s "/usr/bin/clang-$compiler" /usr/local/bin/clang \
+    && ln -s "/usr/bin/clang++-$compiler" /usr/local/bin/clang++ \
+    && rm -rf /var/lib/apt/lists/*
+ENV CC=clang CXX=clang++
 WORKDIR /src
 # Keep the expensive native dependency layer independent of application changes.
-COPY scripts/release/dependencies.sh scripts/release/dependency_record.py scripts/release/
-RUN bash scripts/release/dependencies.sh
+COPY scripts/release/dependencies.sh scripts/release/dependency_record.py scripts/release/dependency_lock.py scripts/release/dependencies.lock.json scripts/release/cache_key.py scripts/release/native_cache.py scripts/release/
+RUN python3 scripts/release/cache_key.py --describe
+
+FROM scratch AS native-profile
+COPY --from=native-toolchain /src/build/native-profile.json /native-profile.json
+
+FROM native-toolchain AS native-cache-import
+ARG FFIDO_CACHE_SESSION
+RUN --mount=type=cache,id=ffido-native-components,target=/cache/native,sharing=locked \
+    --mount=type=bind,from=native-cache-input,target=/cache-input \
+    test -n "$FFIDO_CACHE_SESSION" && for name in abseil protobuf grpc huskylib smapi fidoconf areafix hpt; do \
+      if [ -d "/cache-input/$name" ]; then rm -rf "/cache/native/$name"; cp -a "/cache-input/$name" "/cache/native/$name"; fi; \
+    done
+
+FROM native-toolchain AS native-cache-export
+ARG FFIDO_CACHE_SESSION
+RUN --mount=type=cache,id=ffido-native-components,target=/cache/native,sharing=locked \
+    test -n "$FFIDO_CACHE_SESSION" && mkdir /cache-output && cp -a /cache/native/. /cache-output/
+
+FROM scratch AS native-cache-snapshot
+COPY --from=native-cache-export /cache-output/ /
+
+FROM native-toolchain AS native-dependencies
+RUN --mount=type=cache,id=ffido-native-components,target=/cache/native,sharing=locked \
+    FFIDO_NATIVE_CACHE=/cache/native bash scripts/release/dependencies.sh \
+    && rm -rf build/release-deps/*-build
+FROM native-dependencies AS builder
 # The application adapter applies its patch after native dependencies are cached.
 RUN apt-get update && apt-get install -y --no-install-recommends patch \
     && rm -rf /var/lib/apt/lists/*
@@ -19,7 +51,8 @@ COPY tools/ tools/
 RUN cmake -S . -B build/backend -C build/release-deps/prefix/ffido-cache.cmake -DCMAKE_BUILD_TYPE=Release \
     && cmake --build build/backend --parallel 4
 # Permission tests must run without root's ability to bypass filesystem modes.
-RUN useradd --uid 10000 --user-group --no-create-home ffido-build \
+ARG FFIDO_TEST_RUN=local
+RUN test -n "$FFIDO_TEST_RUN" && useradd --uid 10000 --user-group --no-create-home ffido-build \
     && chown -R ffido-build:ffido-build build/backend \
     && runuser -u ffido-build -- env FFIDO_TEST_HPT=/src/build/release-deps/prefix/bin/hpt \
         python3 scripts/release/check_ctest.py build/backend

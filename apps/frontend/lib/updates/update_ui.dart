@@ -1,7 +1,3 @@
-import 'update_host_stub.dart'
-    if (dart.library.io) 'update_host_io.dart'
-    as host;
-
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -25,7 +21,6 @@ class _UpdateShellState extends State<UpdateShell> with WidgetsBindingObserver {
     WidgetsBinding.instance.addObserver(this);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) {
-        unawaited(host.confirmDesktopStartup());
         unawaited(controller.start());
       }
     });

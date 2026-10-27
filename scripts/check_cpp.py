@@ -25,13 +25,17 @@ def sources():
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--format', action='store_true')
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument('--format', action='store_true')
+    mode.add_argument('--format-check', action='store_true')
+    mode.add_argument('--skip-format', action='store_true')
     parser.add_argument('--build-dir', type=pathlib.Path, default=ROOT/'build/backend')
     args = parser.parse_args()
-    formatter = tool('clang-format')
     paths = sources()
-    subprocess.run([formatter, '--style=file', *(['-i'] if args.format else ['--dry-run', '-Werror']), *map(str, paths)], check=True)
-    if args.format:
+    if not args.skip_format:
+        formatter = tool('clang-format')
+        subprocess.run([formatter, '--style=file', *(['-i'] if args.format else ['--dry-run', '-Werror']), *map(str, paths)], check=True)
+    if args.format or args.format_check:
         return
     tidy = tool('clang-tidy')
     build = args.build_dir.resolve()
@@ -49,14 +53,19 @@ def main():
         extra = ["--extra-arg=-isysroot"+sdk, "--extra-arg=-isystem"+str(pathlib.Path(sdk)/"usr/include/c++/v1")]
     def check(path):
         return subprocess.run([tidy, '-p', str(build), *extra, path], cwd=ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    results = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
-        results = list(pool.map(check, translation_units))
-    for result in results:
-        if result.stdout:
-            print(result.stdout, end='')
+        pending = {pool.submit(check, path): path for path in translation_units}
+        for future in concurrent.futures.as_completed(pending):
+            result = future.result()
+            results.append(result)
+            print(f'clang-tidy {len(results)}/{len(translation_units)}: {pending[future]}', flush=True)
+            if result.stdout:
+                print(result.stdout, end='', flush=True)
     if any(r.returncode for r in results):
         raise SystemExit(1)
-    print(f'Format and clang-tidy passed: {len(paths)} files / {len(translation_units)} translation units')
+    label = 'clang-tidy' if args.skip_format else 'Format and clang-tidy'
+    print(f'{label} passed: {len(paths)} files / {len(translation_units)} translation units')
 
 if __name__ == '__main__':
     main()

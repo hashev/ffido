@@ -61,17 +61,98 @@ def prepare_output(directory, production_keys=None):
     return directory
 
 
-def run(args):
-    directory = prepare_output(args.directory, args.production_keys)
+def adb_command(adb, serial, command, attempts=3):
+    recoverable = (command[:2] in [('shell', 'getprop'), ('shell', 'dumpsys')]
+                   or command[0] in ('logcat', 'reverse')
+                   or command[:3] == ('shell', 'pm', 'list'))
+    for attempt in range(attempts):
+        try:
+            return subprocess.check_output([str(adb), '-s', serial, *command], text=True,
+                                           stderr=subprocess.STDOUT, timeout=120 if command[0] == 'install' else 30)
+        except subprocess.CalledProcessError as error:
+            transport = any(marker in (error.output or '').lower() for marker in
+                            ('device offline', 'device not found', 'no devices/emulators',
+                             'transport error', 'protocol fault'))
+            if not recoverable or not transport or attempt+1 == attempts:
+                print(f'ADB command failed: {command}: {error.output}', flush=True)
+                raise
+            print(f'ADB transport recovery {attempt+1}/{attempts}: {serial}', flush=True)
+            subprocess.run([str(adb), '-s', serial, 'wait-for-device'], check=True, timeout=30,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+
+
+class QAEvents:
+    """Keep app events even when Android rotates its busy main log buffer."""
+    def __init__(self, adb, serial, directory):
+        self.path = directory/'flutter-stream.log'
+        self.output = self.path.open('wb')
+        try:
+            self.process = subprocess.Popen([str(adb), '-s', serial, 'logcat', '-b', 'main',
+                                             '-v', 'brief', '-s', 'flutter:I', '*:S'],
+                                            stdout=self.output, stderr=subprocess.STDOUT)
+        except OSError:
+            self.output.close()
+            raise
+
+    def records(self):
+        if self.process.poll() is not None:
+            raise RuntimeError('ADB app event stream stopped; see flutter-stream.log')
+        records = []
+        for line in self.path.read_bytes().splitlines(keepends=True):
+            if line.endswith(b'\n') and b'FFIDO_UPDATE_QA ' in line:
+                records.append(json.loads(line.split(b'FFIDO_UPDATE_QA ', 1)[1]))
+        return records
+
+    def close(self):
+        try:
+            if self.process.poll() is None:
+                self.process.terminate()
+                try:
+                    self.process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    self.process.kill()
+                    self.process.wait(timeout=5)
+        finally:
+            self.output.close()
+
+
+def window_nodes(device, directory):
+    device('shell', 'uiautomator', 'dump', '/sdcard/ffido-update-qa.xml')
+    # Old Android shell streams can truncate XML and return status 255.
+    # File transfer preserves the full dump; malformed XML remains an error.
+    path = directory/'window.xml'
+    device('pull', '/sdcard/ffido-update-qa.xml', str(path))
+    return list(ET.parse(path).iter('node'))
+
+
+QA_PORT = 8765
+
+
+def fixture_manifest(directory):
+    web = directory/'www'
+    entries = sorted(web.iterdir())
+    if any(not path.is_file() or path.is_symlink() for path in entries):
+        raise ValueError('Unexpected QA fixture directory or symlink')
+    files = {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in entries}
+    expected = {'A.apk', 'B.apk', 'foreign-key.apk', 'foreign-id.apk', 'lower.apk'}
+    if set(files) != expected:
+        raise ValueError('Unexpected or incomplete QA APK inventory')
+    return {'schema': 1, 'sha': subprocess.check_output(['git', '-C', str(ROOT), 'rev-parse', 'HEAD'], text=True).strip(),
+            'origin': f'http://127.0.0.1:{QA_PORT}', 'from': 41001, 'to': 41002,
+            'files': files, 'production_certificate': False, 'certificate_sha256': None}
+
+
+def read_fixtures(directory):
+    manifest = json.loads((directory/'fixtures.json').read_text())
+    if manifest != fixture_manifest(directory):
+        raise ValueError('QA fixture identity, origin or checksums mismatch')
+    if any(directory.glob('*.jks')) or (directory/'password.txt').exists():
+        raise ValueError('Private QA keys must not be distributed')
+    return manifest
+
+
+def prepare_apks(args, directory, port):
     sdk = args.sdk.resolve()
-    adb = sdk/'platform-tools/adb'
-    if not re.fullmatch(r'emulator-\d+', args.serial):
-        raise ValueError('Use an explicitly selected disposable emulator')
-    def device(*command):
-        return subprocess.check_output([str(adb), '-s', args.serial, *command], text=True, stderr=subprocess.STDOUT)
-    assert device('shell', 'getprop', 'ro.kernel.qemu').strip() == '1'
-    wait(lambda: device('shell', 'getprop', 'sys.boot_completed').strip() == '1')
-    api = int(device('shell', 'getprop', 'ro.build.version.sdk').strip())
     environment = dict(os.environ)
     if args.java_home:
         environment['JAVA_HOME'] = str(args.java_home.resolve())
@@ -86,11 +167,6 @@ def run(args):
         key = directory/(name+'.jks')
         if not key.exists():
             subprocess.run([keytool, '-genkeypair', '-keystore', str(key), '-alias', 'qa', '-keyalg', 'RSA', '-keysize', '2048', '-validity', '2', '-dname', 'CN=FFIDO ephemeral update QA', '-storepass:file', str(password), '-keypass:file', str(password)], env=environment, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(web))
-    server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), handler)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    port = server.server_port
-    device('reverse', f'tcp:{port}', f'tcp:{port}')
     production_metadata = None
     production_signer = None
     sign_environment = environment
@@ -109,7 +185,7 @@ def run(args):
             arguments = ['--ks', str(args.production_keys/'ffido-release.jks'), '--ks-key-alias', credentials['alias'], '--ks-pass', 'env:FFIDO_QA_STORE_PASSWORD', '--key-pass', 'env:FFIDO_QA_KEY_PASSWORD']
         else:
             arguments = ['--ks', str(directory/(key+'.jks')), '--ks-key-alias', 'qa', '--ks-pass', 'file:'+str(password)]
-        subprocess.run([str(tools/'apksigner'), 'sign', *arguments, '--out', str(destination), str(source)], env=sign_environment if args.production_keys and key == 'trusted' else environment, check=True)
+        subprocess.run([str(tools/'apksigner'), 'sign', '--v4-signing-enabled', 'false', *arguments, '--out', str(destination), str(source)], env=sign_environment if args.production_keys and key == 'trusted' else environment, check=True)
         verified = subprocess.check_output([str(tools/'apksigner'), 'verify', '--print-certs', str(destination)], env=environment, text=True)
         if args.production_keys and key == 'trusted':
             assert production_metadata['certificate_sha256'].replace(':', '').lower() in verified.replace(':', '').lower()
@@ -119,7 +195,9 @@ def run(args):
             if stage == 'B' and args.prebuilt_b:
                 source = args.prebuilt_b.resolve()
             else:
-                command = [str(args.flutter.resolve()), 'build', 'apk', '--release', '--target', 'integration_test/android_update_driver.dart', '--build-number', str(number), '--build-name', '1.0.0' if stage == 'A' else '1.0.1', '--dart-define', 'FFIDO_QA_VERIFY_MANIFEST='+str(bool(args.production_keys)).lower(), '--dart-define', 'FFIDO_QA_STAGE='+stage, '--dart-define', f'FFIDO_QA_ORIGIN=http://127.0.0.1:{port}']
+                # Flutter must regenerate the release registrant after pub get,
+                # which includes dev plugins that Gradle excludes from release.
+                command = [str(args.flutter.resolve()), '--no-version-check', 'build', 'apk', '--release', '--target', 'integration_test/android_update_driver.dart', '--build-number', str(number), '--build-name', '1.0.0' if stage == 'A' else '1.0.1', '--dart-define', 'FFIDO_QA_VERIFY_MANIFEST='+str(bool(args.production_keys)).lower(), '--dart-define', 'FFIDO_QA_STAGE='+stage, '--dart-define', f'FFIDO_QA_ORIGIN=http://127.0.0.1:{port}']
                 build_environment = environment
                 if args.production_keys:
                     build_environment = {**environment, 'FFIDO_PUBLIC_RELEASE': 'true',
@@ -176,24 +254,60 @@ def run(args):
                     assert changed, 'Fixture versionCode was not changed'
                 target.writestr(entry, raw)
         sign(lower, web/'lower.apk')
+        return {'production_certificate': bool(args.production_keys),
+                'certificate_sha256': production_metadata['certificate_sha256'] if production_metadata else None}
+    finally:
+        for name in ['password.txt', 'trusted.jks', 'foreign.jks']:
+            (directory/name).unlink(missing_ok=True)
+
+
+def run(args):
+    if args.prepare_only and (args.production_keys or args.fixtures):
+        raise ValueError('Shared fixtures require disposable QA keys and a fresh build')
+    if args.fixtures and args.production_keys:
+        raise ValueError('Shared fixtures cannot use production keys')
+    if not args.prepare_only and not re.fullmatch(r'emulator-\d+', args.serial or ''):
+        raise ValueError('Use an explicitly selected disposable emulator')
+    if not args.fixtures and not args.flutter:
+        raise ValueError('Flutter is required to prepare QA APKs')
+    directory = prepare_output(args.directory, args.production_keys)
+    if args.fixtures:
+        metadata = read_fixtures(args.fixtures.resolve())
+        shutil.copytree(args.fixtures.resolve()/'www', directory/'www')
+    else:
+        metadata = prepare_apks(args, directory, QA_PORT)
+    if args.prepare_only:
+        manifest = fixture_manifest(directory)
+        (directory/'fixtures.json').write_text(json.dumps(manifest, indent=2)+'\n')
+        read_fixtures(directory)
+        return
+    web = directory/'www'
+    handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(web))
+    server = http.server.ThreadingHTTPServer(('127.0.0.1', QA_PORT), handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    port = QA_PORT
+    adb = args.sdk.resolve()/'platform-tools/adb'
+    def device(*command):
+        return adb_command(adb, args.serial, command)
+    events = None
+    try:
+        assert device('shell', 'getprop', 'ro.kernel.qemu').strip() == '1'
+        wait(lambda: device('shell', 'getprop', 'sys.boot_completed').strip() == '1')
+        api = int(device('shell', 'getprop', 'ro.build.version.sdk').strip())
+        device('reverse', f'tcp:{port}', f'tcp:{port}')
         # Do not silently replace a real device install: this emulator is explicit.
         device('uninstall', PACKAGE) if PACKAGE in device('shell', 'pm', 'list', 'packages', PACKAGE) else None
         device('install', str(web/'A.apk'))
-        device('logcat', '-c')
+        device('logcat', '-b', 'main', '-c')
+        events = QAEvents(adb, args.serial, directory)
         device('shell', 'am', 'start', '-W', '-n', PACKAGE+'/.MainActivity')
         def records():
-            lines = device('logcat', '-d', '-s', 'flutter:I', '*:S').splitlines()
-            values = []
-            for line in lines:
-                if 'FFIDO_UPDATE_QA ' in line:
-                    values.append(json.loads(line.split('FFIDO_UPDATE_QA ', 1)[1]))
-            return values
+            return events.records()
         def ready(stage):
             return next((value for value in records() if value.get('stage') == stage and value.get('preferences') and value.get('secureSession')), None)
         wait(lambda: ready('A'))
         def nodes():
-            device('shell', 'uiautomator', 'dump', '/sdcard/ffido-update-qa.xml')
-            return list(ET.fromstring(device('shell', 'cat', '/sdcard/ffido-update-qa.xml')).iter('node'))
+            return window_nodes(device, directory)
         def click(label):
             labels = {value.casefold() for value in (label if isinstance(label, tuple) else (label,))}
             def find():
@@ -231,28 +345,40 @@ def run(args):
         print('Waiting for system installation; if Play Protect requests a scan for the QA key, use More details → Install without scanning. Do not upload the APK.', flush=True)
         wait(lambda: 'versionCode=41002' in device('shell', 'dumpsys', 'package', PACKAGE))
         launch_updated(device, lambda: ready('B'))
-        if production_signer: assert any(row.get('manifestVerified') is True for row in records())
-        result = {'production_certificate': bool(args.production_keys), 'production_update_manifest_verified': bool(production_signer), 'certificate_sha256': production_metadata['certificate_sha256'] if production_metadata else None, 'api': api, 'from': 41001, 'to': 41002, 'release_apks': True, 'system_installer': True, 'same_ephemeral_certificate': not bool(args.production_keys), 'same_certificate': True, 'preferences_preserved': True, 'secure_session_preserved': True, 'checks': checks}
+        if metadata['production_certificate']: assert any(row.get('manifestVerified') is True for row in records())
+        result = {'production_certificate': bool(args.production_keys), 'production_update_manifest_verified': metadata['production_certificate'], 'certificate_sha256': metadata['certificate_sha256'], 'api': api, 'from': 41001, 'to': 41002, 'release_apks': True, 'system_installer': True, 'same_ephemeral_certificate': not bool(args.production_keys), 'same_certificate': True, 'preferences_preserved': True, 'secure_session_preserved': True, 'checks': checks}
         (directory/'result.json').write_text(json.dumps(result, indent=2)+'\n')
         (directory/'device.log').write_text(device('logcat', '-d', '-s', 'flutter:I', '*:S'))
         print(json.dumps(result))
     finally:
-        device('reverse', '--remove', f'tcp:{port}')
-        server.shutdown(); server.server_close()
-        # These keys are only QA material, never configured as production keys.
-        for name in ['password.txt', 'trusted.jks', 'foreign.jks']:
-            (directory/name).unlink(missing_ok=True)
+        if events is not None:
+            try:
+                events.close()
+            except (OSError, subprocess.SubprocessError) as error:
+                (directory/'stream-cleanup.log').write_text(str(error))
+        try:
+            (directory/'device-all.log').write_text(device('logcat', '-d'))
+        except (subprocess.SubprocessError, OSError) as error:
+            (directory/'diagnostics-error.log').write_text(str(error))
+        try:
+            device('reverse', '--remove', f'tcp:{port}')
+        except subprocess.SubprocessError as error:
+            print(f'ADB cleanup failed: {error}', flush=True)
+        finally:
+            server.shutdown(); server.server_close()
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--flutter', type=pathlib.Path, required=True)
+    parser.add_argument('--flutter', type=pathlib.Path)
     parser.add_argument('--sdk', type=pathlib.Path, required=True)
-    parser.add_argument('--serial', required=True)
+    parser.add_argument('--serial')
     parser.add_argument('--directory', type=pathlib.Path, required=True)
     parser.add_argument('--build-tools', default='36.0.0')
     parser.add_argument('--java-home', type=pathlib.Path)
     parser.add_argument('--prebuilt-b', type=pathlib.Path)
+    parser.add_argument('--prepare-only', action='store_true')
+    parser.add_argument('--fixtures', type=pathlib.Path)
     parser.add_argument('--production-keys', type=pathlib.Path, help='Read production keys in place, only on the selected disposable emulator')
     args = parser.parse_args()
     if args.production_keys: args.production_keys = args.production_keys.resolve()
