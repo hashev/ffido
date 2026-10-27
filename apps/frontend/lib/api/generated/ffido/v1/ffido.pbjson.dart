@@ -452,6 +452,79 @@ final $typed_data.Uint8List createMessageRequestDescriptor = $convert.base64Deco
     'lSB3N1YmplY3QSEgoEYm9keRgGIAEoCVIEYm9keRIeCgtpbl9yZXBseV90bxgHIAEoCVIJaW5S'
     'ZXBseVRv');
 
+@$core.Deprecated('Use createCrosspostRequestDescriptor instead')
+const CreateCrosspostRequest$json = {
+  '1': 'CreateCrosspostRequest',
+  '2': [
+    {
+      '1': 'message',
+      '3': 1,
+      '4': 1,
+      '5': 11,
+      '6': '.ffido.v1.CreateMessageRequest',
+      '10': 'message'
+    },
+    {
+      '1': 'additional_conference_ids',
+      '3': 2,
+      '4': 3,
+      '5': 9,
+      '10': 'additionalConferenceIds'
+    },
+  ],
+};
+
+/// Descriptor for `CreateCrosspostRequest`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List createCrosspostRequestDescriptor = $convert.base64Decode(
+    'ChZDcmVhdGVDcm9zc3Bvc3RSZXF1ZXN0EjgKB21lc3NhZ2UYASABKAsyHi5mZmlkby52MS5Dcm'
+    'VhdGVNZXNzYWdlUmVxdWVzdFIHbWVzc2FnZRI6ChlhZGRpdGlvbmFsX2NvbmZlcmVuY2VfaWRz'
+    'GAIgAygJUhdhZGRpdGlvbmFsQ29uZmVyZW5jZUlkcw==');
+
+@$core.Deprecated('Use crosspostCopyDescriptor instead')
+const CrosspostCopy$json = {
+  '1': 'CrosspostCopy',
+  '2': [
+    {
+      '1': 'message',
+      '3': 1,
+      '4': 1,
+      '5': 11,
+      '6': '.ffido.v1.MessageReference',
+      '10': 'message'
+    },
+    {'1': 'ftn_message_id', '3': 2, '4': 1, '5': 9, '10': 'ftnMessageId'},
+  ],
+};
+
+/// Descriptor for `CrosspostCopy`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List crosspostCopyDescriptor = $convert.base64Decode(
+    'Cg1Dcm9zc3Bvc3RDb3B5EjQKB21lc3NhZ2UYASABKAsyGi5mZmlkby52MS5NZXNzYWdlUmVmZX'
+    'JlbmNlUgdtZXNzYWdlEiQKDmZ0bl9tZXNzYWdlX2lkGAIgASgJUgxmdG5NZXNzYWdlSWQ=');
+
+@$core.Deprecated('Use createCrosspostResponseDescriptor instead')
+const CreateCrosspostResponse$json = {
+  '1': 'CreateCrosspostResponse',
+  '2': [
+    {'1': 'complete', '3': 1, '4': 1, '5': 8, '10': 'complete'},
+    {
+      '1': 'saved',
+      '3': 2,
+      '4': 3,
+      '5': 11,
+      '6': '.ffido.v1.CrosspostCopy',
+      '10': 'saved'
+    },
+    {'1': 'total', '3': 3, '4': 1, '5': 5, '10': 'total'},
+    {'1': 'pending_code', '3': 4, '4': 1, '5': 5, '10': 'pendingCode'},
+  ],
+};
+
+/// Descriptor for `CreateCrosspostResponse`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List createCrosspostResponseDescriptor = $convert.base64Decode(
+    'ChdDcmVhdGVDcm9zc3Bvc3RSZXNwb25zZRIaCghjb21wbGV0ZRgBIAEoCFIIY29tcGxldGUSLQ'
+    'oFc2F2ZWQYAiADKAsyFy5mZmlkby52MS5Dcm9zc3Bvc3RDb3B5UgVzYXZlZBIUCgV0b3RhbBgD'
+    'IAEoBVIFdG90YWwSIQoMcGVuZGluZ19jb2RlGAQgASgFUgtwZW5kaW5nQ29kZQ==');
+
 @$core.Deprecated('Use createMessageResponseDescriptor instead')
 const CreateMessageResponse$json = {
   '1': 'CreateMessageResponse',

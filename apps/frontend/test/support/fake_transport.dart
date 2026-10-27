@@ -52,6 +52,31 @@ class FakeTransport implements ApiTransport {
     return bulkRead == null ? wire.MarkConferenceReadResponse() : bulkRead!(r);
   }
 
+  Future<wire.CreateCrosspostResponse> Function(wire.CreateCrosspostRequest)?
+  crosspost;
+  @override
+  Future<wire.CreateCrosspostResponse> createCrosspost(
+    wire.CreateCrosspostRequest r, {
+    RpcCancellation? cancellation,
+  }) async {
+    calls.add(r);
+    if (crosspost != null) return crosspost!(r);
+    return wire.CreateCrosspostResponse(
+      complete: true,
+      total: r.additionalConferenceIds.length + 1,
+      saved: [
+        for (final id in [r.message.conferenceId, ...r.additionalConferenceIds])
+          wire.CrosspostCopy(
+            message: wire.MessageReference(
+              conferenceId: id,
+              messageId: '$id#42',
+            ),
+            ftnMessageId: '$id-msgid',
+          ),
+      ],
+    );
+  }
+
   final calls = <Object>[];
   @override
   Future<wire.ListConferencesResponse> listConferences(

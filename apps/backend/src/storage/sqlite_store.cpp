@@ -189,7 +189,7 @@ public:
       if (!mode.get() || sqlite3_step(mode.get()) != SQLITE_ROW || ColumnText(mode.get(), 0) != "wal")
         return fail();
     }
-    if (schema_version > 9 || schema_version < 0)
+    if (schema_version > 10 || schema_version < 0)
       return fail();
     if (schema_version == 0) {
       if (sqlite3_exec(db_.get(), "BEGIN IMMEDIATE", nullptr, nullptr, nullptr) != SQLITE_OK)
@@ -387,6 +387,48 @@ public:
         return fail();
       }
     }
+    if (schema_version < 10) {
+      if (sqlite3_exec(db_.get(), R"(
+        BEGIN IMMEDIATE;
+        CREATE TABLE crosspost_groups(user_id TEXT NOT NULL, operation_id TEXT NOT NULL,
+          manifest TEXT NOT NULL, PRIMARY KEY(user_id,operation_id),
+          FOREIGN KEY(user_id) REFERENCES users(user_id));
+        PRAGMA user_version=10;
+        COMMIT;
+      )",
+                       nullptr, nullptr, nullptr) != SQLITE_OK) {
+        sqlite3_exec(db_.get(), "ROLLBACK", nullptr, nullptr, nullptr);
+        return fail();
+      }
+    }
+    return {};
+  }
+
+  std::expected<std::optional<std::string>, domain::ApiError> GetCrosspost(std::string_view user,
+                                                                           std::string_view id) override {
+    std::lock_guard lock(mutex_);
+    StatementGuard q(prepare("SELECT manifest FROM crosspost_groups WHERE user_id=? AND operation_id=?"));
+    if (!q.get() || !q.Bind(1, user) || !q.Bind(2, id))
+      return std::unexpected(SqliteError(db_.get(), "crosspost"));
+    const auto rc = sqlite3_step(q.get());
+    if (rc == SQLITE_DONE)
+      return std::optional<std::string>{};
+    if (rc != SQLITE_ROW)
+      return std::unexpected(SqliteError(db_.get(), "crosspost"));
+    return std::optional<std::string>{ColumnText(q.get(), 0)};
+  }
+  std::expected<void, domain::ApiError> PrepareCrosspost(std::string_view user, std::string_view id,
+                                                         std::string_view manifest) override {
+    std::lock_guard lock(mutex_);
+    StatementGuard q(prepare("INSERT INTO crosspost_groups(user_id,operation_id,manifest) VALUES(?,?,?) "
+                             "ON CONFLICT(user_id,operation_id) DO NOTHING"));
+    if (!q.get() || !q.Bind(1, user) || !q.Bind(2, id) || !q.Bind(3, manifest) || sqlite3_step(q.get()) != SQLITE_DONE)
+      return std::unexpected(SqliteError(db_.get(), "crosspost"));
+    StatementGuard check(prepare("SELECT manifest FROM crosspost_groups WHERE user_id=? AND operation_id=?"));
+    if (!check.get() || !check.Bind(1, user) || !check.Bind(2, id) || sqlite3_step(check.get()) != SQLITE_ROW)
+      return std::unexpected(SqliteError(db_.get(), "crosspost"));
+    if (ColumnText(check.get(), 0) != manifest)
+      return std::unexpected(domain::ApiError{domain::ErrorCode::kConflict, "Crosspost operation already exists", {}});
     return {};
   }
 

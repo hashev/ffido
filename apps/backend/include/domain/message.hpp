@@ -66,6 +66,16 @@ struct CreateMessageResponse {
   std::string ftn_message_id;
 };
 
+struct CrosspostCopy {
+  std::string conference, id, ftn_message_id;
+};
+struct CreateCrosspostResponse {
+  bool complete = false;
+  std::vector<CrosspostCopy> saved;
+  int total = 0;
+  int pending_code = 0;
+};
+
 /// @brief Список сообщений с пагинацией.
 struct MessageListResponse {
   int64_t actual_offset = 0;

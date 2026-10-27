@@ -2,7 +2,9 @@
 
 #include <fstream>
 
+#include "../support/echo_access.hpp"
 #include "../support/temp_directory.hpp"
+#include "service/message_service.hpp"
 #include "storage/jam_writer.hpp"
 using namespace fidoback;
 using namespace fidoback::storage;
@@ -634,4 +636,38 @@ TEST_F(JamRecoveryTest, JournalUnavailableNeverAllowsRecoveryOrQuarantineAcknowl
   ASSERT_TRUE(*record);
   EXPECT_EQ((*record)->state, OperationState::kPending);
   sqlite3_close(db);
+}
+
+TEST_F(JamRecoveryTest, CrosspostDerivesProgressFromDurableChildrenAndHonorsQuarantine) {
+  ASSERT_TRUE(metadata->SaveProfile("A", {"Alice", "2:5015/1.1", "", ""}));
+  std::vector<EchoAreaConfig> areas{catalog->areas().at("echo").config};
+  auto extra = areas.front();
+  extra.name = "echo.copy";
+  extra.filename = "copy";
+  for (const auto* suffix : {".jhr", ".jdt", ".jdx"})
+    std::filesystem::copy_file(base.string() + suffix, (temp.path() / "copy").string() + suffix);
+  areas.push_back(extra);
+  auto built = JamCatalog::Build(temp.path(), areas);
+  ASSERT_TRUE(built);
+  auto expanded = std::shared_ptr<JamCatalog>(std::move(*built));
+  service::MessageService publisher(expanded, metadata, test::EchoAccess(*expanded, temp.path()));
+  domain::CreateMessageRequest request{"recovery-group", "All", "", "Text", "Body", ""};
+  auto sent = publisher.CreateCrosspost("echo", request, {"echo.copy"}, "A");
+  ASSERT_TRUE(sent && sent->complete);
+  const auto record = metadata->GetCrosspost("A", request.operation_id);
+  ASSERT_TRUE(record && *record);
+  const auto manifest = nlohmann::json::parse(**record);
+  const std::string key = manifest["copies"][1]["key"];
+  // No group progress flag exists: a lost response is reconciled from child commits.
+  service::MessageService restarted(expanded, metadata, test::EchoAccess(*expanded, temp.path()));
+  auto retry = restarted.CreateCrosspost("echo", request, {"echo.copy"}, "A");
+  ASSERT_TRUE(retry && retry->complete);
+  EXPECT_EQ(retry->saved[1].id, sent->saved[1].id);
+  ASSERT_TRUE(metadata->SetOperationState("A", key, OperationState::kQuarantine));
+  const auto before = Contents(temp.path() / "copy.jdt");
+  auto quarantined = restarted.CreateCrosspost("echo", request, {"echo.copy"}, "A");
+  ASSERT_TRUE(quarantined);
+  EXPECT_FALSE(quarantined->complete);
+  EXPECT_EQ(quarantined->pending_code, 9);
+  EXPECT_EQ(Contents(temp.path() / "copy.jdt"), before);
 }

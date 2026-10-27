@@ -18,6 +18,7 @@ import '../models/message.dart';
 import '../models/conference.dart';
 import '../repositories/conference_repository.dart';
 import 'forward_destination.dart';
+import 'crosspost_destinations.dart';
 import '../repositories/message_repository.dart';
 
 String _correspondent(String name, String address) =>
@@ -434,9 +435,9 @@ class _MessageScreenState extends State<MessageScreen>
           conferenceId: widget.conferenceId,
           kind: widget.kind,
           conferenceName: widget.conferenceName,
-          conferences: forward
-              ? widget.conferences ?? conferenceRepository
-              : null,
+          conferences:
+              widget.conferences ??
+              (widget.repository == null ? conferenceRepository : null),
           destination: destination,
           original: reply || forward ? selected : null,
           forward: forward,
@@ -906,6 +907,70 @@ class _ComposeScreenState extends State<_ComposeScreen> {
   }
 
   Conference? destination;
+  List<Conference> crosspostAreas = [];
+  bool get canCrosspost =>
+      (widget.forward ? destination?.kind : widget.kind) == AreaKind.echo;
+  String get primaryId => destination?.id ?? widget.conferenceId;
+  String get primaryName => destination?.name ?? widget.conferenceName;
+  String? frozenCrosspostSignature;
+  ({
+    String conferenceId,
+    List<String> additional,
+    String operationId,
+    String toName,
+    String toAddress,
+    String subject,
+    String body,
+    String? inReplyTo,
+  })?
+  frozenCrosspost;
+  bool allowClose = false;
+  Future<void> selectCrosspost() async {
+    final selected = await Navigator.push<List<Conference>>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => CrosspostDestinations(
+          repository: widget.conferences!,
+          primaryId: primaryId,
+          primaryName: primaryName,
+          selected: crosspostAreas,
+        ),
+      ),
+    );
+    if (!mounted || widget.repository.epoch != epoch || selected == null) {
+      return;
+    }
+    setState(() {
+      crosspostAreas = selected;
+      operationId = MessageRepository.newOperationId();
+    });
+  }
+
+  Future<bool> confirmClose() async {
+    if (crosspostAreas.isEmpty || (!sending && !uncertain)) return true;
+    if (sending) return false;
+    return await showDialog<bool>(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text('Закрыть незавершённую отправку?'),
+            content: const Text(
+              'Часть копий могла сохраниться. После закрытия повтор из этого редактора будет недоступен.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                child: const Text('Продолжить'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.pop(context, true),
+                child: const Text('Закрыть'),
+              ),
+            ],
+          ),
+        ) ??
+        false;
+  }
+
   String? error;
   late final int epoch;
   late final StreamSubscription<int> subscription;
@@ -922,7 +987,13 @@ class _ComposeScreenState extends State<_ComposeScreen> {
     destination = widget.destination;
     subscription = widget.repository.sessionChanges.listen((_) {
       unawaited(cancellation.cancel());
-      if (mounted) Navigator.pop(context, false);
+      if (!mounted) return;
+      setState(() => allowClose = true);
+      unawaited(
+        WidgetsBinding.instance.endOfFrame.then((_) {
+          if (mounted) Navigator.pop(context, false);
+        }),
+      );
     });
     final original = widget.original;
     toName.text = original != null && !widget.forward
@@ -971,6 +1042,7 @@ class _ComposeScreenState extends State<_ComposeScreen> {
     if (!mounted || widget.repository.epoch != epoch || target == null) return;
     setState(() {
       destination = target;
+      crosspostAreas.removeWhere((area) => area.id == target.id);
       operationId = MessageRepository.newOperationId();
     });
   }
@@ -1012,7 +1084,55 @@ class _ComposeScreenState extends State<_ComposeScreen> {
         );
       }
       submitted = true;
-      if (attachment != null) {
+      if (crosspostAreas.isNotEmpty) {
+        final signature = [
+          primaryId,
+          ...crosspostAreas.map((a) => a.id),
+          toName.text,
+          toAddress.text,
+          subject.text,
+          body.text,
+          widget.forward ? '' : widget.original?.id ?? '',
+        ].join('\u0000');
+        if (!uncertain && frozenCrosspostSignature != signature) {
+          operationId = MessageRepository.newOperationId();
+          frozenCrosspostSignature = signature;
+        }
+        if (!uncertain) {
+          frozenCrosspost = (
+            conferenceId: primaryId,
+            additional: List.unmodifiable(crosspostAreas.map((a) => a.id)),
+            operationId: operationId,
+            toName: toName.text,
+            toAddress: toAddress.text,
+            subject: subject.text,
+            body: body.text,
+            inReplyTo: widget.forward ? null : widget.original?.id,
+          );
+        }
+        final draft = frozenCrosspost!;
+        final result = await widget.repository.sendCrosspost(
+          conferenceId: draft.conferenceId,
+          additionalConferenceIds: draft.additional,
+          operationId: draft.operationId,
+          toName: draft.toName,
+          toAddress: draft.toAddress,
+          subject: draft.subject,
+          body: draft.body,
+          inReplyTo: draft.inReplyTo,
+          cancellation: cancellation,
+        );
+        if (!mounted || widget.repository.epoch != epoch) return;
+        if (!result.complete) {
+          setState(() {
+            sending = false;
+            uncertain = true;
+            error =
+                'Сохранено копий: ${result.saved.length}/${result.total}. Повторите отправку, чтобы продолжить.';
+          });
+          return;
+        }
+      } else if (attachment != null) {
         frozenUue ??= UueDraft(
           conference: destination?.id ?? widget.conferenceId,
           operation: operationId,
@@ -1057,10 +1177,15 @@ class _ComposeScreenState extends State<_ComposeScreen> {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Сообщение сохранено локально')),
       );
+      if (crosspostAreas.isNotEmpty) {
+        setState(() => allowClose = true);
+        await WidgetsBinding.instance.endOfFrame;
+        if (!mounted) return;
+      }
       Navigator.pop(context, true);
     } catch (e) {
       if (!mounted || widget.repository.epoch != epoch) return;
-      if (e is ApiException && e.isAccessDenied) {
+      if (crosspostAreas.isEmpty && e is ApiException && e.isAccessDenied) {
         if (widget.forward && !uncertain) {
           destination = null;
         } else if (!widget.forward) {
@@ -1070,13 +1195,25 @@ class _ComposeScreenState extends State<_ComposeScreen> {
       if (!mounted || widget.repository.epoch != epoch) return;
       setState(() {
         sending = false;
-        if (!uncertain && !(e is ApiException && e.hasUncertainCommit)) {
+        if (crosspostAreas.isEmpty &&
+            !uncertain &&
+            !(e is ApiException && e.hasUncertainCommit)) {
           operationId = MessageRepository.newOperationId();
           frozenUue = null;
         }
         uncertain =
             uncertain ||
-            (submitted && e is ApiException && e.hasUncertainCommit);
+            (submitted &&
+                (crosspostAreas.isNotEmpty
+                    ? e is! ApiException ||
+                          !const {3, 5, 6, 12, 16}.contains(e.statusCode)
+                    : e is ApiException && e.hasUncertainCommit));
+        if (e is ApiException &&
+            e.statusCode == 12 &&
+            crosspostAreas.isNotEmpty) {
+          error = 'Сервер не поддерживает кросспостинг. Обновите сервер; черновик сохранён в редакторе.';
+          return;
+        }
         error = uncertain
             ? 'Подтверждение не получено. Повторите отправку с тем же текстом: дубликат не будет создан.'
             : e.toString();
@@ -1092,120 +1229,178 @@ class _ComposeScreenState extends State<_ComposeScreen> {
   }
 
   @override
-  Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(title: const Text('Сообщение')),
-    bottomNavigationBar: SafeArea(
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            if (error != null) Text(error!),
-            ElevatedButton(
-              onPressed: sending ? null : send,
-              child: Text(
-                sending
-                    ? 'Сохранение...'
-                    : uncertain
-                    ? 'Повторить отправку'
-                    : 'Отправить',
-              ),
+  Widget build(BuildContext context) => PopScope(
+    canPop: allowClose || crosspostAreas.isEmpty || (!sending && !uncertain),
+    onPopInvokedWithResult: (didPop, result) async {
+      if (didPop) return;
+      if (await confirmClose() && context.mounted) {
+        setState(() {
+          uncertain = false;
+          sending = false;
+        });
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (context.mounted) Navigator.pop(context);
+        });
+      }
+    },
+    child: Scaffold(
+      appBar: AppBar(
+        title: const Text('Сообщение'),
+        actions: [
+          if (canCrosspost)
+            PopupMenuButton<String>(
+              tooltip: 'Дополнительно',
+              enabled: widget.conferences != null && !sending && !uncertain,
+              onSelected: (_) => selectCrosspost(),
+              itemBuilder: (_) => [
+                PopupMenuItem(
+                  value: 'crosspost',
+                  enabled: attachment == null,
+                  child: Text(
+                    attachment == null
+                        ? 'Кросспостинг'
+                        : 'Кросспостинг — только текст, уберите UUE',
+                  ),
+                ),
+              ],
             ),
-          ],
+        ],
+      ),
+      bottomNavigationBar: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              if (error != null) Text(error!),
+              ElevatedButton(
+                onPressed: sending ? null : send,
+                child: Text(
+                  sending
+                      ? 'Сохранение...'
+                      : uncertain
+                      ? 'Повторить отправку'
+                      : 'Отправить',
+                ),
+              ),
+            ],
+          ),
         ),
       ),
-    ),
-    body: ListView(
-      controller: composerScroll,
-      padding: const EdgeInsets.all(16),
-      children: [
-        Text(
-          '${widget.kind == AreaKind.echo ? 'Эха' : widget.kind.groupLabel}: ${widget.forward ? destination?.name ?? "не выбрана" : widget.conferenceName}',
-        ),
-        if (widget.original != null &&
-            !widget.forward &&
-            widget.kind == AreaKind.echo)
-          const Text(
-            'Ответ будет опубликован в эхе и доступен всем участникам.',
+      body: ListView(
+        controller: composerScroll,
+        padding: const EdgeInsets.all(16),
+        children: [
+          Text(
+            '${widget.kind == AreaKind.echo ? 'Эха' : widget.kind.groupLabel}: ${widget.forward ? destination?.name ?? "не выбрана" : widget.conferenceName}',
           ),
-        if (widget.forward) ...[
-          Text('Источник: ${widget.conferenceName} (${widget.conferenceId})'),
-          TextButton(
-            onPressed: sending || uncertain ? null : changeDestination,
-            child: const Text('Изменить эху назначения'),
+          if (crosspostAreas.isNotEmpty) ...[
+            Text(
+              'Кросспостинг: ${crosspostAreas.map((a) => a.name).join(', ')}',
+            ),
+            const Text('Блок в начале каждой копии:'),
+            SelectableText(
+              crosspostHeader(primaryName, crosspostAreas),
+              style: ftnTextStyle(Theme.of(context).colorScheme),
+            ),
+          ],
+          if (widget.original != null &&
+              !widget.forward &&
+              widget.kind == AreaKind.echo)
+            const Text(
+              'Ответ будет опубликован в эхе и доступен всем участникам.',
+            ),
+          if (widget.forward) ...[
+            Text('Источник: ${widget.conferenceName} (${widget.conferenceId})'),
+            TextButton(
+              onPressed: sending || uncertain ? null : changeDestination,
+              child: const Text('Изменить эху назначения'),
+            ),
+          ],
+          TextField(
+            controller: toName,
+            style: TextStyle(color: Theme.of(context).colorScheme.onSurface),
+            enabled:
+                !sending && !uncertain && widget.original == null ||
+                !sending && !uncertain && widget.forward,
+            decoration: const InputDecoration(labelText: 'Получатель'),
           ),
-        ],
-        TextField(
-          controller: toName,
-          style: TextStyle(color: Theme.of(context).colorScheme.onSurface),
-          enabled:
-              !sending && !uncertain && widget.original == null ||
-              !sending && !uncertain && widget.forward,
-          decoration: const InputDecoration(labelText: 'Получатель'),
-        ),
-        TextField(
-          controller: toAddress,
-          style: TextStyle(color: Theme.of(context).colorScheme.onSurface),
-          enabled:
-              !sending &&
-              !uncertain &&
-              (widget.original == null || widget.forward),
-          decoration: const InputDecoration(labelText: 'FTN-адрес получателя'),
-        ),
-        TextField(
-          controller: subject,
-          enabled: !sending && !uncertain,
-          decoration: const InputDecoration(labelText: 'Тема'),
-        ),
-        TextField(
-          controller: body,
-          style: ftnTextStyle(Theme.of(context).colorScheme),
-          enabled: !sending && !uncertain,
-          minLines: 6,
-          maxLines: null,
-          decoration: const InputDecoration(labelText: 'Текст'),
-        ),
-        if (widget.kind == AreaKind.echo ||
-            widget.kind == AreaKind.netmail) ...[
-          TextButton.icon(
-            onPressed: sending || uncertain || uueLimits == null
-                ? null
-                : pickFile,
-            icon: const Icon(Icons.attach_file),
-            label: Text(uueLoading ? 'Проверка UUE...' : 'Прикрепить файл UUE'),
+          TextField(
+            controller: toAddress,
+            style: TextStyle(color: Theme.of(context).colorScheme.onSurface),
+            enabled:
+                !sending &&
+                !uncertain &&
+                (widget.original == null || widget.forward),
+            decoration: const InputDecoration(
+              labelText: 'FTN-адрес получателя',
+            ),
           ),
-          if (!uueLoading && uueLimits == null)
-            if (uueError != null)
-              TextButton(
-                onPressed: loadUueLimits,
-                child: Text('$uueError. Повторить'),
-              )
-            else
-              const Text('Сервер не поддерживает отправку UUE'),
-          if (attachment != null)
-            Card(
-              child: ListTile(
-                leading: const Icon(Icons.insert_drive_file),
-                title: Text(attachment!.name),
-                subtitle: Text(
-                  '${attachment!.bytes.length} байт · примерно ${((attachment!.bytes.length * 62 / 45 + body.text.length + 256) / ((uueLimits?.partBytes ?? 32768) - 512)).ceil()} частей${sending ? " · загружено $uploaded байт" : ""}',
-                ),
-                trailing: IconButton(
-                  tooltip: 'Убрать файл',
-                  onPressed: sending || uncertain
-                      ? null
-                      : () => setState(() {
-                          attachment = null;
-                          frozenUue = null;
-                          operationId = MessageRepository.newOperationId();
-                        }),
-                  icon: const Icon(Icons.close),
-                ),
+          TextField(
+            controller: subject,
+            enabled: !sending && !uncertain,
+            decoration: const InputDecoration(labelText: 'Тема'),
+          ),
+          TextField(
+            controller: body,
+            style: ftnTextStyle(Theme.of(context).colorScheme),
+            enabled: !sending && !uncertain,
+            minLines: 6,
+            maxLines: null,
+            decoration: const InputDecoration(labelText: 'Текст'),
+          ),
+          if (widget.kind == AreaKind.echo ||
+              widget.kind == AreaKind.netmail) ...[
+            if (crosspostAreas.isNotEmpty)
+              const Text(
+                'Чтобы прикрепить UUE-файл, сначала снимите выбор эх кросспостинга.',
+              ),
+            TextButton.icon(
+              onPressed:
+                  sending ||
+                      uncertain ||
+                      uueLimits == null ||
+                      crosspostAreas.isNotEmpty
+                  ? null
+                  : pickFile,
+              icon: const Icon(Icons.attach_file),
+              label: Text(
+                uueLoading ? 'Проверка UUE...' : 'Прикрепить файл UUE',
               ),
             ),
+            if (!uueLoading && uueLimits == null)
+              if (uueError != null)
+                TextButton(
+                  onPressed: loadUueLimits,
+                  child: Text('$uueError. Повторить'),
+                )
+              else
+                const Text('Сервер не поддерживает отправку UUE'),
+            if (attachment != null)
+              Card(
+                child: ListTile(
+                  leading: const Icon(Icons.insert_drive_file),
+                  title: Text(attachment!.name),
+                  subtitle: Text(
+                    '${attachment!.bytes.length} байт · примерно ${((attachment!.bytes.length * 62 / 45 + body.text.length + 256) / ((uueLimits?.partBytes ?? 32768) - 512)).ceil()} частей${sending ? " · загружено $uploaded байт" : ""}',
+                  ),
+                  trailing: IconButton(
+                    tooltip: 'Убрать файл',
+                    onPressed: sending || uncertain
+                        ? null
+                        : () => setState(() {
+                            attachment = null;
+                            frozenUue = null;
+                            operationId = MessageRepository.newOperationId();
+                          }),
+                    icon: const Icon(Icons.close),
+                  ),
+                ),
+              ),
+          ],
         ],
-      ],
+      ),
     ),
   );
 }

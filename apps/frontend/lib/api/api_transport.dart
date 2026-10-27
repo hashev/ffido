@@ -38,6 +38,10 @@ abstract interface class ApiTransport {
     wire.MessageReference request, {
     RpcCancellation? cancellation,
   });
+  Future<wire.CreateCrosspostResponse> createCrosspost(
+    wire.CreateCrosspostRequest request, {
+    RpcCancellation? cancellation,
+  });
   Future<wire.CreateMessageResponse> createMessage(
     wire.CreateMessageRequest request, {
     RpcCancellation? cancellation,

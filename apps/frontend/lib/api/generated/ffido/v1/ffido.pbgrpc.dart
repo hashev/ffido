@@ -90,6 +90,13 @@ class FfidoClient extends $grpc.Client {
     return $createUnaryCall(_$createMessage, request, options: options);
   }
 
+  $grpc.ResponseFuture<$0.CreateCrosspostResponse> createCrosspost(
+    $0.CreateCrosspostRequest request, {
+    $grpc.CallOptions? options,
+  }) {
+    return $createUnaryCall(_$createCrosspost, request, options: options);
+  }
+
   $grpc.ResponseFuture<$1.Empty> markRead(
     $0.MessageReference request, {
     $grpc.CallOptions? options,
@@ -241,6 +248,11 @@ class FfidoClient extends $grpc.Client {
           '/ffido.v1.Ffido/CreateMessage',
           ($0.CreateMessageRequest value) => value.writeToBuffer(),
           $0.CreateMessageResponse.fromBuffer);
+  static final _$createCrosspost =
+      $grpc.ClientMethod<$0.CreateCrosspostRequest, $0.CreateCrosspostResponse>(
+          '/ffido.v1.Ffido/CreateCrosspost',
+          ($0.CreateCrosspostRequest value) => value.writeToBuffer(),
+          $0.CreateCrosspostResponse.fromBuffer);
   static final _$markRead = $grpc.ClientMethod<$0.MessageReference, $1.Empty>(
       '/ffido.v1.Ffido/MarkRead',
       ($0.MessageReference value) => value.writeToBuffer(),
@@ -387,6 +399,15 @@ abstract class FfidoServiceBase extends $grpc.Service {
             ($core.List<$core.int> value) =>
                 $0.CreateMessageRequest.fromBuffer(value),
             ($0.CreateMessageResponse value) => value.writeToBuffer()));
+    $addMethod($grpc.ServiceMethod<$0.CreateCrosspostRequest,
+            $0.CreateCrosspostResponse>(
+        'CreateCrosspost',
+        createCrosspost_Pre,
+        false,
+        false,
+        ($core.List<$core.int> value) =>
+            $0.CreateCrosspostRequest.fromBuffer(value),
+        ($0.CreateCrosspostResponse value) => value.writeToBuffer()));
     $addMethod($grpc.ServiceMethod<$0.MessageReference, $1.Empty>(
         'MarkRead',
         markRead_Pre,
@@ -579,6 +600,15 @@ abstract class FfidoServiceBase extends $grpc.Service {
 
   $async.Future<$0.CreateMessageResponse> createMessage(
       $grpc.ServiceCall call, $0.CreateMessageRequest request);
+
+  $async.Future<$0.CreateCrosspostResponse> createCrosspost_Pre(
+      $grpc.ServiceCall $call,
+      $async.Future<$0.CreateCrosspostRequest> $request) async {
+    return createCrosspost($call, await $request);
+  }
+
+  $async.Future<$0.CreateCrosspostResponse> createCrosspost(
+      $grpc.ServiceCall call, $0.CreateCrosspostRequest request);
 
   $async.Future<$1.Empty> markRead_Pre($grpc.ServiceCall $call,
       $async.Future<$0.MessageReference> $request) async {

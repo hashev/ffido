@@ -370,6 +370,15 @@ class ApiClient implements ApiTransport {
     cancellation: cancellation,
   );
   @override
+  Future<wire.CreateCrosspostResponse> createCrosspost(
+    wire.CreateCrosspostRequest r, {
+    RpcCancellation? cancellation,
+  }) => _invoke(
+    'CreateCrosspost',
+    (c, o) => c.createCrosspost(r, options: o),
+    cancellation: cancellation,
+  );
+  @override
   Future<wire.CreateMessageResponse> createMessage(
     wire.CreateMessageRequest r, {
     RpcCancellation? cancellation,
