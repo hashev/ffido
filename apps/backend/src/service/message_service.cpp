@@ -3,6 +3,7 @@
 #include <openssl/rand.h>
 
 #include <algorithm>
+#include <compare>
 #include <mutex>
 #include <nlohmann/json.hpp>
 #include <set>
@@ -553,14 +554,12 @@ std::expected<domain::CreateCrosspostResponse, domain::ApiError> MessageService:
   std::unique_lock lock(*send_mutex, std::defer_lock);
   if (!lock.try_lock_until(RequestDeadline()))
     return std::unexpected(ApiError{domain::ErrorCode::kDeadline, "Crosspost operation busy", {}});
-  auto folded = [](std::string value) {
-    for (auto& c : value)
-      if (c >= 'A' && c <= 'Z')
-        c += 'a' - 'A';
-    return value;
-  };
-  std::sort(additional.begin(), additional.end(),
-            [&](const auto& a, const auto& b) { return std::pair{folded(a), a} < std::pair{folded(b), b}; });
+  std::sort(additional.begin(), additional.end(), [](std::string_view a, std::string_view b) {
+    auto fold = [](unsigned char c) { return c >= 'A' && c <= 'Z' ? c + ('a' - 'A') : int(c); };
+    const auto order = std::lexicographical_compare_three_way(
+        a.begin(), a.end(), b.begin(), b.end(), [&](unsigned char x, unsigned char y) { return fold(x) <=> fold(y); });
+    return order == 0 ? a < b : order < 0;
+  });
   if (std::adjacent_find(additional.begin(), additional.end()) != additional.end() ||
       std::find(additional.begin(), additional.end(), conference) != additional.end())
     return std::unexpected(ApiError::Validation("Duplicate crosspost destination"));

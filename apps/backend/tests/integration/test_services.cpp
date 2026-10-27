@@ -1410,7 +1410,7 @@ TEST_F(ServicesTest, CrosspostTwentyDestinationsValidateAndPublishAllCopies) {
   std::vector<std::string> additional{"echo.two"};
   for (int i = 0; i < 20; ++i) {
     EchoAreaConfig area;
-    area.name = "extra." + std::to_string(i);
+    area.name = (i % 2 ? "extra." : "EXTRA.") + std::to_string(i);
     area.filename = "extra-" + std::to_string(i);
     area.msgbase_type = "JAM";
     for (const auto* suffix : {".jhr", ".jdt", ".jdx"})
@@ -1428,6 +1428,9 @@ TEST_F(ServicesTest, CrosspostTwentyDestinationsValidateAndPublishAllCopies) {
   auto sent = publisher.CreateCrosspost("echo.one", Request("maximum"), additional, "A");
   ASSERT_TRUE(sent && sent->complete);
   EXPECT_EQ(sent->saved.size(), 21u);
+  EXPECT_EQ(sent->saved[1].conference, "echo.two");
+  EXPECT_EQ(sent->saved[2].conference, "EXTRA.0");
+  EXPECT_EQ(sent->saved[3].conference, "extra.1");
   std::reverse(additional.begin(), additional.end());
   auto retry = publisher.CreateCrosspost("echo.one", Request("maximum"), additional, "A");
   ASSERT_TRUE(retry && retry->complete);
