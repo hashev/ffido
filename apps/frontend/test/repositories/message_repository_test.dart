@@ -28,6 +28,40 @@ void main() {
   });
   tearDown(() => api.dispose());
 
+  test(
+    'crosspost refuses false success with missing or duplicate destinations',
+    () async {
+      Future<wire.CreateCrosspostResponse> send() => repo.sendCrosspost(
+        conferenceId: 'ONE',
+        additionalConferenceIds: ['TWO'],
+        operationId: 'group',
+        toName: 'All',
+        toAddress: '',
+        subject: 'Text',
+        body: 'Body',
+      );
+      api.crosspost = (_) async => wire.CreateCrosspostResponse(
+        complete: true,
+        total: 2,
+        saved: [
+          for (var i = 0; i < 2; i++)
+            wire.CrosspostCopy(
+              message: wire.MessageReference(
+                conferenceId: 'ONE',
+                messageId: 'g#$i',
+              ),
+              ftnMessageId: 'id-$i',
+            ),
+        ],
+      );
+      await expectLater(send(), throwsA(isA<ServerException>()));
+      api.crosspost = (_) async =>
+          wire.CreateCrosspostResponse(complete: true, total: 2);
+      await expectLater(send(), throwsA(isA<ServerException>()));
+      expect(api.calls.whereType<wire.CreateMessageRequest>(), isEmpty);
+    },
+  );
+
   test('bulk read preserves immutable key, maps legacy and ignores stale/cancelled results', () async {
     final calls = <wire.MarkConferenceReadRequest>[];
     api.bulkRead = (r) async {

@@ -29,6 +29,9 @@ protected:
   std::unique_ptr<grpc::Server> server;
   std::unique_ptr<wire::Ffido::Stub> client;
   std::string a, b, address;
+  virtual int AreaCount() const {
+    return 1;
+  }
   virtual std::string Encoding() const {
     return "cp866";
   }
@@ -60,7 +63,16 @@ protected:
     area.msgbase_type = "JAM";
     auto coordination = storage::CoordinationLock::Open(temp.path() / "hpt.lock");
     ASSERT_TRUE(coordination);
-    auto opened = storage::JamCatalog::Build(temp.path(), {area}, *coordination, EncodingOverrides());
+    std::vector<EchoAreaConfig> areas{area};
+    for (int i = 1; i < AreaCount(); ++i) {
+      auto extra = area;
+      extra.name = "RU.EXTRA" + std::to_string(i);
+      extra.filename = "extra" + std::to_string(i);
+      for (const auto* extension : {".jhr", ".jdt", ".jdx"})
+        std::filesystem::copy_file(base.string() + extension, (temp.path() / extra.filename).string() + extension);
+      areas.push_back(extra);
+    }
+    auto opened = storage::JamCatalog::Build(temp.path(), areas, *coordination, EncodingOverrides());
     ASSERT_TRUE(opened);
     catalog = std::shared_ptr<storage::JamCatalog>(std::move(*opened));
     metadata = storage::CreateSQLiteStore(temp.path() / "metadata.db");
@@ -1149,4 +1161,98 @@ TEST_F(OwnerEchoGrpcTest, OwnerWithoutHptSubscriptionCanReadPostAndReplyWhilePoi
   ASSERT_TRUE(client->ListConferences(&point_list, list, &result).ok());
   EXPECT_EQ(result.conferences_size(), 0);
   EXPECT_EQ(test::ReadFile(temp.path() / "file.jdx").size(), 16);
+}
+
+namespace {
+class CrosspostGrpcTest : public GrpcTest {
+  int AreaCount() const override {
+    return 3;
+  }
+};
+}  // namespace
+TEST_F(CrosspostGrpcTest, GroupRpcMapsAllCopiesAndRetriesAcrossServiceRestart) {
+  wire::CreateCrosspostRequest request;
+  *request.mutable_message() = Request("crosspost-rpc");
+  request.add_additional_conference_ids("RU.EXTRA2");
+  request.add_additional_conference_ids("RU.EXTRA1");
+  wire::CreateCrosspostResponse first;
+  {
+    grpc::ClientContext context;
+    Auth(context, a);
+    ASSERT_TRUE(client->CreateCrosspost(&context, request, &first).ok());
+    ASSERT_TRUE(first.complete());
+    ASSERT_EQ(first.total(), 3);
+    ASSERT_EQ(first.saved_size(), 3);
+    EXPECT_NE(first.saved(0).ftn_message_id(), first.saved(1).ftn_message_id());
+  }
+  server->Shutdown();
+  server->Wait();
+  client.reset();
+  server.reset();
+  service.reset();
+  service = std::make_unique<service::GrpcService>(catalog, metadata, AccessPolicy(), Encoding());
+  grpc::SslServerCredentialsOptions tls;
+  tls.pem_key_cert_pairs.push_back(
+      {test::ReadFile(temp.path() / "key.pem"), test::ReadFile(temp.path() / "certificate.pem")});
+  grpc::ServerBuilder builder;
+  builder.AddListeningPort(address, grpc::SslServerCredentials(tls));
+  builder.RegisterService(service.get());
+  server = builder.BuildAndStart();
+  ASSERT_TRUE(server);
+  grpc::SslCredentialsOptions roots;
+  roots.pem_root_certs = test::ReadFile(temp.path() / "certificate.pem");
+  client = wire::Ffido::NewStub(grpc::CreateChannel(address, grpc::SslCredentials(roots)));
+  wire::CreateCrosspostResponse repeated;
+  grpc::ClientContext context;
+  Auth(context, a);
+  ASSERT_TRUE(client->CreateCrosspost(&context, request, &repeated).ok());
+  EXPECT_EQ(first.SerializeAsString(), repeated.SerializeAsString());
+  for (const auto& saved : repeated.saved()) {
+    wire::Message detail;
+    grpc::ClientContext read;
+    Auth(read, a);
+    ASSERT_TRUE(client->GetMessage(&read, saved.message(), &detail).ok());
+    EXPECT_TRUE(detail.body().starts_with(
+        "* Originally in RU.TEST\n* Crossposted in RU.EXTRA1\n* Crossposted in RU.EXTRA2\n\n"));
+    wire::GetConferenceRequest get;
+    get.set_conference_id(saved.message().conference_id());
+    wire::Conference count;
+    grpc::ClientContext counter;
+    Auth(counter, a);
+    ASSERT_TRUE(client->GetConference(&counter, get, &count).ok());
+    EXPECT_EQ(count.total_count(), 1);
+  }
+}
+TEST_F(CrosspostGrpcTest, GroupRpcRequiresAuthenticationAndRejectsInvalidGroupBeforeWrite) {
+  wire::CreateCrosspostRequest request;
+  *request.mutable_message() = Request();
+  request.add_additional_conference_ids("RU.EXTRA1");
+  wire::CreateCrosspostResponse response;
+  grpc::ClientContext missing;
+  EXPECT_EQ(client->CreateCrosspost(&missing, request, &response).error_code(), grpc::StatusCode::UNAUTHENTICATED);
+  request.add_additional_conference_ids("RU.EXTRA1");
+  grpc::ClientContext invalid;
+  Auth(invalid, a);
+  EXPECT_EQ(client->CreateCrosspost(&invalid, request, &response).error_code(), grpc::StatusCode::INVALID_ARGUMENT);
+}
+
+namespace {
+class DeniedCrosspostGrpcTest : public CrosspostGrpcTest {
+  std::shared_ptr<const service::EchoAccess> AccessPolicy() const override {
+    service::HptConfiguration config;
+    for (const auto& [id, area] : catalog->areas())
+      config.echoes.push_back({id, temp.path() / area.relative_filename, {{"2:5015/1.1", {true, id == "RU.TEST"}}}});
+    return service::EchoAccess::Build(config, *catalog).value();
+  }
+};
+}  // namespace
+TEST_F(DeniedCrosspostGrpcTest, ForbiddenGroupReturnsNoPrivateCopyReferences) {
+  wire::CreateCrosspostRequest request;
+  *request.mutable_message() = Request();
+  request.add_additional_conference_ids("RU.EXTRA1");
+  wire::CreateCrosspostResponse response;
+  grpc::ClientContext context;
+  Auth(context, a);
+  EXPECT_EQ(client->CreateCrosspost(&context, request, &response).error_code(), grpc::StatusCode::PERMISSION_DENIED);
+  EXPECT_EQ(response.saved_size(), 0);
 }

@@ -1214,6 +1214,239 @@ class CreateMessageRequest extends $pb.GeneratedMessage {
   void clearInReplyTo() => $_clearField(7);
 }
 
+/// Text-only group; conference_id is the mandatory original area.
+class CreateCrosspostRequest extends $pb.GeneratedMessage {
+  factory CreateCrosspostRequest({
+    CreateMessageRequest? message,
+    $core.Iterable<$core.String>? additionalConferenceIds,
+  }) {
+    final result = CreateCrosspostRequest._();
+    if (message != null) result.message = message;
+    if (additionalConferenceIds != null)
+      result.additionalConferenceIds.addAll(additionalConferenceIds);
+    return result;
+  }
+
+  CreateCrosspostRequest._();
+
+  factory CreateCrosspostRequest.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      CreateCrosspostRequest()..mergeFromBuffer(data, registry);
+  factory CreateCrosspostRequest.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      CreateCrosspostRequest()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'CreateCrosspostRequest',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'ffido.v1'),
+      createEmptyInstance: CreateCrosspostRequest.$_createMessage)
+    ..aOM<CreateMessageRequest>(1, _omitFieldNames ? '' : 'message',
+        subBuilder: CreateMessageRequest.$_createMessage)
+    ..pPS(2, _omitFieldNames ? '' : 'additionalConferenceIds')
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  CreateCrosspostRequest clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  CreateCrosspostRequest copyWith(
+          void Function(CreateCrosspostRequest) updates) =>
+      super.copyWith((message) => updates(message as CreateCrosspostRequest))
+          as CreateCrosspostRequest;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  @$core.Deprecated(
+      'Use CreateCrosspostRequest() / CreateCrosspostRequest.new instead')
+  static CreateCrosspostRequest create() => CreateCrosspostRequest._();
+  static $pb.GeneratedMessage $_createMessage() => CreateCrosspostRequest._();
+  @$core.override
+  CreateCrosspostRequest createEmptyInstance() => CreateCrosspostRequest._();
+  @$core.pragma('dart2js:noInline')
+  static CreateCrosspostRequest getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<CreateCrosspostRequest>(
+          CreateCrosspostRequest.$_createMessage);
+  static CreateCrosspostRequest? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  CreateMessageRequest get message => $_getN(0);
+  @$pb.TagNumber(1)
+  set message(CreateMessageRequest value) => $_setField(1, value);
+  @$pb.TagNumber(1)
+  $core.bool hasMessage() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearMessage() => $_clearField(1);
+  @$pb.TagNumber(1)
+  CreateMessageRequest ensureMessage() => $_ensure(0);
+
+  @$pb.TagNumber(2)
+  $pb.PbList<$core.String> get additionalConferenceIds => $_getList(1);
+}
+
+class CrosspostCopy extends $pb.GeneratedMessage {
+  factory CrosspostCopy({
+    MessageReference? message,
+    $core.String? ftnMessageId,
+  }) {
+    final result = CrosspostCopy._();
+    if (message != null) result.message = message;
+    if (ftnMessageId != null) result.ftnMessageId = ftnMessageId;
+    return result;
+  }
+
+  CrosspostCopy._();
+
+  factory CrosspostCopy.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      CrosspostCopy()..mergeFromBuffer(data, registry);
+  factory CrosspostCopy.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      CrosspostCopy()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'CrosspostCopy',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'ffido.v1'),
+      createEmptyInstance: CrosspostCopy.$_createMessage)
+    ..aOM<MessageReference>(1, _omitFieldNames ? '' : 'message',
+        subBuilder: MessageReference.$_createMessage)
+    ..aOS(2, _omitFieldNames ? '' : 'ftnMessageId')
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  CrosspostCopy clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  CrosspostCopy copyWith(void Function(CrosspostCopy) updates) =>
+      super.copyWith((message) => updates(message as CrosspostCopy))
+          as CrosspostCopy;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  @$core.Deprecated('Use CrosspostCopy() / CrosspostCopy.new instead')
+  static CrosspostCopy create() => CrosspostCopy._();
+  static $pb.GeneratedMessage $_createMessage() => CrosspostCopy._();
+  @$core.override
+  CrosspostCopy createEmptyInstance() => CrosspostCopy._();
+  @$core.pragma('dart2js:noInline')
+  static CrosspostCopy getDefault() =>
+      _defaultInstance ??= $pb.GeneratedMessage.$_defaultFor<CrosspostCopy>(
+          CrosspostCopy.$_createMessage);
+  static CrosspostCopy? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  MessageReference get message => $_getN(0);
+  @$pb.TagNumber(1)
+  set message(MessageReference value) => $_setField(1, value);
+  @$pb.TagNumber(1)
+  $core.bool hasMessage() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearMessage() => $_clearField(1);
+  @$pb.TagNumber(1)
+  MessageReference ensureMessage() => $_ensure(0);
+
+  @$pb.TagNumber(2)
+  $core.String get ftnMessageId => $_getSZ(1);
+  @$pb.TagNumber(2)
+  set ftnMessageId($core.String value) => $_setString(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasFtnMessageId() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearFtnMessageId() => $_clearField(2);
+}
+
+class CreateCrosspostResponse extends $pb.GeneratedMessage {
+  factory CreateCrosspostResponse({
+    $core.bool? complete,
+    $core.Iterable<CrosspostCopy>? saved,
+    $core.int? total,
+    $core.int? pendingCode,
+  }) {
+    final result = CreateCrosspostResponse._();
+    if (complete != null) result.complete = complete;
+    if (saved != null) result.saved.addAll(saved);
+    if (total != null) result.total = total;
+    if (pendingCode != null) result.pendingCode = pendingCode;
+    return result;
+  }
+
+  CreateCrosspostResponse._();
+
+  factory CreateCrosspostResponse.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      CreateCrosspostResponse()..mergeFromBuffer(data, registry);
+  factory CreateCrosspostResponse.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      CreateCrosspostResponse()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'CreateCrosspostResponse',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'ffido.v1'),
+      createEmptyInstance: CreateCrosspostResponse.$_createMessage)
+    ..aOB(1, _omitFieldNames ? '' : 'complete')
+    ..pPM<CrosspostCopy>(2, _omitFieldNames ? '' : 'saved',
+        subBuilder: CrosspostCopy.$_createMessage)
+    ..aI(3, _omitFieldNames ? '' : 'total')
+    ..aI(4, _omitFieldNames ? '' : 'pendingCode')
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  CreateCrosspostResponse clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  CreateCrosspostResponse copyWith(
+          void Function(CreateCrosspostResponse) updates) =>
+      super.copyWith((message) => updates(message as CreateCrosspostResponse))
+          as CreateCrosspostResponse;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  @$core.Deprecated(
+      'Use CreateCrosspostResponse() / CreateCrosspostResponse.new instead')
+  static CreateCrosspostResponse create() => CreateCrosspostResponse._();
+  static $pb.GeneratedMessage $_createMessage() => CreateCrosspostResponse._();
+  @$core.override
+  CreateCrosspostResponse createEmptyInstance() => CreateCrosspostResponse._();
+  @$core.pragma('dart2js:noInline')
+  static CreateCrosspostResponse getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<CreateCrosspostResponse>(
+          CreateCrosspostResponse.$_createMessage);
+  static CreateCrosspostResponse? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $core.bool get complete => $_getBF(0);
+  @$pb.TagNumber(1)
+  set complete($core.bool value) => $_setBool(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasComplete() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearComplete() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  $pb.PbList<CrosspostCopy> get saved => $_getList(1);
+
+  @$pb.TagNumber(3)
+  $core.int get total => $_getIZ(2);
+  @$pb.TagNumber(3)
+  set total($core.int value) => $_setSignedInt32(2, value);
+  @$pb.TagNumber(3)
+  $core.bool hasTotal() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearTotal() => $_clearField(3);
+
+  /// gRPC status code for the first unfinished copy; no private storage details.
+  @$pb.TagNumber(4)
+  $core.int get pendingCode => $_getIZ(3);
+  @$pb.TagNumber(4)
+  set pendingCode($core.int value) => $_setSignedInt32(3, value);
+  @$pb.TagNumber(4)
+  $core.bool hasPendingCode() => $_has(3);
+  @$pb.TagNumber(4)
+  void clearPendingCode() => $_clearField(4);
+}
+
 class CreateMessageResponse extends $pb.GeneratedMessage {
   factory CreateMessageResponse({
     MessageReference? message,

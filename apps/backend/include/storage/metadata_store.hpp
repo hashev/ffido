@@ -64,6 +64,12 @@ public:
                                                               uint64_t global_quota) = 0;
   virtual std::expected<void, domain::ApiError> PruneUueUploads(int64_t older_than) = 0;
 
+  virtual std::expected<std::optional<std::string>, domain::ApiError> GetCrosspost(std::string_view user,
+                                                                                   std::string_view id) = 0;
+  // Immutable durable manifest; a different manifest at this key is a conflict.
+  virtual std::expected<void, domain::ApiError> PrepareCrosspost(std::string_view user, std::string_view id,
+                                                                 std::string_view manifest) = 0;
+
   // Bookmarks
   [[nodiscard]] virtual std::expected<std::vector<domain::Bookmark>, domain::ApiError> GetBookmarks(
       std::string_view user_id) = 0;

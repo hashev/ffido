@@ -296,6 +296,29 @@ grpc::Status GrpcService::CreateMessage(grpc::ServerContext* context, const wire
     return {};
   });
 }
+grpc::Status GrpcService::CreateCrosspost(grpc::ServerContext* context, const wire::CreateCrosspostRequest* request,
+                                          wire::CreateCrosspostResponse* response) {
+  return Dispatch(context, [&](const auto& user) -> Result {
+    const auto& source = request->message();
+    domain::CreateMessageRequest value{source.operation_id(), source.to_name(), source.to_address(),
+                                       source.subject(),      source.body(),    source.in_reply_to()};
+    auto result = messages_.CreateCrosspost(
+        source.conference_id(), value,
+        {request->additional_conference_ids().begin(), request->additional_conference_ids().end()}, user.id);
+    if (!result)
+      return std::unexpected(result.error());
+    response->set_complete(result->complete);
+    response->set_total(result->total);
+    response->set_pending_code(result->pending_code);
+    for (const auto& saved : result->saved) {
+      auto* copy = response->add_saved();
+      copy->mutable_message()->set_conference_id(saved.conference);
+      copy->mutable_message()->set_message_id(saved.id);
+      copy->set_ftn_message_id(saved.ftn_message_id);
+    }
+    return {};
+  });
+}
 grpc::Status GrpcService::MarkConferenceRead(grpc::ServerContext* context,
                                              const wire::MarkConferenceReadRequest* request,
                                              wire::MarkConferenceReadResponse* response) {

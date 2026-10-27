@@ -157,6 +157,34 @@ class TestService extends wire.FfidoServiceBase {
   }
 
   @override
+  Future<wire.CreateCrosspostResponse> createCrosspost(
+    grpc.ServiceCall c,
+    wire.CreateCrosspostRequest r,
+  ) async {
+    await before(c);
+    return wire.CreateCrosspostResponse(
+      complete: true,
+      total: 2,
+      saved: [
+        wire.CrosspostCopy(
+          message: wire.MessageReference(
+            conferenceId: r.message.conferenceId,
+            messageId: 'one',
+          ),
+          ftnMessageId: '2:1/1 11111111',
+        ),
+        wire.CrosspostCopy(
+          message: wire.MessageReference(
+            conferenceId: r.additionalConferenceIds.single,
+            messageId: 'two',
+          ),
+          ftnMessageId: '2:1/1 22222222',
+        ),
+      ],
+    );
+  }
+
+  @override
   Future<wire.CreateMessageResponse> createMessage(
     grpc.ServiceCall c,
     wire.CreateMessageRequest r,
@@ -253,6 +281,27 @@ void main() {
     await client.dispose();
     await server.shutdown();
   });
+  test('crosspost RPC maps complete copy references without single-message fallback', () async {
+    final result = await client.createCrosspost(
+      wire.CreateCrosspostRequest(
+        message: wire.CreateMessageRequest(
+          conferenceId: 'RU.ONE',
+          operationId: 'group',
+          body: 'Text',
+        ),
+        additionalConferenceIds: ['RU.TWO'],
+      ),
+    );
+    expect(result.complete, isTrue);
+    expect(result.total, 2);
+    expect(result.saved.map((c) => c.message.conferenceId), [
+      'RU.ONE',
+      'RU.TWO',
+    ]);
+    expect(result.saved.map((c) => c.ftnMessageId).toSet().length, 2);
+    expect(service.creates, 0);
+  });
+
   test('all typed RPCs share metadata and preserve Unicode', () async {
     expect((await client.getProfile()).name, 'Юрий');
     await client.listConferences(wire.ListConferencesRequest());

@@ -3,6 +3,8 @@
 #include <openssl/rand.h>
 
 #include <algorithm>
+#include <mutex>
+#include <nlohmann/json.hpp>
 #include <set>
 
 #include "ftn/uue_metadata.hpp"
@@ -284,7 +286,7 @@ std::expected<void, domain::ApiError> MessageService::MarkAsRead(std::string_vie
 }
 std::expected<domain::CreateMessageResponse, domain::ApiError> MessageService::CreateMessage(
     std::string_view conference, const domain::CreateMessageRequest& request, std::string_view user,
-    const UuePublishOptions* uue, bool validate_only) {
+    const UuePublishOptions* uue, bool validate_only, const CrosspostPublishOptions* crosspost) {
   auto permission = access_->Permissions(*metadata_, user, conference);
   if (!permission)
     return std::unexpected(permission.error());
@@ -295,8 +297,8 @@ std::expected<domain::CreateMessageResponse, domain::ApiError> MessageService::C
            value.find('\1') == std::string_view::npos && bool(storage::ConvertText(value, "UTF-8", "UTF-8"));
   };
   if (request.operation_id.empty() || request.operation_id.size() > 128 ||
-      request.operation_id.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_") !=
-          std::string::npos ||
+      (!crosspost && request.operation_id.find_first_not_of(
+                         "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_") != std::string::npos) ||
       request.in_reply_to.size() > 256 || request.subject.find_first_of("\r\n") != std::string::npos ||
       request.to_name.find_first_of("\r\n") != std::string::npos || !safe(request.subject, 256, true) ||
       !safe(request.body, msgapi::jam_wire::kMaxBody - 256, true) || !safe(request.to_name, 256, false) ||
@@ -305,6 +307,8 @@ std::expected<domain::CreateMessageResponse, domain::ApiError> MessageService::C
   auto profile = metadata_->GetProfile(user);
   if (!profile)
     return std::unexpected(profile.error());
+  if (crosspost)
+    *profile = crosspost->profile;
   if (!ValidFtnAddress(profile->address) || !safe(profile->name, 256, true))
     return std::unexpected(domain::ApiError::Validation("Invalid assigned sender profile"));
   if (uue) {
@@ -337,6 +341,11 @@ std::expected<domain::CreateMessageResponse, domain::ApiError> MessageService::C
     payload += "UUE1:";
     for (const auto& field : {uue->kludge, uue->msgid, uue->generation, uue->from_name, uue->from_address, uue->to_name,
                               uue->to_address, std::to_string(uue->freeze_recipient)})
+      payload += std::to_string(field.size()) + ":" + field;
+  }
+  if (crosspost) {
+    for (const auto& field : {crosspost->profile.name, crosspost->profile.address, crosspost->generation,
+                              crosspost->msgid, crosspost->to_name, crosspost->to_address})
       payload += std::to_string(field.size()) + ":" + field;
   }
   auto hashed = Sha256(payload);
@@ -376,6 +385,8 @@ std::expected<domain::CreateMessageResponse, domain::ApiError> MessageService::C
       storage::JamAccess::Open(*catalog_, conference, true, RequestDeadline(), RequestCancellation(), encoding_);
   if (!access)
     return std::unexpected(JamError(access.error()));
+  if (crosspost && crosspost->generation != (*access)->generation())
+    return std::unexpected(domain::ApiError{domain::ErrorCode::kPrecondition, "Crosspost base generation changed", {}});
   if (uue && uue->generation != (*access)->generation())
     return std::unexpected(domain::ApiError{domain::ErrorCode::kPrecondition, "UUE base generation changed", {}});
   existing = metadata_->FindOperation(user, request.operation_id);
@@ -428,6 +439,10 @@ std::expected<domain::CreateMessageResponse, domain::ApiError> MessageService::C
     message.SetReplyId(parent->msg_id());
     message.SetReplyLinks(*parent_number, 0, 0);
   }
+  if (crosspost) {
+    message.SetReceiverName(crosspost->to_name);
+    message.SetDestAddress(crosspost->to_address);
+  }
   if (uue && uue->freeze_recipient &&
       (message.receiver_name() != uue->to_name || message.dest_address() != uue->to_address))
     return std::unexpected(domain::ApiError{domain::ErrorCode::kPrecondition, "UUE reply recipient changed", {}});
@@ -463,7 +478,9 @@ std::expected<domain::CreateMessageResponse, domain::ApiError> MessageService::C
   operation.conference = conference;
   operation.generation = (*access)->generation();
   operation.payload_hash = hash;
-  if (uue)
+  if (crosspost)
+    operation.ftn_msgid = crosspost->msgid;
+  else if (uue)
     operation.ftn_msgid = uue->msgid;
   else if (*existing)
     operation.ftn_msgid = (*existing)->ftn_msgid;
@@ -511,6 +528,207 @@ std::expected<domain::CreateMessageResponse, domain::ApiError> MessageService::C
   }
   return response(operation);
 }
+std::expected<domain::CreateCrosspostResponse, domain::ApiError> MessageService::CreateCrosspost(
+    std::string_view conference, const domain::CreateMessageRequest& request, std::vector<std::string> additional,
+    std::string_view user) {
+  using Json = nlohmann::json;
+  using domain::ApiError;
+  if (request.operation_id.empty() || request.operation_id.size() > 128 ||
+      request.operation_id.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_") !=
+          std::string::npos ||
+      additional.empty() || additional.size() > 20 || request.body.empty())
+    return std::unexpected(ApiError::Validation("Invalid crosspost request or destination limit"));
+  // Shared across service instances, but unrelated groups never share a send lock.
+  static std::mutex registry_mutex;
+  static std::map<std::string, std::weak_ptr<std::timed_mutex>> registry;
+  std::shared_ptr<std::timed_mutex> send_mutex;
+  {
+    std::lock_guard guard(registry_mutex);
+    std::erase_if(registry, [](const auto& item) { return item.second.expired(); });
+    const auto key = std::to_string(user.size()) + ":" + std::string(user) + request.operation_id;
+    send_mutex = registry[key].lock();
+    if (!send_mutex)
+      registry[key] = send_mutex = std::make_shared<std::timed_mutex>();
+  }
+  std::unique_lock lock(*send_mutex, std::defer_lock);
+  if (!lock.try_lock_until(RequestDeadline()))
+    return std::unexpected(ApiError{domain::ErrorCode::kDeadline, "Crosspost operation busy", {}});
+  auto folded = [](std::string value) {
+    for (auto& c : value)
+      if (c >= 'A' && c <= 'Z')
+        c += 'a' - 'A';
+    return value;
+  };
+  std::sort(additional.begin(), additional.end(),
+            [&](const auto& a, const auto& b) { return std::pair{folded(a), a} < std::pair{folded(b), b}; });
+  if (std::adjacent_find(additional.begin(), additional.end()) != additional.end() ||
+      std::find(additional.begin(), additional.end(), conference) != additional.end())
+    return std::unexpected(ApiError::Validation("Duplicate crosspost destination"));
+  std::vector<std::string> areas{std::string(conference)};
+  areas.insert(areas.end(), additional.begin(), additional.end());
+  auto check_permissions = [&]() -> std::expected<void, ApiError> {
+    for (const auto& id : areas) {
+      auto permission = access_->Permissions(*metadata_, user, id);
+      if (!permission)
+        return std::unexpected(permission.error());
+      if (!permission->post || (id == conference && !request.in_reply_to.empty() && !permission->read))
+        return std::unexpected(EchoAccess::Denied());
+      const auto area = catalog_->areas().find(id);
+      if (area == catalog_->areas().end() || area->second.config.kind != AreaKind::kEcho)
+        return std::unexpected(ApiError::Validation("Crosspost requires echo areas"));
+    }
+    return {};
+  };
+  auto allowed = check_permissions();
+  if (!allowed)
+    return std::unexpected(allowed.error());
+  // Hash the input, not mutable derived fields such as profile or display names.
+  Json input = {std::string(conference), additional,   request.to_name,    request.to_address,
+                request.subject,         request.body, request.in_reply_to};
+  auto hash = Sha256(input.dump());
+  if (!hash)
+    return std::unexpected(hash.error());
+  std::string fingerprint;
+  for (auto b : *hash) {
+    fingerprint += "0123456789abcdef"[b >> 4];
+    fingerprint += "0123456789abcdef"[b & 15];
+  }
+  auto stored = metadata_->GetCrosspost(user, request.operation_id);
+  if (!stored)
+    return std::unexpected(stored.error());
+  Json manifest;
+  if (*stored) {
+    manifest = Json::parse(**stored, nullptr, false);
+    if (manifest.is_discarded())
+      return std::unexpected(ApiError::Server("Invalid crosspost manifest"));
+    if (manifest.at("hash") != fingerprint)
+      return std::unexpected(ApiError{domain::ErrorCode::kConflict, "Operation ID already has another payload", {}});
+  } else {
+    auto profile = metadata_->GetProfile(user);
+    if (!profile)
+      return std::unexpected(profile.error());
+    std::string block = "* Originally in " + catalog_->areas().at(areas.front()).config.name + "\n";
+    for (const auto& id : additional)
+      block += "* Crossposted in " + catalog_->areas().at(id).config.name + "\n";
+    manifest = {{"hash", fingerprint},
+                {"from_name", profile->name},
+                {"from_address", profile->address},
+                {"to_name", request.to_name.empty() ? "All" : request.to_name},
+                {"to_address", request.to_address},
+                {"body", block + "\n" + request.body},
+                {"copies", Json::array()}};
+    // Validate the parent and resolve its recipient using the same composer path.
+    auto probe = request;
+    std::array<unsigned char, 16> probe_nonce{};
+    if (RAND_bytes(probe_nonce.data(), probe_nonce.size()) != 1)
+      return std::unexpected(ApiError::Server("Validation identity generation failed"));
+    probe.operation_id = "crosspost-validation-";
+    for (auto b : probe_nonce) {
+      probe.operation_id += "0123456789abcdef"[b >> 4];
+      probe.operation_id += "0123456789abcdef"[b & 15];
+    }
+    probe.body = manifest.at("body").get<std::string>();
+    auto validated = CreateMessage(conference, probe, user, nullptr, true);
+    if (!validated)
+      return std::unexpected(validated.error());
+    manifest["to_name"] = validated->resolved_to_name;
+    manifest["to_address"] = validated->resolved_to_address;
+    std::array<unsigned char, 16> nonce{};
+    if (RAND_bytes(nonce.data(), nonce.size()) != 1)
+      return std::unexpected(ApiError::Server("Crosspost identity generation failed"));
+    std::string token;
+    for (auto b : nonce) {
+      token += "0123456789abcdef"[b >> 4];
+      token += "0123456789abcdef"[b & 15];
+    }
+    for (size_t i = 0; i < areas.size(); ++i) {
+      auto opened =
+          storage::JamAccess::Open(*catalog_, areas[i], false, RequestDeadline(), RequestCancellation(), encoding_);
+      if (!opened)
+        return std::unexpected(JamError(opened.error()));
+      const auto generation = (*opened)->generation();
+      opened->reset();
+      std::array<unsigned char, 4> serial{};
+      if (RAND_bytes(serial.data(), serial.size()) != 1)
+        return std::unexpected(ApiError::Server("Message identity generation failed"));
+      std::string msgid = profile->address + " ";
+      for (auto b : serial) {
+        msgid += "0123456789abcdef"[b >> 4];
+        msgid += "0123456789abcdef"[b & 15];
+      }
+      manifest["copies"].push_back({{"area", areas[i]},
+                                    {"generation", generation},
+                                    {"key", "@crosspost-" + token + "-" + std::to_string(i)},
+                                    {"msgid", msgid}});
+    }
+    // Prepare all encodings and complete envelopes before publishing any copy.
+    for (size_t i = 0; i < areas.size(); ++i) {
+      const auto& copy = manifest["copies"][i];
+      CrosspostPublishOptions options{*profile, copy["generation"], copy["msgid"], manifest["to_name"],
+                                      manifest["to_address"]};
+      auto child = probe;
+      child.operation_id = copy["key"];
+      if (i)
+        child.in_reply_to.clear();
+      auto checked = CreateMessage(areas[i], child, user, nullptr, true, &options);
+      if (!checked)
+        return std::unexpected(checked.error());
+    }
+    auto prepared = metadata_->PrepareCrosspost(user, request.operation_id, manifest.dump());
+    if (!prepared)
+      return std::unexpected(prepared.error());
+  }
+  domain::CreateCrosspostResponse result;
+  result.total = static_cast<int>(areas.size());
+  for (size_t i = 0; i < areas.size(); ++i) {
+    allowed = check_permissions();
+    if (!allowed)
+      return std::unexpected(allowed.error());
+    const auto& copy = manifest.at("copies").at(i);
+    const std::string generation = copy.at("generation"), key = copy.at("key");
+    auto previous = metadata_->FindOperation(user, key);
+    if (!previous)
+      return std::unexpected(previous.error());
+    if (*previous && (*previous)->state == storage::OperationState::kPending) {
+      auto recovery = writer_.Recover(*catalog_, **previous, RequestDeadline());
+      if (!recovery) {
+        result.pending_code = 9;
+        break;
+      }
+    }
+    auto opened =
+        storage::JamAccess::Open(*catalog_, areas[i], false, RequestDeadline(), RequestCancellation(), encoding_);
+    if (!opened || (*opened)->generation() != generation) {
+      result.pending_code = 9;  // FAILED_PRECONDITION: preserve previous confirmed copies.
+      break;
+    }
+    opened->reset();
+    domain::Profile profile;
+    profile.name = manifest.at("from_name");
+    profile.address = manifest.at("from_address");
+    CrosspostPublishOptions options{profile, generation, copy.at("msgid"), manifest.at("to_name"),
+                                    manifest.at("to_address")};
+    auto child = request;
+    child.operation_id = key;
+    child.body = manifest.at("body");
+    if (i)
+      child.in_reply_to.clear();
+    auto sent = CreateMessage(areas[i], child, user, nullptr, false, &options);
+    if (!sent) {
+      if (sent.error().code == domain::ErrorCode::kForbidden)
+        return std::unexpected(sent.error());
+      result.pending_code = sent.error().code == domain::ErrorCode::kPrecondition ? 9 : 14;
+      break;
+    }
+    result.saved.push_back({areas[i], sent->id, sent->ftn_message_id});
+  }
+  allowed = check_permissions();
+  if (!allowed)
+    return std::unexpected(allowed.error());
+  result.complete = result.saved.size() == areas.size();
+  return result;
+}
+
 std::expected<domain::ThreadListResponse, domain::ApiError> MessageService::GetThread(
     std::string_view conference, std::string_view id, std::string_view user, const domain::PaginationRequest& page) {
   auto permission = access_->Permissions(*metadata_, user, conference);

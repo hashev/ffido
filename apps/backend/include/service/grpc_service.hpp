@@ -38,6 +38,7 @@ public:
   FFIDO_RPC(ListMessages, ffido::v1::ListMessagesRequest, ffido::v1::ListMessagesResponse)
   FFIDO_RPC(GetMessage, ffido::v1::MessageReference, ffido::v1::Message)
   FFIDO_RPC(CreateMessage, ffido::v1::CreateMessageRequest, ffido::v1::CreateMessageResponse)
+  FFIDO_RPC(CreateCrosspost, ffido::v1::CreateCrosspostRequest, ffido::v1::CreateCrosspostResponse)
   FFIDO_RPC(MarkConferenceRead, ffido::v1::MarkConferenceReadRequest, ffido::v1::MarkConferenceReadResponse)
   FFIDO_RPC(MarkRead, ffido::v1::MessageReference, google::protobuf::Empty)
   FFIDO_RPC(GetThread, ffido::v1::GetThreadRequest, ffido::v1::ListMessagesResponse)

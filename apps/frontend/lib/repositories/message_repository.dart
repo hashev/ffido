@@ -159,6 +159,52 @@ class MessageRepository {
     );
   }
 
+  Future<wire.CreateCrosspostResponse> sendCrosspost({
+    required String conferenceId,
+    required List<String> additionalConferenceIds,
+    required String operationId,
+    required String toName,
+    required String toAddress,
+    required String subject,
+    required String body,
+    String? inReplyTo,
+    RpcCancellation? cancellation,
+  }) async {
+    final captured = epoch;
+    final response = await _apiClient.createCrosspost(
+      wire.CreateCrosspostRequest(
+        message: wire.CreateMessageRequest(
+          conferenceId: conferenceId,
+          operationId: operationId,
+          toName: toName,
+          toAddress: toAddress,
+          subject: subject,
+          body: body,
+          inReplyTo: inReplyTo,
+        ),
+        additionalConferenceIds: additionalConferenceIds,
+      ),
+      cancellation: cancellation,
+    );
+    _check(captured, cancellation);
+    final expected = {conferenceId, ...additionalConferenceIds};
+    final confirmed = response.saved
+        .map((copy) => copy.message.conferenceId)
+        .toSet();
+    if (response.total != expected.length ||
+        confirmed.length != response.saved.length ||
+        !expected.containsAll(confirmed) ||
+        response.saved.any(
+          (copy) => copy.message.messageId.isEmpty || copy.ftnMessageId.isEmpty,
+        ) ||
+        (response.complete && response.saved.length != response.total)) {
+      throw const ServerException(
+        message: 'Сервер не подтвердил все копии кросспостинга',
+      );
+    }
+    return response;
+  }
+
   /// Ответ на сообщение
   Future<SendMessageResponse> replyToMessage({
     required String conferenceId,

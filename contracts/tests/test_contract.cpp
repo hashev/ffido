@@ -63,7 +63,7 @@ TEST(Contract, RpcSurfaceAndTrustedIdentity) {
   const auto* service =
       google::protobuf::DescriptorPool::generated_pool()->FindServiceByName("ffido.v1.Ffido");
   ASSERT_NE(service, nullptr);
-  EXPECT_EQ(service->method_count(), 24);
+  EXPECT_EQ(service->method_count(), 25);
   EXPECT_EQ(service->FindMethodByName("MarkRead")->output_type()->full_name(),
             "google.protobuf.Empty");
   const auto* request = ffido::v1::CreateMessageRequest::descriptor();

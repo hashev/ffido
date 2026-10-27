@@ -1235,3 +1235,202 @@ TEST_F(ServicesTest, OwnerCannotBypassReadOnlyFilesOrMissingHptCorrespondence) {
   config.echoes.front().filename = temp.path() / "second";
   EXPECT_FALSE(service::EchoAccess::Build(config, *catalog, {"2:5015/1.1"}));
 }
+
+TEST_F(ServicesTest, CrosspostCopiesUseGoldedHeaderAndIndependentIdentities) {
+  auto request = Request("group");
+  request.body = "Hello\nXC: not-a-command\n> * Originally in OLD";
+  auto sent = messages->CreateCrosspost("echo.one", request, {"echo.two"}, "A");
+  ASSERT_TRUE(sent) << sent.error().message;
+  ASSERT_TRUE(sent->complete);
+  ASSERT_EQ(sent->saved.size(), 2u);
+  EXPECT_NE(sent->saved[0].ftn_message_id, sent->saved[1].ftn_message_id);
+  for (const auto& copy : sent->saved) {
+    auto detail = messages->PeekMessage(copy.conference, copy.id, "A");
+    ASSERT_TRUE(detail);
+    EXPECT_TRUE(detail->body.starts_with(
+        "* Originally in echo.one\n* Crossposted in echo.two\n\nHello\nXC: not-a-command\n> * Originally in OLD"));
+    EXPECT_NE(detail->body.find("--- FFIDO\n * Origin:"), std::string::npos);
+  }
+  auto retry = messages->CreateCrosspost("echo.one", request, {"echo.two"}, "A");
+  ASSERT_TRUE(retry && retry->complete);
+  EXPECT_EQ(retry->saved[0].id, sent->saved[0].id);
+  EXPECT_EQ(retry->saved[1].id, sent->saved[1].id);
+  EXPECT_EQ(conferences->GetConference("echo.one", "A")->total_count, 1);
+  EXPECT_EQ(conferences->GetConference("echo.two", "A")->total_count, 1);
+  request.body += "changed";
+  auto conflict = messages->CreateCrosspost("echo.one", request, {"echo.two"}, "A");
+  ASSERT_FALSE(conflict);
+  EXPECT_EQ(conflict.error().code, domain::ErrorCode::kConflict);
+}
+
+TEST_F(ServicesTest, CrosspostRejectsInvalidGroupBeforeAnyWrite) {
+  const auto request = Request("invalid-group");
+  EXPECT_FALSE(messages->CreateCrosspost("echo.one", request, {}, "A"));
+  EXPECT_FALSE(messages->CreateCrosspost("echo.one", request, {"echo.one"}, "A"));
+  EXPECT_FALSE(messages->CreateCrosspost("echo.one", request, {"echo.two", "echo.two"}, "A"));
+  EXPECT_FALSE(messages->CreateCrosspost("echo.one", request, {"missing"}, "A"));
+  EXPECT_FALSE(messages->CreateCrosspost("echo.one", request, std::vector<std::string>(21, "echo.two"), "A"));
+  auto unencodable = request;
+  unencodable.body = "emoji 😀";
+  EXPECT_FALSE(messages->CreateCrosspost("echo.one", unencodable, {"echo.two"}, "A"));
+  EXPECT_EQ(conferences->GetConference("echo.one", "A")->total_count, 0);
+  EXPECT_EQ(conferences->GetConference("echo.two", "A")->total_count, 0);
+}
+
+TEST_F(ServicesTest, CrosspostReplyLinksOnlyOriginalAndFreezesRecipient) {
+  auto parent = messages->CreateMessage("echo.one", Request("parent"), "B");
+  ASSERT_TRUE(parent);
+  auto request = Request("reply-group");
+  request.in_reply_to = parent->id;
+  auto sent = messages->CreateCrosspost("echo.one", request, {"echo.two"}, "A");
+  ASSERT_TRUE(sent && sent->complete);
+  auto original = messages->PeekMessage("echo.one", sent->saved[0].id, "A");
+  auto copy = messages->PeekMessage("echo.two", sent->saved[1].id, "A");
+  ASSERT_TRUE(original && copy);
+  EXPECT_EQ(original->in_reply_to, parent->id);
+  EXPECT_TRUE(copy->in_reply_to.empty());
+  EXPECT_EQ(original->to_name, copy->to_name);
+  EXPECT_EQ(copy->to_address, "2:5015/1.2");
+}
+
+namespace {
+class FailSecondCopy : public storage::JamIo {
+public:
+  int writes = 0;
+  ssize_t Write(int fd, const void* data, size_t size, off_t offset) override {
+    if (++writes == 5) {
+      errno = EIO;
+      return -1;
+    }
+    return storage::JamIo::Write(fd, data, size, offset);
+  }
+};
+}  // namespace
+TEST_F(ServicesTest, CrosspostPartialRetryAfterReopenUsesSameCopiesAndProfile) {
+  auto io = std::make_shared<FailSecondCopy>();
+  service::MessageService failing(catalog, metadata, test::EchoAccess(*catalog, temp.path()), "cp866", io);
+  const auto request = Request("partial-group");
+  auto partial = failing.CreateCrosspost("echo.one", request, {"echo.two"}, "A");
+  ASSERT_TRUE(partial);
+  ASSERT_FALSE(partial->complete);
+  ASSERT_EQ(partial->saved.size(), 1u);
+  ASSERT_TRUE(metadata->SaveProfile("A", {"Changed", "2:5015/1.1", "", ""}));
+  messages.reset();
+  conferences.reset();
+  metadata = storage::CreateSQLiteStore(temp.path() / "metadata.db");
+  ASSERT_TRUE(metadata->Init());
+  service::MessageService recovered(catalog, metadata, test::EchoAccess(*catalog, temp.path()));
+  auto result = recovered.CreateCrosspost("echo.one", request, {"echo.two"}, "A");
+  ASSERT_TRUE(result && result->complete);
+  EXPECT_EQ(result->saved[0].id, partial->saved[0].id);
+  auto first = recovered.PeekMessage("echo.one", result->saved[0].id, "A");
+  auto second = recovered.PeekMessage("echo.two", result->saved[1].id, "A");
+  ASSERT_TRUE(first && second);
+  EXPECT_EQ(first->from_name, second->from_name);
+  EXPECT_NE(second->from_name, "Changed");
+}
+
+TEST_F(ServicesTest, ConcurrentCrosspostRetriesHaveOneCopyPerArea) {
+  auto request = Request("concurrent-group");
+  auto first =
+      std::async(std::launch::async, [&] { return messages->CreateCrosspost("echo.one", request, {"echo.two"}, "A"); });
+  auto second = messages->CreateCrosspost("echo.one", request, {"echo.two"}, "A");
+  auto result = first.get();
+  ASSERT_TRUE(result && result->complete);
+  ASSERT_TRUE(second && second->complete);
+  EXPECT_EQ(result->saved[0].id, second->saved[0].id);
+  EXPECT_EQ(result->saved[1].id, second->saved[1].id);
+  EXPECT_EQ(conferences->GetConference("echo.one", "A")->total_count, 1);
+  EXPECT_EQ(conferences->GetConference("echo.two", "A")->total_count, 1);
+}
+
+TEST_F(ServicesTest, CrosspostRevocationBeforeAndDuringPublicationDoesNotLeakResults) {
+  service::HptConfiguration config;
+  config.echoes = {{"echo.one", temp.path() / "different-file", {{"2:5015/1.1", {true, true}}}},
+                   {"echo.two", temp.path() / "second", {{"2:5015/1.1", {true, false}}}}};
+  auto policy = service::EchoAccess::Build(config, *catalog);
+  ASSERT_TRUE(policy);
+  service::MessageService denied(catalog, metadata, *policy);
+  auto rejected = denied.CreateCrosspost("echo.one", Request("no-access"), {"echo.two"}, "A");
+  ASSERT_FALSE(rejected);
+  EXPECT_EQ(rejected.error().code, domain::ErrorCode::kForbidden);
+  EXPECT_EQ(conferences->GetConference("echo.one", "B")->total_count, 0);
+  auto io = std::make_shared<UueFaultIo>();
+  io->after_first = [&] { EXPECT_TRUE(metadata->SaveProfile("A", {"Alice", "2:9/9.9", "", ""})); };
+  service::MessageService interrupted(catalog, metadata, test::EchoAccess(*catalog, temp.path()), "cp866", io);
+  auto partial = interrupted.CreateCrosspost("echo.one", Request("revoked-group"), {"echo.two"}, "A");
+  ASSERT_FALSE(partial);
+  EXPECT_EQ(partial.error().code, domain::ErrorCode::kForbidden);
+  EXPECT_EQ(conferences->GetConference("echo.one", "B")->total_count, 1);
+  EXPECT_EQ(conferences->GetConference("echo.two", "B")->total_count, 0);
+  EXPECT_FALSE(messages->CreateCrosspost("echo.one", Request("revoked-group"), {"echo.two"}, "A"));
+}
+
+TEST_F(ServicesTest, CrosspostGenerationChangeStopsRemainingCopy) {
+  auto io = std::make_shared<UueFaultIo>();
+  io->after_first = [&] {
+    const int fd = catalog->areas().at("echo.two").files->descriptors[0];
+    std::array<uint8_t, 4> changed{};
+    msgapi::jam_wire::Put32(changed.data(), 124);
+    ASSERT_EQ(pwrite(fd, changed.data(), changed.size(), 4), 4);
+  };
+  service::MessageService interrupted(catalog, metadata, test::EchoAccess(*catalog, temp.path()), "cp866", io);
+  auto result = interrupted.CreateCrosspost("echo.one", Request("generation-group"), {"echo.two"}, "A");
+  ASSERT_TRUE(result);
+  EXPECT_FALSE(result->complete);
+  ASSERT_EQ(result->saved.size(), 1u);
+  auto repeated = messages->CreateCrosspost("echo.one", Request("generation-group"), {"echo.two"}, "A");
+  ASSERT_TRUE(repeated);
+  EXPECT_FALSE(repeated->complete);
+  EXPECT_EQ(repeated->saved.size(), 1u);
+}
+
+TEST_F(ServicesTest, CrosspostInternalKeysAreIsolatedFromExternalOperations) {
+  const auto request = Request(std::string(128, 'a'));
+  ASSERT_TRUE(messages->CreateMessage("echo.one", request, "A"));
+  auto group = messages->CreateCrosspost("echo.one", request, {"echo.two"}, "A");
+  ASSERT_TRUE(group && group->complete);
+  auto stored = metadata->GetCrosspost("A", request.operation_id);
+  ASSERT_TRUE(stored && *stored);
+  auto manifest = nlohmann::json::parse(**stored);
+  const std::string key = manifest["copies"][0]["key"];
+  EXPECT_LE(key.size(), 128u);
+  EXPECT_TRUE(key.starts_with("@crosspost-"));
+  auto illegal = Request(key);
+  EXPECT_FALSE(messages->CreateMessage("echo.one", illegal, "A"));
+  auto other = messages->CreateCrosspost("echo.one", request, {"echo.two"}, "B");
+  ASSERT_TRUE(other && other->complete);
+  EXPECT_NE(other->saved[0].ftn_message_id, group->saved[0].ftn_message_id);
+}
+
+TEST_F(ServicesTest, CrosspostTwentyDestinationsValidateAndPublishAllCopies) {
+  std::vector<EchoAreaConfig> areas;
+  for (const auto& [id, area] : catalog->areas())
+    areas.push_back(area.config);
+  std::vector<std::string> additional{"echo.two"};
+  for (int i = 0; i < 20; ++i) {
+    EchoAreaConfig area;
+    area.name = "extra." + std::to_string(i);
+    area.filename = "extra-" + std::to_string(i);
+    area.msgbase_type = "JAM";
+    for (const auto* suffix : {".jhr", ".jdt", ".jdx"})
+      std::filesystem::copy_file((temp.path() / "second").string() + suffix,
+                                 (temp.path() / area.filename).string() + suffix);
+    areas.push_back(area);
+    additional.push_back(area.name);
+  }
+  auto built = storage::JamCatalog::Build(temp.path(), areas);
+  ASSERT_TRUE(built);
+  auto expanded = std::shared_ptr<storage::JamCatalog>(std::move(*built));
+  service::MessageService publisher(expanded, metadata, test::EchoAccess(*expanded, temp.path()));
+  EXPECT_FALSE(publisher.CreateCrosspost("echo.one", Request("too-many"), additional, "A"));
+  additional.pop_back();
+  auto sent = publisher.CreateCrosspost("echo.one", Request("maximum"), additional, "A");
+  ASSERT_TRUE(sent && sent->complete);
+  EXPECT_EQ(sent->saved.size(), 21u);
+  std::reverse(additional.begin(), additional.end());
+  auto retry = publisher.CreateCrosspost("echo.one", Request("maximum"), additional, "A");
+  ASSERT_TRUE(retry && retry->complete);
+  for (size_t i = 0; i < 21; ++i)
+    EXPECT_EQ(sent->saved[i].id, retry->saved[i].id);
+}

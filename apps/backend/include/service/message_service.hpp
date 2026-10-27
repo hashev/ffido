@@ -16,6 +16,10 @@ struct UuePublishOptions {
   std::string kludge, msgid, generation, from_name, from_address, to_name, to_address;
   bool freeze_recipient = false;
 };
+struct CrosspostPublishOptions {
+  domain::Profile profile;
+  std::string generation, msgid, to_name, to_address;
+};
 class MessageService {
 public:
   MessageService(std::shared_ptr<storage::JamCatalog> catalog, std::shared_ptr<storage::IMetadataStore> metadata,
@@ -39,7 +43,11 @@ public:
                                                                      std::string_view message, std::string_view user);
   std::expected<domain::CreateMessageResponse, domain::ApiError> CreateMessage(
       std::string_view conference, const domain::CreateMessageRequest& request, std::string_view user,
-      const UuePublishOptions* uue = nullptr, bool validate_only = false);
+      const UuePublishOptions* uue = nullptr, bool validate_only = false,
+      const CrosspostPublishOptions* crosspost = nullptr);
+  std::expected<domain::CreateCrosspostResponse, domain::ApiError> CreateCrosspost(
+      std::string_view conference, const domain::CreateMessageRequest& request, std::vector<std::string> additional,
+      std::string_view user);
   std::expected<storage::BulkReadResult, domain::ApiError> MarkConferenceRead(std::string_view conference,
                                                                               std::string_view operation,
                                                                               std::string_view user);

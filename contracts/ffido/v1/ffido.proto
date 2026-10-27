@@ -15,6 +15,7 @@ service Ffido {
   rpc ListMessages(ListMessagesRequest) returns (ListMessagesResponse);
   rpc GetMessage(MessageReference) returns (Message);
   rpc CreateMessage(CreateMessageRequest) returns (CreateMessageResponse);
+  rpc CreateCrosspost(CreateCrosspostRequest) returns (CreateCrosspostResponse);
   rpc MarkRead(MessageReference) returns (google.protobuf.Empty);
   rpc MarkConferenceRead(MarkConferenceReadRequest) returns (MarkConferenceReadResponse);
   rpc GetThread(GetThreadRequest) returns (ListMessagesResponse);
@@ -158,6 +159,23 @@ message CreateMessageRequest {
   string subject = 5;
   string body = 6;
   string in_reply_to = 7;
+}
+
+// Text-only group; conference_id is the mandatory original area.
+message CreateCrosspostRequest {
+  CreateMessageRequest message = 1;
+  repeated string additional_conference_ids = 2;
+}
+message CrosspostCopy {
+  MessageReference message = 1;
+  string ftn_message_id = 2;
+}
+message CreateCrosspostResponse {
+  bool complete = 1;
+  repeated CrosspostCopy saved = 2;
+  int32 total = 3;
+  // gRPC status code for the first unfinished copy; no private storage details.
+  int32 pending_code = 4;
 }
 
 enum SaveStatus {

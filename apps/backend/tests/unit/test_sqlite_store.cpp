@@ -259,7 +259,7 @@ TEST_F(SQLiteStoreTest, ReinitializationPreservesDataAndVersion) {
   ASSERT_TRUE(store_->Init());
   EXPECT_TRUE(store_->GetProfile("user"));
   RawDb other(db_path_);
-  EXPECT_EQ(other.Scalar("PRAGMA user_version"), 9);
+  EXPECT_EQ(other.Scalar("PRAGMA user_version"), 10);
   EXPECT_EQ(other.Scalar("SELECT COUNT(*) FROM users"), 1);
 }
 
@@ -378,7 +378,7 @@ TEST(SQLiteMigration, BacksUpEveryLegacyReadWithoutReassigningNumbers) {
             1);
   EXPECT_EQ(db.Scalar("SELECT COUNT(*) FROM read_status_legacy_backup WHERE user_id='missing-user'"), 1);
   EXPECT_EQ(db.Scalar("SELECT COUNT(*) FROM read_status"), 1);
-  EXPECT_EQ(db.Scalar("PRAGMA user_version"), 9);
+  EXPECT_EQ(db.Scalar("PRAGMA user_version"), 10);
 }
 
 TEST(SQLiteMigration, BackupCollisionRollsBackWholeMigration) {
@@ -731,7 +731,7 @@ TEST(SQLiteFaults, AllocationFailuresDuringInitializationAllowCleanRetry) {
     ASSERT_TRUE(store->Init());
     ASSERT_TRUE(store->SaveProfile("A", {}));
     RawDb db(path);
-    EXPECT_EQ(db.Scalar("PRAGMA user_version"), 9);
+    EXPECT_EQ(db.Scalar("PRAGMA user_version"), 10);
     EXPECT_EQ(db.Scalar("SELECT COUNT(*) FROM users"), 1);
     EXPECT_EQ(db.Scalar("SELECT COUNT(*) FROM read_status"), 0);
   }
@@ -749,7 +749,8 @@ TEST(SQLiteMigration, CanonicalAddressConflictRollsBackVersionFiveAndCanRetry) {
   }
   {
     RawDb db(path);
-    db.Exec("DROP TABLE uue_uploads; DROP TABLE bulk_read_operations; DROP TABLE mail_export_log; DROP TABLE "
+    db.Exec("DROP TABLE crosspost_groups; DROP TABLE uue_uploads; DROP TABLE bulk_read_operations; DROP TABLE "
+            "mail_export_log; DROP TABLE "
             "reading_positions; DROP TABLE "
             "mail_pipeline; DROP TABLE "
             "mail_outbox; DROP TABLE "
@@ -901,9 +902,12 @@ TEST_F(SQLiteStoreTest, BulkReadMigratesSevenWithoutLosingExistingData) {
   store_.reset();
   sqlite3* db = nullptr;
   ASSERT_EQ(sqlite3_open(db_path_.c_str(), &db), SQLITE_OK);
-  ASSERT_EQ(sqlite3_exec(db, "DROP TABLE uue_uploads; DROP TABLE bulk_read_operations; PRAGMA user_version=7", nullptr,
-                         nullptr, nullptr),
-            SQLITE_OK);
+  ASSERT_EQ(
+      sqlite3_exec(
+          db,
+          "DROP TABLE crosspost_groups; DROP TABLE uue_uploads; DROP TABLE bulk_read_operations; PRAGMA user_version=7",
+          nullptr, nullptr, nullptr),
+      SQLITE_OK);
   sqlite3_close(db);
   store_ = storage::CreateSQLiteStore(db_path_);
   ASSERT_TRUE(store_->Init());
@@ -960,7 +964,9 @@ TEST_F(SQLiteStoreTest, UueMigrationFromEightPreservesReadingAndProfile) {
   store_.reset();
   sqlite3* db = nullptr;
   ASSERT_EQ(sqlite3_open(db_path_.c_str(), &db), SQLITE_OK);
-  ASSERT_EQ(sqlite3_exec(db, "DROP TABLE uue_uploads; PRAGMA user_version=8", nullptr, nullptr, nullptr), SQLITE_OK);
+  ASSERT_EQ(sqlite3_exec(db, "DROP TABLE crosspost_groups; DROP TABLE uue_uploads; PRAGMA user_version=8", nullptr,
+                         nullptr, nullptr),
+            SQLITE_OK);
   sqlite3_close(db);
   store_ = storage::CreateSQLiteStore(db_path_);
   ASSERT_TRUE(store_->Init());
@@ -968,4 +974,22 @@ TEST_F(SQLiteStoreTest, UueMigrationFromEightPreservesReadingAndProfile) {
   EXPECT_EQ(store_->LastOpened("A", "ECHO")->message, "9");
   EXPECT_EQ(store_->GetProfile("A")->address, "2:1/2.1");
   EXPECT_FALSE(store_->GetUueUpload("A", "absent")->has_value());
+}
+
+TEST_F(SQLiteStoreTest, CrosspostManifestIsImmutableAndIsolatedAcrossUsersAndReopen) {
+  ASSERT_TRUE(store_->SaveProfile("A", {"Alice", "2:1/1.1", "", ""}));
+  ASSERT_TRUE(store_->SaveProfile("B", {"Bob", "2:1/1.2", "", ""}));
+  ASSERT_TRUE(store_->PrepareCrosspost("A", "group", "manifest"));
+  ASSERT_TRUE(store_->PrepareCrosspost("A", "group", "manifest"));
+  EXPECT_FALSE(store_->PrepareCrosspost("A", "group", "other"));
+  ASSERT_TRUE(store_->PrepareCrosspost("B", "group", "other"));
+  store_.reset();
+  store_ = storage::CreateSQLiteStore(db_path_);
+  ASSERT_TRUE(store_->Init());
+  auto a = store_->GetCrosspost("A", "group");
+  auto b = store_->GetCrosspost("B", "group");
+  ASSERT_TRUE(a && *a);
+  ASSERT_TRUE(b && *b);
+  EXPECT_EQ(**a, "manifest");
+  EXPECT_EQ(**b, "other");
 }
