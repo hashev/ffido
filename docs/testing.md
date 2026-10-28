@@ -2068,3 +2068,103 @@ Linux apksigner 37.0.0 и локальным aapt прошёл.
 
 Тег v1.0.5 сохранён без перемещения. Для исправленного выпуска версия повышена
 до 1.0.6; новые публичные пакеты будут привязаны к новому проверенному коммиту.
+
+## Ссылки и изображения в письмах, 28 октября 2026
+
+Изменение `add-message-links-and-image-previews` относится только к клиенту.
+Сохранены тело/копирование/FTN-цитаты, редактор, UUE и серверный контракт.
+Используется Flutter 3.47.7 / Dart 3.13.5; `url_launcher` 6.3.3,
+`share_plus` 13.3.1. Существующий `path_provider` 2.1.6 стал прямой зависимостью
+для управляемых временных desktop share-файлов; его версия не обновлялась.
+Android использует отдельный channel `org.ffido/images`, собственный закрытый
+`ImageFileProvider` и только READ grant. Android provider/receiver share_plus и неиспользуемая WebViewActivity
+url_launcher удалены manifest merger-правилами, storage permissions не добавлены.
+
+### Реальная приёмка изображений
+
+| Среда | Результат |
+|---|---|
+| Android API 24, `ffido_update_api24` / `emulator-5580` | Внешний Chromium WebView Browser Tester; URL с app association не попал в QA handler; fullscreen, два системных chooser, content URI, MIME/байты, read-only, отмена и возврат — PASS |
+| Android API 25, `ffido_update_api25` / `emulator-5582` | Та же матрица — PASS |
+| Android API 35, `ffido_footer_api35` / `emulator-5584` | Внешний Chrome вместо app-link handler; та же матрица, реальная очистка просроченного каталога при запуске — PASS |
+| macOS | Настоящий share popover показал PNG, 70 Б; отменён без сообщения об успехе. Системный save panel сохранил файл с точными байтами — PASS |
+| Chrome на macOS, Web | Preview/fullscreen; Web Share в этой среде недоступен, показано действие сохранения. Явное сохранение/download создало точный PNG — PASS |
+| Windows / Linux desktop | Native GUI и соответствующий Flutter host SDK недоступны на этом Darwin host; реальные системные действия и native-сборки не проверялись. Mock-тесты не считаются такой приёмкой |
+| iOS | Системные действия на iOS не проверялись |
+
+Тестовый PNG имеет SHA-256
+`4ff6ab670a58c14270e034e2090d9a432caa263a14e0a25785386b0c12f880b5`.
+QA receiver проверяет MIME `image/png`, content URI собственного provider,
+отсутствие WRITE grant и невозможность открытия `rw`. Для второй отправки
+проверяет отложенное чтение первого файла через удерживаемый получателем
+дескриптор; дополнительно sender `run-as` подтверждает, что исходный файл не
+удалён. Activity-scoped URI grant закономерно заканчивается при закрытии
+Activity получателя; бессрочное разрешение не выдаётся. TTL проверен реальным
+файлом на API 35 и unit-тестом desktop cache. В API 24/25 штатный toybox `touch`
+возвращает EOVERFLOW при установке старой даты, поэтому timestamp fixture
+там не используется и `ttlCleanup` в отчёте равен false.
+
+Команды из корня (пути SDK/Java/Flutter заменяются локальными эквивалентами):
+
+```sh
+cd apps/frontend
+flutter build apk --debug --no-pub --target tool/image_preview_qa.dart
+cd ../..
+mkdir -p build/image-qa
+cp apps/frontend/build/app/outputs/flutter-apk/app-debug.apk build/image-qa/ffido-image-qa.apk
+python3 scripts/media/android_acceptance.py --directory build/image-qa
+python3 scripts/media/android_acceptance.py --receiver build/image-qa/receiver.apk --serial emulator-5580 --apk build/image-qa/ffido-image-qa.apk
+python3 scripts/media/android_acceptance.py --receiver build/image-qa/receiver.apk --serial emulator-5582 --apk build/image-qa/ffido-image-qa.apk
+python3 scripts/media/android_acceptance.py --receiver build/image-qa/receiver.apk --serial emulator-5584 --apk build/image-qa/ffido-image-qa.apk
+```
+
+Используются только выделенные disposable AVD: runner очищает QA receiver,
+останавливает FFIDO, устанавливает app-link preference и создаёт тестовые cache
+файлы. При конфликте подписи удалить FFIDO только на выбранном QA-эмуляторе
+перед установкой. Receiver собирается отдельно из `scripts/media/qa_receiver/`;
+его классы, manifest и marker `FFIDO_IMAGE_QA` не должны попадать в main APK.
+Отчёты сохраняются в игнорируемый `build/image-qa/emulator-*.json`.
+
+Для desktop/Web QA entrypoint — `tool/image_preview_qa.dart` с локальным
+fixture transport без FFIDO backend. На Web проверялась release-сборка с
+`--no-web-resources-cdn` и localhost HTTP server: CDN Flutter-ресурсов был
+недоступен из браузера; сетевые защиты не отключались. Такой fixture проверяет
+реальный viewer/share/save, но не заменяет unit/native HTTP/TLS/CORS-проверки.
+
+### Итоговые проверки
+
+Пройдены `flutter pub get`, `flutter analyze --no-pub`, форматирование,
+полный прогон 342 Flutter-тестов с включёнными native E2E, отдельно два
+E2E-сценария private areas / point mailboxes с реальным локальным backend и HPT,
+standalone `dart compile kernel tool/native_acceptance.dart` и native Dart
+acceptance (включая TLS/ALPN и отказ неавторизованного доступа).
+Включены portrait 2000×4000 → thumbnail 500×1000, дубликаты между
+UUE-фрагментами/raw, прежняя прокрутка без новых RPC, доступные имена ссылок,
+защита от активации ссылки клавишей Space при фокусе на выделяемом тексте и
+сохранение апострофов внутри URL. Корневой `scripts/check_dart.py --check`
+проверил 128 handwritten Dart-файлов без изменений.
+Python release — 95 тестов, updater — 64 теста, все PASS.
+
+Повторная матрица обновления A 41001 → B 41002 после подключения плагинов
+пройдена на API 24/25/35. Проверены системный installer и отмена, запрет чужого
+ключа/ID, равной и меньшей версии, сохранение preferences, secure session и
+footer preferences; на API 35 также отказ и выдача разрешения установки.
+Это изолированные release fixtures с одним временным сертификатом, не проверка
+Play Protect на сертифицированном устройстве. Отчёты —
+`build/image-update-final-api24/result.json`, `...api25/result.json`,
+`...api35/result.json`; fixture APK не публикуются.
+Коды возврата разделены: save 7421, updater permission 7422, image share 7430.
+Финальный image QA APK с этим кодом прошёл share-матрицу на всех трёх API.
+
+Обычные main-target release-сборки Android, macOS и Web — PASS. Для Android
+проверена постоянная release-подпись, universal ABI, min API 24 / target 36,
+отсутствие QA marker/receiver/entrypoint, точные permissions/components,
+закрытый image provider и единственный путь `image-share/`. Аудит следует
+resource ID provider, проверяя XML каждой конфигурации: R8 может переименовать
+файл в `res/XH.xml`. Чужие корни, компоненты и storage permissions отвергаются;
+негативные тесты аудита сохранены.
+Локальный main APK и отчёт — `build/image-qa/ffido-main-release.apk` и
+`ffido-main-release.apk.audit.json`; identity непубликуемая (`stable: false`),
+версия осталась 1.0.6/1023. Версия не повышалась, коммит и публикация не выполнялись.
+SHA-256 конечного main APK: `c522b17f7fd148ec67c8766962659b3ae07b5cfba94a11b50d862afe07729801`.
+OpenSpec strict и итоговый diff проверены; backend/proto и рабочие базы не менялись.

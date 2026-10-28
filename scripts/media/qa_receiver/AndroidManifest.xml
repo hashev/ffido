@@ -1,0 +1,18 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="org.ffido.imageqa">
+  <uses-sdk android:minSdkVersion="24" android:targetSdkVersion="35" />
+  <application android:label="FFIDO image QA receiver" android:debuggable="true" android:theme="@android:style/Theme.Material.Light">
+    <activity android:name=".ReceiverActivity" android:exported="true">
+      <intent-filter>
+        <action android:name="android.intent.action.SEND" />
+        <category android:name="android.intent.category.DEFAULT" />
+        <data android:mimeType="image/*" />
+      </intent-filter>
+      <intent-filter android:autoVerify="true">
+        <action android:name="android.intent.action.VIEW" />
+        <category android:name="android.intent.category.DEFAULT" />
+        <category android:name="android.intent.category.BROWSABLE" />
+        <data android:scheme="https" android:host="ffido-media-qa.invalid" />
+      </intent-filter>
+    </activity>
+  </application>
+</manifest>
