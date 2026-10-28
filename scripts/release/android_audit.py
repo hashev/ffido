@@ -126,6 +126,29 @@ def contains_qa(archive):
     return False
 
 
+def verify_certificate(output, certificate):
+    """Read numbered and SDK-scoped signers; source stamps are not APK signers."""
+    fingerprints = []
+    scope = r'\(minSdkVersion=\d+(?: \(dev release=true\))?, maxSdkVersion=\d+\)'
+    label = (r'(?:Signer(?: #\d+| '+scope+r')|V(?:1|2|3\.[01]) Signer(?: #\d+)?:|'
+             r'V3\.[01] Signer: '+scope+r')')
+    for line in output.splitlines():
+        if ' certificate SHA-256 digest:' not in line or line.startswith('Source Stamp Signer'):
+            continue
+        match = re.fullmatch(label+r' certificate SHA-256 digest: ([0-9a-fA-F]{64})', line)
+        if not match:
+            raise ValueError('Unrecognized APK signer certificate output')
+        fingerprints.append(match[1].lower())
+    if not fingerprints:
+        raise ValueError('No APK signer certificate SHA-256 digest')
+    fingerprint = certificate.replace(':', '').lower()
+    if set(fingerprints) != {fingerprint}:
+        raise ValueError('APK certificate does not match the permanent key: '+', '.join(fingerprints))
+    if 'android debug' in output.lower():
+        raise ValueError('Debug APK cannot be published')
+    return fingerprint
+
+
 def audit(apk, identity, certificate, sdk=None):
     apk = pathlib.Path(apk)
     sdk = pathlib.Path(sdk or os.environ['ANDROID_HOME'])
@@ -135,12 +158,7 @@ def audit(apk, identity, certificate, sdk=None):
     def run(*args):
         return subprocess.check_output(list(map(str, args)), text=True)
     cert = run(tools/'apksigner', 'verify', '--print-certs', apk)
-    signers = re.findall(r'^Signer #\d+ certificate SHA-256 digest: ([0-9a-f]+)$', cert, re.M)
-    fingerprint = certificate.replace(':', '').lower()
-    if signers != [fingerprint]:
-        raise ValueError('APK certificate does not match the permanent key')
-    if 'android debug' in cert.lower():
-        raise ValueError('Debug APK cannot be published')
+    fingerprint = verify_certificate(cert, certificate)
     record = manifest_record(run(tools/'aapt', 'dump', 'xmltree', apk, 'AndroidManifest.xml'))
     with zipfile.ZipFile(apk) as archive:
         if apk.read_bytes()[:4] != b'PK\x03\x04' or archive.testzip() is not None:

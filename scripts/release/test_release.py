@@ -367,6 +367,37 @@ class AndroidAuditTest(unittest.TestCase):
                 self.assertFalse(android_audit.contains_qa(archive))
 
 
+    def test_numbered_and_sdk_scoped_certificates_require_the_permanent_key(self):
+        fingerprint = 'a' * 64
+        variants = [
+            'Signer #1',
+            'V1 Signer:',
+            'V2 Signer:',
+            'V3.0 Signer:',
+            'V2 Signer #1:',
+            'V3.1 Signer: (minSdkVersion=33, maxSdkVersion=2147483647)',
+            'Signer (minSdkVersion=24, maxSdkVersion=32)',
+            'Signer (minSdkVersion=33 (dev release=true), maxSdkVersion=2147483647)',
+        ]
+        for name in variants:
+            with self.subTest(name=name):
+                output = f'{name} certificate SHA-256 digest: {fingerprint.upper()}\n'
+                self.assertEqual(android_audit.verify_certificate(output, fingerprint), fingerprint)
+        scoped = '\n'.join(f'{name} certificate SHA-256 digest: {fingerprint}' for name in variants[1:])
+        self.assertEqual(android_audit.verify_certificate(scoped, fingerprint), fingerprint)
+        stamped = scoped + '\nSource Stamp Signer certificate SHA-256 digest: ' + 'b' * 64
+        self.assertEqual(android_audit.verify_certificate(stamped, fingerprint), fingerprint)
+        for output in (
+            scoped.replace(fingerprint, 'b' * 64, 1),
+            'Source Stamp Signer certificate SHA-256 digest: ' + fingerprint,
+            'Signer unknown certificate SHA-256 digest: ' + fingerprint,
+            'Signer #1 certificate SHA-256 digest: invalid',
+            scoped + '\nSigner #2 certificate SHA-256 digest: ' + 'b' * 64,
+            'Signer #1 certificate DN: CN=Android Debug\n' + scoped,
+        ):
+            with self.subTest(output=output), self.assertRaises(ValueError):
+                android_audit.verify_certificate(output, fingerprint)
+
     def test_manifest_nesting_typed_attributes_and_exported_component(self):
         text = """N: android=http://schemas.android.com/apk/res/android
   E: manifest
