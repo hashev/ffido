@@ -169,7 +169,7 @@ void main() {
       addTearDown(() => directory.delete(recursive: true));
       final key = '${directory.path}/key.pem',
           cert = '${directory.path}/cert.pem';
-      final generated = await Process.run('/usr/bin/openssl', [
+      final generated = await Process.run('openssl', [
         'req',
         '-x509',
         '-newkey',

@@ -7,8 +7,9 @@ import 'package:share_plus/share_plus.dart';
 
 import 'uue_file_types.dart';
 
-Future<Directory> _root() async =>
-    Directory('${(await getTemporaryDirectory()).path}/ffido-image-share');
+Future<Directory> _root() async => Directory(
+  '${(await getTemporaryDirectory()).path}${Platform.pathSeparator}ffido-image-share',
+);
 Future<void> cleanup({Directory? root, DateTime? now}) async {
   final directory = root ?? await _root();
   if (!await directory.exists()) return;
@@ -29,9 +30,11 @@ Future<XFile> prepare(
   final directory = root ?? await _root();
   await directory.create(recursive: true);
   final folder = await Directory(
-    '${directory.path}/${DateTime.now().microsecondsSinceEpoch}-${Random.secure().nextInt(1 << 32)}',
+    '${directory.path}${Platform.pathSeparator}${DateTime.now().microsecondsSinceEpoch}-${Random.secure().nextInt(1 << 32)}',
   ).create();
-  final file = File('${folder.path}/${safeUueName(name)}');
+  final file = File(
+    '${folder.path}${Platform.pathSeparator}${safeUueName(name)}',
+  );
   await file.writeAsBytes(bytes, flush: true);
   return XFile(file.path, mimeType: mime, name: safeUueName(name));
 }
