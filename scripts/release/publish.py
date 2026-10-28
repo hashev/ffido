@@ -8,6 +8,7 @@ import pathlib
 import subprocess
 import tempfile
 from update_metadata import release_metadata, validate_package, validate_container
+from android_audit import validate_report
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 
@@ -28,6 +29,8 @@ def inventory(directory, identity, expected):
             raise ValueError('Package checksum mismatch')
         if row['id'] == 'client-android-universal' and row['signing'] != 'release':
             raise ValueError('Public APK is not release-signed')
+        if row['id'] == 'client-android-universal':
+            validate_report(directory/name, identity, os.environ.get('ANDROID_CERT_SHA256', ''))
         rows.append(row)
     if sorted(r['id'] for r in rows) != sorted(expected):
         raise ValueError('Incomplete or duplicated release matrix')
@@ -70,6 +73,7 @@ def publish(api, directory, identity, rows, signing_key=None):
     sums = directory/'SHA256SUMS'
     names = [r['file'] for r in rows]+[manifest.name, 'release-manifest.sig', 'LICENSE', 'THIRD_PARTY_NOTICES.md']
     names += [row['file'] for row in data['macos_appcasts']]
+    names += [row['file']+'.audit.json' for row in rows if row['id'] == 'client-android-universal']
     for name in ('LICENSE', 'THIRD_PARTY_NOTICES.md'):
         (directory/name).write_bytes((ROOT/name).read_bytes())
     sums.write_text(''.join(f'{digest(directory/name)}  {name}\n' for name in names))

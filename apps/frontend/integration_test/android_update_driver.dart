@@ -23,6 +23,11 @@ Future<void> main() async {
   const store = SecureSessionStore();
   if (stage == 'A' && !preferences.containsKey('ffido_update_qa_sentinel')) {
     await preferences.setString('ffido_update_qa_sentinel', 'preserve-me');
+    await preferences.setString('ffido_tagline_v1', 'FFIDO custom QA');
+    await preferences.setString(
+      'ffido_origin_v1',
+      'https://github.com/hashev/ffido',
+    );
     await store.write(endpoint, secret);
   }
   final record = {
@@ -30,8 +35,28 @@ Future<void> main() async {
     'preferences':
         preferences.getString('ffido_update_qa_sentinel') == 'preserve-me',
     'secureSession': await store.read(endpoint) == secret,
+    'footerPreferences':
+        preferences.getString('ffido_tagline_v1') == 'FFIDO custom QA' &&
+        preferences.getString('ffido_origin_v1') ==
+            'https://github.com/hashev/ffido',
   };
   debugPrint('FFIDO_UPDATE_QA ${jsonEncode(record)}');
+  void reportResult(Map<Object?, Object?>? result) {
+    if (result == null) return;
+    final outcome = result['outcome'];
+    debugPrint(
+      'FFIDO_UPDATE_QA ${jsonEncode({'stage': stage, 'recovered': outcome, 'result': outcome == 'success'
+          ? 'installed'
+          : outcome == 'permission_denied'
+          ? 'cancelled'
+          : outcome})}',
+    );
+  }
+
+  bridge.setMethodCallHandler((call) async {
+    if (call.method == 'installResult') reportResult(call.arguments as Map);
+  });
+  reportResult(await bridge.invokeMapMethod<Object?, Object?>('recover'));
   runApp(MaterialApp(home: UpdateQA(record: record)));
 }
 
@@ -107,10 +132,14 @@ class _UpdateQAState extends State<UpdateQA> {
       } finally {
         client.close(force: true);
       }
-      final result = await bridge.invokeMethod<bool>('install', {
+      final result = await bridge.invokeMapMethod<String, dynamic>('install', {
         'path': file.path,
       });
-      message = result == true ? 'installed' : 'cancelled';
+      message = result?['outcome'] == 'success'
+          ? 'installed'
+          : result?['outcome'] == 'permission_denied'
+          ? 'cancelled'
+          : result?['outcome'] as String? ?? 'unknown';
     } catch (error) {
       message = '$error';
     }

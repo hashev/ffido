@@ -1,3 +1,5 @@
+import 'message_footer_snapshot.dart';
+
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
@@ -13,7 +15,7 @@ import 'generated/ffido/v1/ffido.pbgrpc.dart' as wire;
 import 'api_transport.dart';
 import 'api_exceptions.dart';
 
-class ApiClient implements ApiTransport {
+class ApiClient implements ApiTransport, MessageFooterSupport {
   ApiClient({
     String? endpoint,
     rpc.ClientChannel Function(Uri)? channelFactory,
@@ -43,6 +45,8 @@ class ApiClient implements ApiTransport {
   wire.SessionInfo? _session;
   final _identityChanges = StreamController<void>.broadcast(sync: true);
   Stream<void> get identityChanges => _identityChanges.stream;
+  @override
+  bool get supportsMessageFooter => _session?.supportsMessageFooter ?? false;
   wire.SessionInfo? get session => _session;
   set session(wire.SessionInfo? value) {
     _session = value;

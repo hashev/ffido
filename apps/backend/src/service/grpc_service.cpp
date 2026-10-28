@@ -286,6 +286,8 @@ grpc::Status GrpcService::CreateMessage(grpc::ServerContext* context, const wire
     value.subject = request->subject();
     value.body = request->body();
     value.in_reply_to = request->in_reply_to();
+    if (request->has_footer())
+      value.footer = domain::MessageFooter{request->footer().tagline(), request->footer().origin()};
     auto result = messages_.CreateMessage(request->conference_id(), value, user.id);
     if (!result)
       return std::unexpected(result.error());
@@ -302,6 +304,8 @@ grpc::Status GrpcService::CreateCrosspost(grpc::ServerContext* context, const wi
     const auto& source = request->message();
     domain::CreateMessageRequest value{source.operation_id(), source.to_name(), source.to_address(),
                                        source.subject(),      source.body(),    source.in_reply_to()};
+    if (source.has_footer())
+      value.footer = domain::MessageFooter{source.footer().tagline(), source.footer().origin()};
     auto result = messages_.CreateCrosspost(
         source.conference_id(), value,
         {request->additional_conference_ids().begin(), request->additional_conference_ids().end()}, user.id);
@@ -501,6 +505,7 @@ grpc::Status GrpcService::Login(grpc::ServerContext* context, const wire::LoginR
       return Error(context, login.error());
     response->set_session_secret(login->token);
     auto* session = response->mutable_session();
+    session->set_supports_message_footer(true);
     auto* profile = session->mutable_profile();
     profile->set_user_id(login->user.id);
     profile->set_name(login->user.profile.name);
@@ -524,6 +529,7 @@ grpc::Status GrpcService::RestoreSession(grpc::ServerContext* context, const goo
     if (!Timestamp(user.profile.registered_at, profile->mutable_registered_at()))
       return std::unexpected(domain::ApiError::Server("Invalid profile timestamp"));
     response->mutable_expires_at()->set_seconds(user.expires_at);
+    response->set_supports_message_footer(true);
     return {};
   });
 }
@@ -682,6 +688,8 @@ grpc::Status GrpcService::CommitUue(grpc::ServerContext* context, const wire::Co
     value.to_name = message.to_name();
     value.to_address = message.to_address();
     value.in_reply_to = message.in_reply_to();
+    if (message.has_footer())
+      value.footer = domain::MessageFooter{message.footer().tagline(), message.footer().origin()};
     auto result = uue_.Commit(message.conference_id(), value, user.id);
     if (!result)
       return std::unexpected(result.error());

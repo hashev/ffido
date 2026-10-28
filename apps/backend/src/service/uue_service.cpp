@@ -552,6 +552,8 @@ std::expected<UueSendStatus, ApiError> UueService::Commit(std::string_view confe
   Json original{{"conference", conference},         {"operation", request.operation_id}, {"to_name", request.to_name},
                 {"to_address", request.to_address}, {"subject", request.subject},        {"body", request.body},
                 {"reply", request.in_reply_to}};
+  if (request.footer)
+    original["footer"] = {{"tagline", request.footer->tagline}, {"origin", request.footer->origin}};
   Json manifest;
   if (!upload.manifest.empty()) {
     auto parsed = Manifest(upload);

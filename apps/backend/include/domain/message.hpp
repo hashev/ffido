@@ -47,6 +47,10 @@ struct MessageDetail {
   std::vector<std::string> ftn_kludges;
 };
 
+struct MessageFooter {
+  std::string tagline, origin;
+};
+
 /// @brief Запрос на создание сообщения.
 struct CreateMessageRequest {
   std::string operation_id;
@@ -55,6 +59,7 @@ struct CreateMessageRequest {
   std::string subject;
   std::string body;
   std::string in_reply_to;
+  std::optional<MessageFooter> footer = std::nullopt;
 };
 
 /// @brief Ответ на создание.

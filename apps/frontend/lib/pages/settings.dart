@@ -1,3 +1,4 @@
+import '../api/message_footer.dart';
 import '../updates/update_controller.dart';
 import '../updates/update_ui.dart';
 
@@ -16,11 +17,13 @@ class SettingsWidget extends StatefulWidget {
     this.preferences,
     this.store,
     this.initialMessage = '',
+    this.footerSettings,
   });
   final ApiClient? client;
   final SharedPreferences? preferences;
   final SessionStore? store;
   final String initialMessage;
+  final MessageFooterSettings? footerSettings;
   @override
   State<SettingsWidget> createState() => _SettingsWidgetState();
 }
@@ -30,6 +33,10 @@ class _SettingsWidgetState extends State<SettingsWidget> {
   final _name = TextEditingController();
   final _address = TextEditingController();
   final _password = TextEditingController();
+  final _tagline = TextEditingController();
+  final _origin = TextEditingController();
+  MessageFooterSettings? _footer;
+  String _savedTagline = '', _savedOrigin = '';
   bool _busy = false;
   bool _passwordAutofilled = false;
   String _savedPassword = '';
@@ -50,9 +57,24 @@ class _SettingsWidgetState extends State<SettingsWidget> {
           _password.text == _savedPassword &&
           _endpoint.text == _savedEndpoint &&
           _name.text == _savedName &&
-          _address.text == _savedAddress,
+          _address.text == _savedAddress &&
+          _tagline.text == _savedTagline &&
+          _origin.text == _savedOrigin,
     );
     _loadFields();
+    _loadFooter();
+  }
+
+  Future<void> _loadFooter() async {
+    final footer =
+        widget.footerSettings ??
+        await MessageFooterSettings.load(widget.preferences);
+    if (!mounted) return;
+    setState(() {
+      _footer = footer;
+      _tagline.text = _savedTagline = footer.tagline;
+      _origin.text = _savedOrigin = footer.origin;
+    });
   }
 
   Future<void> _loadFields() async {
@@ -103,6 +125,8 @@ class _SettingsWidgetState extends State<SettingsWidget> {
     _name.dispose();
     _address.dispose();
     _password.dispose();
+    _tagline.dispose();
+    _origin.dispose();
     super.dispose();
   }
 
@@ -166,17 +190,52 @@ class _SettingsWidgetState extends State<SettingsWidget> {
     }
   }
 
+  Future<void> _saveFooter({bool reset = false}) async {
+    final footer = _footer;
+    if (footer == null || _busy) return;
+    setState(() {
+      _busy = true;
+      _errors = {};
+      _message = '';
+    });
+    try {
+      if (reset) {
+        await footer.reset();
+      } else {
+        await footer.save(_tagline.text, _origin.text);
+      }
+      if (!mounted) return;
+      setState(() {
+        _tagline.text = _savedTagline = footer.tagline;
+        _origin.text = _savedOrigin = footer.origin;
+        _message = 'Оформление сохранено';
+      });
+    } on ValidationException catch (error) {
+      if (mounted) {
+        setState(() {
+          _errors = error.fieldErrors;
+          _message = error.message;
+        });
+      }
+    } catch (_) {
+      if (mounted) setState(() => _message = 'Не удалось сохранить оформление');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
   Widget _field(
     String key,
     String label,
     TextEditingController controller, {
     bool secret = false,
+    bool loading = false,
   }) => Padding(
     padding: const EdgeInsets.only(bottom: 16),
     child: TextField(
       key: Key(key),
       controller: controller,
-      enabled: !_busy,
+      enabled: !_busy && !loading,
       obscureText: secret,
       onChanged: key == 'endpoint' || key == 'address'
           ? (_) {
@@ -235,6 +294,32 @@ class _SettingsWidgetState extends State<SettingsWidget> {
             child: const Text('Открыть конференции'),
           ),
         ],
+        const Divider(),
+        const Text('Оформление исходящих сообщений'),
+        _field(
+          'tagline',
+          'Tagline (после ---)',
+          _tagline,
+          loading: _footer == null,
+        ),
+        _field('origin', 'Origin', _origin, loading: _footer == null),
+        const Text(
+          'FTN-адрес в Origin добавляет сервер. Оформление применяется только к эхам.',
+        ),
+        if (!_client.supportsMessageFooter)
+          const Text(
+            'Пользовательское оформление требует обновлённого сервера FFIDO.',
+          ),
+        FilledButton(
+          onPressed: _busy || _footer == null ? null : () => _saveFooter(),
+          child: const Text('Сохранить оформление'),
+        ),
+        TextButton(
+          onPressed: _busy || _footer == null
+              ? null
+              : () => _saveFooter(reset: true),
+          child: const Text('Сбросить оформление'),
+        ),
         if (_busy) const Center(child: CircularProgressIndicator()),
         if (_message.isNotEmpty)
           Text(_message, key: const Key('connection-message')),

@@ -1,3 +1,5 @@
+import '../api/message_footer_snapshot.dart';
+
 import 'dart:math';
 import 'dart:typed_data';
 
@@ -14,6 +16,7 @@ import '../models/uue.dart';
 class UueDraft {
   final String conference, operation, subject, body, toName, toAddress, reply;
   final SelectedUueFile file;
+  final bool useFooter;
   UueDraft({
     required this.conference,
     required this.operation,
@@ -22,12 +25,14 @@ class UueDraft {
     required this.toName,
     required this.toAddress,
     this.reply = '',
+    this.useFooter = true,
     required this.file,
   });
 }
 
 class UueRepository {
   final ApiTransport api;
+  late final _footers = MessageFooterSnapshots(api);
   UueRepository(this.api);
   int get epoch => api.epoch;
   Stream<int> get sessionChanges => api.sessionChanges;
@@ -208,6 +213,11 @@ class UueRepository {
     void Function(int, int)? progress,
   }) async {
     final before = epoch;
+    final footer = await _footers.capture(
+      draft.operation,
+      enabled: draft.useFooter,
+    );
+    _check(before, cancellation);
     final limits = await capabilities();
     _check(before, cancellation);
     if (limits == null) {
@@ -271,6 +281,7 @@ class UueRepository {
         message: wire.CreateMessageRequest(
           conferenceId: draft.conference,
           operationId: draft.operation,
+          footer: footer,
           toName: draft.toName,
           toAddress: draft.toAddress,
           subject: draft.subject,

@@ -1,3 +1,5 @@
+import '../api/message_footer_snapshot.dart';
+
 import 'dart:math';
 
 import 'uue_repository.dart';
@@ -15,9 +17,11 @@ import 'package:fido/models/api_response.dart';
 class MessageRepository {
   final ApiTransport _apiClient;
   final UueRepository uue;
+  final MessageFooterSnapshots _footers;
   MessageRepository(ApiTransport apiClient)
     : _apiClient = apiClient,
-      uue = UueRepository(apiClient);
+      uue = UueRepository(apiClient),
+      _footers = MessageFooterSnapshots(apiClient);
   int _positionEpoch = -1;
   final Map<String, int> _latestRevision = {};
   int get epoch {
@@ -132,13 +136,18 @@ class MessageRepository {
     required String body,
     String? inReplyTo,
     String? operationId,
+    bool useFooter = true,
     RpcCancellation? cancellation,
   }) async {
     final captured = epoch;
+    final operation = operationId ?? newOperationId();
+    final footer = await _footers.capture(operation, enabled: useFooter);
+    _check(captured, cancellation);
     final response = await _apiClient.createMessage(
       wire.CreateMessageRequest(
         conferenceId: conferenceId,
-        operationId: operationId ?? newOperationId(),
+        operationId: operation,
+        footer: footer,
         toName: toName,
         toAddress: toAddress,
         subject: subject,
@@ -171,11 +180,14 @@ class MessageRepository {
     RpcCancellation? cancellation,
   }) async {
     final captured = epoch;
+    final footer = await _footers.capture(operationId);
+    _check(captured, cancellation);
     final response = await _apiClient.createCrosspost(
       wire.CreateCrosspostRequest(
         message: wire.CreateMessageRequest(
           conferenceId: conferenceId,
           operationId: operationId,
+          footer: footer,
           toName: toName,
           toAddress: toAddress,
           subject: subject,

@@ -1083,6 +1083,75 @@ class ListMessagesResponse extends $pb.GeneratedMessage {
   void clearActualOffset() => $_clearField(4);
 }
 
+class MessageFooter extends $pb.GeneratedMessage {
+  factory MessageFooter({
+    $core.String? tagline,
+    $core.String? origin,
+  }) {
+    final result = MessageFooter._();
+    if (tagline != null) result.tagline = tagline;
+    if (origin != null) result.origin = origin;
+    return result;
+  }
+
+  MessageFooter._();
+
+  factory MessageFooter.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      MessageFooter()..mergeFromBuffer(data, registry);
+  factory MessageFooter.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      MessageFooter()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'MessageFooter',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'ffido.v1'),
+      createEmptyInstance: MessageFooter.$_createMessage)
+    ..aOS(1, _omitFieldNames ? '' : 'tagline')
+    ..aOS(2, _omitFieldNames ? '' : 'origin')
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  MessageFooter clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  MessageFooter copyWith(void Function(MessageFooter) updates) =>
+      super.copyWith((message) => updates(message as MessageFooter))
+          as MessageFooter;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  @$core.Deprecated('Use MessageFooter() / MessageFooter.new instead')
+  static MessageFooter create() => MessageFooter._();
+  static $pb.GeneratedMessage $_createMessage() => MessageFooter._();
+  @$core.override
+  MessageFooter createEmptyInstance() => MessageFooter._();
+  @$core.pragma('dart2js:noInline')
+  static MessageFooter getDefault() =>
+      _defaultInstance ??= $pb.GeneratedMessage.$_defaultFor<MessageFooter>(
+          MessageFooter.$_createMessage);
+  static MessageFooter? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $core.String get tagline => $_getSZ(0);
+  @$pb.TagNumber(1)
+  set tagline($core.String value) => $_setString(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasTagline() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearTagline() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  $core.String get origin => $_getSZ(1);
+  @$pb.TagNumber(2)
+  set origin($core.String value) => $_setString(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasOrigin() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearOrigin() => $_clearField(2);
+}
+
 class CreateMessageRequest extends $pb.GeneratedMessage {
   factory CreateMessageRequest({
     $core.String? conferenceId,
@@ -1092,6 +1161,7 @@ class CreateMessageRequest extends $pb.GeneratedMessage {
     $core.String? subject,
     $core.String? body,
     $core.String? inReplyTo,
+    MessageFooter? footer,
   }) {
     final result = CreateMessageRequest._();
     if (conferenceId != null) result.conferenceId = conferenceId;
@@ -1101,6 +1171,7 @@ class CreateMessageRequest extends $pb.GeneratedMessage {
     if (subject != null) result.subject = subject;
     if (body != null) result.body = body;
     if (inReplyTo != null) result.inReplyTo = inReplyTo;
+    if (footer != null) result.footer = footer;
     return result;
   }
 
@@ -1124,6 +1195,8 @@ class CreateMessageRequest extends $pb.GeneratedMessage {
     ..aOS(5, _omitFieldNames ? '' : 'subject')
     ..aOS(6, _omitFieldNames ? '' : 'body')
     ..aOS(7, _omitFieldNames ? '' : 'inReplyTo')
+    ..aOM<MessageFooter>(8, _omitFieldNames ? '' : 'footer',
+        subBuilder: MessageFooter.$_createMessage)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -1212,6 +1285,17 @@ class CreateMessageRequest extends $pb.GeneratedMessage {
   $core.bool hasInReplyTo() => $_has(6);
   @$pb.TagNumber(7)
   void clearInReplyTo() => $_clearField(7);
+
+  @$pb.TagNumber(8)
+  MessageFooter get footer => $_getN(7);
+  @$pb.TagNumber(8)
+  set footer(MessageFooter value) => $_setField(8, value);
+  @$pb.TagNumber(8)
+  $core.bool hasFooter() => $_has(7);
+  @$pb.TagNumber(8)
+  void clearFooter() => $_clearField(8);
+  @$pb.TagNumber(8)
+  MessageFooter ensureFooter() => $_ensure(7);
 }
 
 /// Text-only group; conference_id is the mandatory original area.
@@ -2235,10 +2319,13 @@ class SessionInfo extends $pb.GeneratedMessage {
   factory SessionInfo({
     Profile? profile,
     $2.Timestamp? expiresAt,
+    $core.bool? supportsMessageFooter,
   }) {
     final result = SessionInfo._();
     if (profile != null) result.profile = profile;
     if (expiresAt != null) result.expiresAt = expiresAt;
+    if (supportsMessageFooter != null)
+      result.supportsMessageFooter = supportsMessageFooter;
     return result;
   }
 
@@ -2259,6 +2346,7 @@ class SessionInfo extends $pb.GeneratedMessage {
         subBuilder: Profile.$_createMessage)
     ..aOM<$2.Timestamp>(2, _omitFieldNames ? '' : 'expiresAt',
         subBuilder: $2.Timestamp.$_createMessage)
+    ..aOB(3, _omitFieldNames ? '' : 'supportsMessageFooter')
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -2304,6 +2392,15 @@ class SessionInfo extends $pb.GeneratedMessage {
   void clearExpiresAt() => $_clearField(2);
   @$pb.TagNumber(2)
   $2.Timestamp ensureExpiresAt() => $_ensure(1);
+
+  @$pb.TagNumber(3)
+  $core.bool get supportsMessageFooter => $_getBF(2);
+  @$pb.TagNumber(3)
+  set supportsMessageFooter($core.bool value) => $_setBool(2, value);
+  @$pb.TagNumber(3)
+  $core.bool hasSupportsMessageFooter() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearSupportsMessageFooter() => $_clearField(3);
 }
 
 class LoginResponse extends $pb.GeneratedMessage {

@@ -16,6 +16,7 @@ import zipfile
 from urllib.parse import urlparse
 from urllib.request import url2pathname
 from update_metadata import COMPATIBILITY, package_platform
+from android_audit import audit
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 DEBIAN_DOCS = pathlib.Path('/usr/share/doc')
 
@@ -327,6 +328,9 @@ def package(component, os_name, arch, identity, output, build, deps, public=Fals
             target = output/(basename+'.tar.gz')
             with tarfile.open(target, 'w:gz') as archive:
                 archive.add(stage, arcname=basename)
+        if os_name == 'android' and public:
+            report = audit(target, identity, os.environ.get('ANDROID_CERT_SHA256', ''))
+            pathlib.Path(str(target)+'.audit.json').write_text(json.dumps(report, indent=2)+'\n')
         row = {'id': package_id, **identity, **update, 'file': target.name, 'signing': signing,
                'size': target.stat().st_size,
                'sha256': hashlib.sha256(target.read_bytes()).hexdigest(), 'toolchain': toolchain, 'baseline': baseline}

@@ -150,6 +150,11 @@ message ListMessagesResponse {
   optional int64 actual_offset = 4;
 }
 
+message MessageFooter {
+  string tagline = 1;
+  string origin = 2;
+}
+
 message CreateMessageRequest {
   string conference_id = 1;
   // Ключ сохраняется клиентом при повторе неопределённого результата.
@@ -159,6 +164,7 @@ message CreateMessageRequest {
   string subject = 5;
   string body = 6;
   string in_reply_to = 7;
+  MessageFooter footer = 8;
 }
 
 // Text-only group; conference_id is the mandatory original area.
@@ -243,6 +249,7 @@ message LoginRequest {
   string password = 3;
 }
 message SessionInfo {
+  bool supports_message_footer = 3;
   Profile profile = 1;
   google.protobuf.Timestamp expires_at = 2;
 }

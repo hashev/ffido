@@ -1142,6 +1142,7 @@ class _ComposeScreenState extends State<_ComposeScreen> {
           toAddress: toAddress.text,
           reply: widget.forward ? '' : widget.original?.id ?? '',
           file: attachment!,
+          useFooter: widget.forward || widget.kind == AreaKind.echo,
         );
         final result = await widget.repository.uue.send(
           frozenUue!,
@@ -1169,6 +1170,7 @@ class _ComposeScreenState extends State<_ComposeScreen> {
           body: body.text,
           inReplyTo: widget.forward ? null : widget.original?.id,
           operationId: operationId,
+          useFooter: widget.forward || widget.kind == AreaKind.echo,
           cancellation: cancellation,
         );
       }

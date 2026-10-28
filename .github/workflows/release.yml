@@ -139,6 +139,7 @@ jobs:
           FFIDO_UPDATE_KEY_ID: ${{ vars.FFIDO_UPDATE_KEY_ID }}
           FFIDO_UPDATE_PRIVATE_KEY: ${{ secrets.FFIDO_UPDATE_PRIVATE_KEY }}
           FFIDO_PUBLICATION_READY: ${{ vars.FFIDO_PUBLICATION_READY }}
+          ANDROID_CERT_SHA256: ${{ vars.ANDROID_CERT_SHA256 }}
         run: |
           build/update-venv/bin/python scripts/release/publish.py build/packages --identity build/container/identity.json --check-only
           python3 scripts/release/container_publish.py build/container/image.tar \
@@ -153,4 +154,5 @@ jobs:
           FFIDO_UPDATE_PRIVATE_KEY: ${{ secrets.FFIDO_UPDATE_PRIVATE_KEY }}
           GH_TOKEN: ${{ github.token }}
           FFIDO_PUBLICATION_READY: ${{ vars.FFIDO_PUBLICATION_READY }}
+          ANDROID_CERT_SHA256: ${{ vars.ANDROID_CERT_SHA256 }}
         run: build/update-venv/bin/python scripts/release/publish.py build/packages --identity build/downloads/release-identity/identity.json

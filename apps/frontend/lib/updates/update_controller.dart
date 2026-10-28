@@ -12,6 +12,7 @@ import 'update_host_stub.dart'
     if (dart.library.io) 'update_host_io.dart'
     as host;
 import 'update_metadata.dart';
+import 'android_install_result.dart';
 import 'update_service.dart';
 
 enum UpdatePhase { idle, checking, available, downloading, installing, error }
@@ -33,6 +34,65 @@ class UpdateController extends ChangeNotifier {
   UpdatePhase phase = UpdatePhase.idle;
   AvailableUpdate? available;
   DateTime? lastCheck;
+  AndroidInstallResult? installResult;
+  Map<String, Object?> _installDiagnostic = {};
+  bool get isAndroid => service?.platform.os == 'android';
+
+  String get diagnosticSummary => const JsonEncoder.withIndent('  ').convert({
+    'installed': service?.installed.tag,
+    'installed_build': service?.installed.buildNumber,
+    'channel': channel,
+    ..._installDiagnostic,
+    if (installResult != null) 'outcome': installResult!.outcome,
+    if (installResult?.status != null) 'android_status': installResult!.status,
+  });
+
+  Future<void> _rememberInstall(AvailableUpdate update) async {
+    // Derive the public URL from the verified release, never from an error or redirect.
+    _installDiagnostic = {
+      'target': update.manifest.identity.tag,
+      'target_build': update.manifest.identity.buildNumber,
+      'sha256': update.package.sha256,
+      'source': updateAssetUri(
+        update.manifest.identity.tag,
+        update.package.file,
+      ).toString(),
+    };
+    installResult = null;
+    await preferences?.setString(
+      'ffido_android_diagnostic_v1',
+      jsonEncode(_installDiagnostic),
+    );
+  }
+
+  void _applyInstallResult(Object? value) {
+    final result = AndroidInstallResult.parse(value);
+    installResult = result;
+    phase = switch (result.outcome) {
+      'pending' => UpdatePhase.installing,
+      'success' || 'cancelled' || 'permission_denied' => UpdatePhase.available,
+      _ => UpdatePhase.error,
+    };
+    message = result.message;
+    startupFailure = result.outcome != 'success' && available == null;
+    notifyListeners();
+  }
+
+  Future<void> resume() async {
+    if (phase == UpdatePhase.downloading || phase == UpdatePhase.checking) {
+      return;
+    }
+    if (isAndroid) {
+      try {
+        final value = await native.invokeMapMethod<String, dynamic>('recover');
+        if (value != null) _applyInstallResult(value);
+      } on PlatformException {
+        // No verdict is inferred when the OS result is unavailable.
+      }
+    }
+    await check();
+  }
+
   bool get canExit => _guards.values.every((guard) => guard());
   bool get busy => {
     UpdatePhase.checking,
@@ -99,6 +159,10 @@ class UpdateController extends ChangeNotifier {
       }
       native.setMethodCallHandler((call) async {
         if (call.method == 'canExit') return canExit;
+        if (call.method == 'installResult' && isAndroid) {
+          _applyInstallResult(call.arguments);
+          return null;
+        }
         if (call.method == 'progress') {
           final fields = Map<String, dynamic>.from(call.arguments as Map);
           progress = (fields['progress'] as num?)?.toDouble() ?? 0;
@@ -111,8 +175,47 @@ class UpdateController extends ChangeNotifier {
         }
         return null;
       });
+      if (isAndroid) {
+        // Restore only validated public fields, never arbitrary persisted error text.
+        try {
+          final saved = updateObject(
+            jsonDecode(
+              preferences!.getString('ffido_android_diagnostic_v1') ?? '{}',
+            ),
+          );
+          final tag = saved['target'];
+          final hash = saved['sha256'];
+          final source = saved['source'];
+          if (tag is String &&
+              RegExp(r'^v\d+\.\d+\.\d+(?:-dev\.\d+\.[0-9a-f]{12})?$')
+                  .hasMatch(tag) &&
+              hash is String &&
+              RegExp(r'^[0-9a-f]{64}$').hasMatch(hash) &&
+              source is String &&
+              saved['target_build'] is int) {
+            final uri = Uri.parse(source);
+            validateUpdateUri(uri);
+            if (uri == updateAssetUri(tag, uri.pathSegments.last)) {
+              _installDiagnostic = {
+                'target': tag,
+                'target_build': saved['target_build'] as int,
+                'sha256': hash,
+                'source': source,
+              };
+            }
+          }
+        } catch (_) {
+          /* Ignore invalid local diagnostics. */
+        }
+      }
       final previousError = await host.consumeDesktopError();
       await check();
+      if (isAndroid) {
+        final recovered = await native.invokeMapMethod<String, dynamic>(
+          'recover',
+        );
+        if (recovered != null) _applyInstallResult(recovered);
+      }
       if (previousError != null) {
         startupFailure = true;
         phase = UpdatePhase.error;
@@ -218,6 +321,7 @@ class UpdateController extends ChangeNotifier {
     message = 'Загружаем обновление…';
     notifyListeners();
     try {
+      if (isAndroid) await _rememberInstall(update);
       void report(double value) {
         if (_cancelRequested) throw StateError('Загрузка отменена');
         progress = value;
@@ -286,19 +390,22 @@ class UpdateController extends ChangeNotifier {
           await host.installDesktop(path);
           return;
         }
-        final installed = await native.invokeMethod<bool>('install', {
-          'path': path,
-          'tag': update.manifest.identity.tag,
-        });
-        if (installed == false) {
-          throw StateError('Установка отменена; текущая версия сохранена');
-        }
+        final installed = await native.invokeMapMethod<String, dynamic>(
+          'install',
+          {'path': path, 'tag': update.manifest.identity.tag},
+        );
+        _applyInstallResult(installed);
+        return;
       }
       phase = UpdatePhase.available;
       message = 'Установка передана системе. Подтвердите обновление, если появится запрос.';
     } catch (error) {
       phase = UpdatePhase.error;
-      message = 'Не удалось установить обновление: $error';
+      if (isAndroid && error is PlatformException && error.details is Map) {
+        _applyInstallResult(error.details);
+      } else {
+        message = 'Не удалось установить обновление: $error';
+      }
     }
     notifyListeners();
   }

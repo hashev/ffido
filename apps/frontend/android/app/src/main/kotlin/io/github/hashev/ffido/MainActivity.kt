@@ -40,6 +40,11 @@ class MainActivity : FlutterActivity() {
             }
     }
 
+    override fun onDestroy() {
+        updater?.detach()
+        super.onDestroy()
+    }
+
     @Deprecated("Android callback retained for FlutterActivity compatibility")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         if (requestCode == AndroidUpdater.permissionRequest) { updater?.permissionReturned(); return }

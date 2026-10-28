@@ -1,3 +1,5 @@
+import 'package:fido/api/message_footer.dart';
+import 'package:fido/updates/update_controller.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -44,6 +46,65 @@ class LoginClient extends ApiClient {
 }
 
 void main() {
+  testWidgets('footer saves locally without login, validates and resets', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({});
+    final prefs = await SharedPreferences.getInstance();
+
+    final client = LoginClient();
+    addTearDown(client.dispose);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SettingsWidget(
+          client: client,
+          preferences: prefs,
+          footerSettings: MessageFooterSettings(prefs, '1.0.5'),
+          store: MemoryStore(),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(appUpdates.canExit, isTrue);
+    final scrollable = find.byType(Scrollable).first;
+    await tester.scrollUntilVisible(
+      find.byKey(const Key('tagline')),
+      200,
+      scrollable: scrollable,
+    );
+    await tester.enterText(find.byKey(const Key('tagline')), 'My tagline');
+    await tester.enterText(find.byKey(const Key('origin')), 'My origin');
+    expect(appUpdates.canExit, isFalse);
+    await tester.ensureVisible(find.text('Сохранить оформление'));
+    expect(
+      tester
+          .widget<FilledButton>(
+            find.widgetWithText(FilledButton, 'Сохранить оформление'),
+          )
+          .onPressed,
+      isNotNull,
+    );
+    expect(
+      tester
+          .widget<TextField>(find.byKey(const Key('tagline')))
+          .controller!
+          .text,
+      'My tagline',
+    );
+    await tester.tap(find.text('Сохранить оформление'));
+    await tester.pumpAndSettle();
+    expect(find.text('Оформление сохранено'), findsOneWidget);
+    expect(appUpdates.canExit, isTrue);
+    expect(prefs.getString(MessageFooterSettings.taglineKey), 'My tagline');
+    expect(prefs.getString(MessageFooterSettings.originKey), 'My origin');
+    expect(client.hasToken, isFalse);
+    await tester.ensureVisible(find.text('Сбросить оформление'));
+    await tester.tap(find.text('Сбросить оформление'));
+    await tester.pumpAndSettle();
+    expect(prefs.containsKey(MessageFooterSettings.taglineKey), isFalse);
+    expect(prefs.containsKey(MessageFooterSettings.originKey), isFalse);
+  });
+
   testWidgets('four fields login stores secrets securely and supports logout', (
     tester,
   ) async {
@@ -82,6 +143,11 @@ void main() {
       isFalse,
     );
     expect(prefs.getKeys().any((key) => prefs.get(key) == 'a' * 64), isFalse);
+    await tester.scrollUntilVisible(
+      find.byKey(const Key('password')),
+      -200,
+      scrollable: find.byType(Scrollable).first,
+    );
     expect(
       tester
           .widget<TextField>(find.byKey(const Key('password')))
@@ -94,6 +160,7 @@ void main() {
       'Серверное имя',
     );
     // Reconnecting on the same screen must not require typing the password again.
+    await tester.ensureVisible(find.text('Подключиться'));
     await tester.tap(find.text('Подключиться'));
     await tester.pumpAndSettle();
     expect(client.hasToken, isTrue);
