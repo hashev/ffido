@@ -1,5 +1,7 @@
 import 'dart:async';
 
+import 'files/image_actions.dart';
+
 import 'updates/update_host_stub.dart'
     if (dart.library.io) 'updates/update_host_io.dart'
     as update_host;
@@ -35,6 +37,7 @@ final AccountRepository accountRepository = AccountRepository(apiClient);
 Future<void> initializeApp() async {
   WidgetsFlutterBinding.ensureInitialized();
 
+  unawaited(cleanupImageShares());
   await DesktopProfile.initialize();
   DesktopProfile.observeIdentity(apiClient);
 

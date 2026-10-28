@@ -7,21 +7,30 @@ import 'package:flutter/material.dart';
 
 import '../api/api_transport.dart';
 import '../files/uue_files.dart';
+import '../files/image_actions.dart';
 import '../models/message.dart';
 import '../models/uue.dart';
 import '../repositories/uue_repository.dart';
 import '../utils/ftn_text.dart';
 import '../utils/uue_image.dart';
+import '../media/message_images.dart';
+import '../utils/message_links.dart';
+import 'message_link_text.dart';
+import 'external_image_preview.dart';
 
 class UueBody extends StatefulWidget {
   final UueRepository repository;
   final String conference;
   final Message message;
+  final MessageImages Function(String)? createImages;
+  final ImageActions? imageActions;
   const UueBody({
     super.key,
     required this.repository,
     required this.conference,
     required this.message,
+    this.createImages,
+    this.imageActions,
   });
   @override
   State<UueBody> createState() => _UueBodyState();
@@ -32,20 +41,33 @@ class _UueBodyState extends State<UueBody> {
   List<UuePart> parts = [];
   String? error;
   bool raw = false;
+  late final MessageImages images;
   late final int initialEpoch;
   late final StreamSubscription<int> sessionSubscription;
   @override
   void initState() {
     super.initState();
     initialEpoch = widget.repository.epoch;
+    images =
+        (widget.createImages?.call(widget.message.body) ??
+              MessageImages(widget.message.body))
+          ..addListener(imagesChanged);
+    images.more();
     sessionSubscription = widget.repository.sessionChanges.listen((_) {
+      images.invalidate();
       if (mounted) setState(() => parts = []);
     });
     unawaited(load());
   }
 
+  void imagesChanged() {
+    if (mounted) setState(() {});
+  }
+
   @override
   void dispose() {
+    images.removeListener(imagesChanged);
+    images.dispose();
     unawaited(cancellation.cancel());
     unawaited(sessionSubscription.cancel());
     super.dispose();
@@ -74,12 +96,40 @@ class _UueBodyState extends State<UueBody> {
     }
   }
 
-  Widget text(String value) => SelectableText.rich(
-    ftnTextSpan(value, Theme.of(context).colorScheme),
-    style: ftnTextStyle(Theme.of(context).colorScheme),
-  );
+  final shownImages = <Uri>{};
+  Widget text(String value) {
+    final urls = messageLinks(value)
+        .map((link) => link.uri.removeFragment())
+        .toSet();
+    final entries = images.entries
+        .take(images.visible)
+        .where(
+          (entry) => urls.contains(entry.uri) && shownImages.add(entry.uri),
+        )
+        .toList();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        MessageLinkText(value, actions: widget.imageActions),
+        for (final entry in entries)
+          ExternalImagePreview(
+            owner: images,
+            entry: entry,
+            actions: widget.imageActions,
+          ),
+      ],
+    );
+  }
+
+  Widget moreImages() => images.visible < images.entries.length
+      ? TextButton(
+          onPressed: images.more,
+          child: const Text('Загрузить ещё изображения'),
+        )
+      : const SizedBox.shrink();
   @override
   Widget build(BuildContext context) {
+    shownImages.clear();
     if (initialEpoch != widget.repository.epoch) return const SizedBox.shrink();
     if (raw || parts.isEmpty) {
       return Column(
@@ -92,6 +142,7 @@ class _UueBodyState extends State<UueBody> {
               child: const Text('Показать вложения'),
             ),
           text(widget.message.body),
+          moreImages(),
         ],
       );
     }
@@ -120,6 +171,7 @@ class _UueBodyState extends State<UueBody> {
     if (offset < bytes.length) {
       children.add(text(utf8.decode(bytes.sublist(offset))));
     }
+    children.add(moreImages());
     children.add(
       TextButton(
         onPressed: () => setState(() => raw = true),

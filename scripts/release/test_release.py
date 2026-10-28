@@ -166,7 +166,7 @@ class PublicationTest(unittest.TestCase):
                            application_id=android_audit.PACKAGE, version_name=self.identity['version'],
                            version_code=self.identity['build_number'], min_sdk=24, target_sdk=36,
                            debuggable=0, test_only=0, permissions=android_audit.PERMISSIONS,
-                           components=android_audit.COMPONENTS, declared_permissions=android_audit.DECLARED_PERMISSIONS, qa_markers_found=False, play_protect='not_checked',
+                           components=android_audit.COMPONENTS, image_provider=android_audit.IMAGE_PROVIDER, declared_permissions=android_audit.DECLARED_PERMISSIONS, qa_markers_found=False, play_protect='not_checked',
                            sha256=self.row['sha256'], file=self.file.name, size=self.file.stat().st_size)
         self.audit_file = pathlib.Path(str(self.file)+'.audit.json')
         self.audit_file.write_text(json.dumps(self.report))
@@ -354,7 +354,9 @@ class AndroidAuditTest(unittest.TestCase):
         import io
         for name, data in [('lib/arm64-v8a/libapp.so', b'prefix FFIDO_UPDATE_QA suffix'),
                            ('assets/flutter_assets/fixture.json', b'fixture'),
-                           ('classes.dex', b'update-qa.invalid')]:
+                           ('classes.dex', b'update-qa.invalid'),
+                           ('lib/arm64-v8a/libapp.so', b'FFIDO_IMAGE_QA'),
+                           ('classes.dex', b'Lorg/ffido/imageqa/ReceiverActivity;')]:
             with self.subTest(name=name), io.BytesIO() as output:
                 with zipfile.ZipFile(output, 'w') as archive:
                     archive.writestr(name, data)
@@ -427,17 +429,38 @@ class AndroidAuditTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'explicit'):
             android_audit.manifest_record(text.replace('        A: android:exported=(type 0x12)0xffffffff', ''))
 
+    def test_image_provider_resolves_shrunk_resource_names_without_weakening_paths(self):
+        resource_id = '0x7f100002'
+        prefix = '    resource '+resource_id+' '+android_audit.PACKAGE+':xml/image_share_paths: t=0x03\n'
+        text = prefix+'      (string8) "res/XH.xml"\n'+prefix+'      (string16) "res/night.xml"\n'
+        self.assertEqual(android_audit.image_resource_files(text, resource_id), ['res/XH.xml', 'res/night.xml'])
+        for bad in ('', text.replace('res/XH.xml', '/tmp/outside.xml'), text.replace('res/XH.xml', 'res/../outside.xml')):
+            with self.subTest(text=bad), self.assertRaises(ValueError):
+                android_audit.image_resource_files(bad, resource_id)
+
+    def test_image_provider_paths_reject_broad_or_additional_roots(self):
+        text = 'E: paths\n  E: cache-path\n    A: name="images"\n    A: path="image-share/"\n'
+        self.assertEqual(android_audit.image_paths_record(text), {'name': 'images', 'path': 'image-share/'})
+        for bad in (text.replace('image-share/', '.'), text.replace('cache-path', 'root-path'),
+                    text+'  E: external-path\n    A: name="external"\n    A: path="."\n',
+                    text+'    A: extra="unapproved"\n'):
+            with self.subTest(text=bad), self.assertRaises(ValueError):
+                android_audit.image_paths_record(bad)
+
     def test_rejects_unapproved_security_and_identity_changes(self):
         identity = {'version': '1.0.4', 'build_number': 1019, 'sha': 'a'*40, 'stable': True, 'tag': 'v1.0.4'}
         record = dict(schema_version=1, identity=identity, certificate_sha256='6'*64,
                       application_id=android_audit.PACKAGE, version_name='1.0.4', version_code=1019,
                       min_sdk=24, target_sdk=36, debuggable=0, test_only=0,
-                      permissions=android_audit.PERMISSIONS, components=android_audit.COMPONENTS,
+                      permissions=android_audit.PERMISSIONS, components=android_audit.COMPONENTS, image_provider=android_audit.IMAGE_PROVIDER,
                       declared_permissions=android_audit.DECLARED_PERMISSIONS, qa_markers_found=False, play_protect='not_checked')
         android_audit.validate_record(record, identity, '6'*64)
         for change in ({'debuggable': 0xffffffff}, {'test_only': 0xffffffff}, {'application_id': 'foreign'},
                        {'version_code': 1020}, {'version_name': '1.0.5'}, {'identity': {}},
                        {'permissions': android_audit.PERMISSIONS+['android.permission.READ_SMS']},
+                       {'image_provider': None}, {'image_provider': {**android_audit.IMAGE_PROVIDER, 'path': '.'}},
+                       {'components': android_audit.COMPONENTS+[{'kind': 'provider', 'name': 'foreign', 'exported': False, 'permission': None}]},
+                       {'permissions': android_audit.PERMISSIONS+['android.permission.WRITE_EXTERNAL_STORAGE']},
                        {'components': []}, {'declared_permissions': []}, {'qa_markers_found': True}, {'target_sdk': 23},
                        {'certificate_sha256': '0'*64}, {'play_protect': 'passed'}):
             with self.subTest(change=change), self.assertRaises(ValueError):

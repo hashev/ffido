@@ -1,5 +1,8 @@
 import 'package:flutter/material.dart';
 
+import 'uue_text.dart';
+export 'uue_text.dart';
+
 final _initial = RegExp(r'[\p{L}\p{N}]', unicode: true);
 
 /// Only a contiguous FTN quote prefix counts; an expression `a > b` does not.
@@ -39,16 +42,6 @@ TextStyle ftnTextStyle(ColorScheme scheme) => TextStyle(
   height: 1.5,
   color: scheme.onSurface,
 );
-
-bool uueDataLine(String line) {
-  if (line.isEmpty) return false;
-  final count = (line.codeUnitAt(0) - 32) & 63;
-  return count <= 45 &&
-      line.length == 1 + 4 * ((count + 2) ~/ 3) &&
-      line.codeUnits.every((c) => c >= 32 && c <= 96);
-}
-
-final uueBeginLine = RegExp(r'^begin [0-7]{3,4} [^\r\n]+$');
 
 TextSpan ftnTextSpan(
   String text,

@@ -12,9 +12,11 @@ import zipfile
 PACKAGE = 'io.github.hashev.ffido'
 PERMISSIONS = sorted(['android.permission.INTERNET', 'android.permission.REQUEST_INSTALL_PACKAGES',
                       PACKAGE+'.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION'])
-# Baseline inspected in the official v1.0.4 APK. DUMP protects the AndroidX receiver.
+# Official v1.0.4 baseline plus the approved private image provider.
+# DUMP protects the AndroidX receiver.
 COMPONENTS = sorted([
     {'kind': 'activity', 'name': PACKAGE+'.MainActivity', 'exported': True, 'permission': None},
+    {'kind': 'provider', 'name': PACKAGE+'.ImageFileProvider', 'exported': False, 'permission': None},
     {'kind': 'receiver', 'name': PACKAGE+'.UpdateStatusReceiver', 'exported': False, 'permission': None},
     {'kind': 'provider', 'name': 'androidx.startup.InitializationProvider', 'exported': False, 'permission': None},
     {'kind': 'receiver', 'name': 'androidx.profileinstaller.ProfileInstallReceiver', 'exported': True,
@@ -22,14 +24,15 @@ COMPONENTS = sorted([
 ], key=lambda row: row['name'])
 DECLARED_PERMISSIONS = [{'name': PACKAGE+'.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION', 'protection_level': 2}]
 IDENTITY_ASSET = 'assets/flutter_assets/assets/updates/identity.json'
-QA_MARKERS = (b'FFIDO_UPDATE_QA', b'ffido_update_qa_sentinel', b'update-qa.invalid')
+IMAGE_PROVIDER = {'authorities': PACKAGE+'.images', 'grant_uri_permissions': 0xffffffff, 'path': 'image-share/', 'name': 'images', 'resource': PACKAGE+':xml/image_share_paths'}
+QA_MARKERS = (b'org/ffido/imageqa', b'FFIDO_IMAGE_QA', b'ffido-media-qa.invalid', b'FFIDO_UPDATE_QA', b'ffido_update_qa_sentinel', b'update-qa.invalid')
 
 
 def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def manifest_tree(text):
+def manifest_tree(text, expected_root="manifest"):
     """Parse aapt's binary-XML dump, retaining nesting and typed attributes."""
     root, stack = None, []
     for line in text.splitlines():
@@ -58,7 +61,7 @@ def manifest_tree(text):
                     # Resource references remain explicit; security fields must be literal.
                     value = value.strip()
                 stack[-1][1]['attrs'][attr[1]] = value
-    if not root or root['tag'] != 'manifest':
+    if not root or root['tag'] != expected_root:
         raise ValueError('Cannot read binary Android manifest')
     return root
 
@@ -73,6 +76,7 @@ def manifest_record(text):
     app = single('application')
     attrs, sdk = root['attrs'], single('uses-sdk')['attrs']
     components = []
+    image_provider = None
     for node in app['children']:
         if node['tag'] not in ('activity', 'activity-alias', 'receiver', 'service', 'provider'):
             continue
@@ -82,12 +86,20 @@ def manifest_record(text):
             name = attrs['package']+name
         elif '.' not in name:
             name = attrs['package']+'.'+name
+        if name == PACKAGE+'.ImageFileProvider':
+            metadata = [child for child in node['children'] if child['tag'] == 'meta-data']
+            if len(metadata) != 1 or len(node['children']) != 1 or any(field in fields for field in ('android:readPermission', 'android:writePermission')):
+                raise ValueError('Unexpected image provider grants or metadata')
+            image_provider = {'authorities': fields.get('android:authorities'),
+                              'grant_uri_permissions': fields.get('android:grantUriPermissions'),
+                              'resource': next((child['attrs'].get('android:resource') for child in node['children']
+                                                if child['tag'] == 'meta-data' and child['attrs'].get('android:name') == 'android.support.FILE_PROVIDER_PATHS'), None)}
         exported = fields.get('android:exported')
         if exported not in (0, 0xffffffff):
             raise ValueError('Component export must be explicit: '+name)
         components.append({'kind': node['tag'], 'name': name, 'exported': exported != 0,
                            'permission': fields.get('android:permission', app['attrs'].get('android:permission'))})
-    return {'application_id': attrs.get('package'), 'version_name': attrs.get('android:versionName'),
+    return {'image_provider': image_provider, 'application_id': attrs.get('package'), 'version_name': attrs.get('android:versionName'),
             'version_code': attrs.get('android:versionCode'),
             'min_sdk': sdk.get('android:minSdkVersion'), 'target_sdk': sdk.get('android:targetSdkVersion'),
             'debuggable': app['attrs'].get('android:debuggable', 0),
@@ -100,6 +112,27 @@ def manifest_record(text):
             'components': sorted(components, key=lambda row: row['name'])}
 
 
+def image_paths_record(text):
+    root = manifest_tree(text, 'paths')
+    if root['attrs'] or len(root['children']) != 1:
+        raise ValueError('Unexpected image provider paths')
+    child = root['children'][0]
+    if child['tag'] != 'cache-path' or child['children'] or child['attrs'] != {'name': 'images', 'path': 'image-share/'}:
+        raise ValueError('Image provider must expose only the private image subcache')
+    return child['attrs']
+
+
+def image_resource_files(resources, resource_id):
+    # Resource shrinking can rename res/xml/image_share_paths.xml to res/XH.xml.
+    # Follow the approved resource ID, then inspect every configuration's XML.
+    pattern = (r'^\s*resource '+re.escape(resource_id)+' '+re.escape(PACKAGE)+
+               r':xml/image_share_paths:[^\n]*\n\s+\(string(?:8|16)\) "([^"\n]+)"')
+    files = sorted(set(re.findall(pattern, resources, re.M)))
+    if not files or any(not name.startswith('res/') or not name.endswith('.xml') or '..' in name.split('/') for name in files):
+        raise ValueError('Cannot resolve the approved image provider path resource')
+    return files
+
+
 def validate_record(record, identity, certificate):
     fingerprint = certificate.replace(':', '').lower()
     if not re.fullmatch('[0-9a-f]{64}', fingerprint):
@@ -108,7 +141,7 @@ def validate_record(record, identity, certificate):
                 'application_id': PACKAGE, 'version_name': identity['version'],
                 'version_code': identity['build_number'], 'min_sdk': 24, 'target_sdk': 36,
                 'debuggable': 0, 'test_only': 0, 'permissions': PERMISSIONS, 'components': COMPONENTS,
-                'declared_permissions': DECLARED_PERMISSIONS,
+                'declared_permissions': DECLARED_PERMISSIONS, 'image_provider': IMAGE_PROVIDER,
                 'qa_markers_found': False, 'play_protect': 'not_checked'}
     for field, value in expected.items():
         if record.get(field) != value:
@@ -117,7 +150,7 @@ def validate_record(record, identity, certificate):
 
 def contains_qa(archive):
     for name in archive.namelist():
-        if any(marker in name.lower() for marker in ('fixture', 'integration_test', 'update_driver')):
+        if any(marker in name.lower() for marker in ('fixture', 'integration_test', 'update_driver', 'image_preview_qa')):
             return True
         if name.endswith(('/libapp.so', '.dex', '.dill', '.snapshot')):
             data = archive.read(name)
@@ -160,6 +193,15 @@ def audit(apk, identity, certificate, sdk=None):
     cert = run(tools/'apksigner', 'verify', '--print-certs', apk)
     fingerprint = verify_certificate(cert, certificate)
     record = manifest_record(run(tools/'aapt', 'dump', 'xmltree', apk, 'AndroidManifest.xml'))
+    # Parse the provider resource separately; it must expose only the image subcache.
+    resources = run(tools/'aapt', 'dump', '--values', 'resources', apk)
+    resource_id = re.search(r'spec resource (0x[0-9a-f]+) '+re.escape(PACKAGE)+r':xml/image_share_paths:', resources)
+    if not resource_id or record['image_provider'] is None or record['image_provider'].get('resource') != '@'+resource_id[1]:
+        raise ValueError('Image provider resource differs from the approved path resource')
+    for resource_file in image_resource_files(resources, resource_id[1]):
+        path_dump = run(tools/'aapt', 'dump', 'xmltree', apk, resource_file)
+        record['image_provider'].update(image_paths_record(path_dump))
+    record['image_provider']['resource'] = PACKAGE+':xml/image_share_paths'
     with zipfile.ZipFile(apk) as archive:
         if apk.read_bytes()[:4] != b'PK\x03\x04' or archive.testzip() is not None:
             raise ValueError('Invalid APK ZIP structure')

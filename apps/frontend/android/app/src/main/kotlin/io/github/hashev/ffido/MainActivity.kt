@@ -7,6 +7,7 @@ import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 
 class MainActivity : FlutterActivity() {
+    private var imageActions: AndroidImageActions? = null
     private var updater: AndroidUpdater? = null
     private var pendingResult: MethodChannel.Result? = null
     private var pendingBytes: ByteArray? = null
@@ -14,6 +15,7 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        imageActions = AndroidImageActions(this, flutterEngine.dartExecutor.binaryMessenger)
         updater = AndroidUpdater(this, flutterEngine.dartExecutor.binaryMessenger)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "org.ffido/files")
             .setMethodCallHandler { call, result ->
@@ -41,12 +43,14 @@ class MainActivity : FlutterActivity() {
     }
 
     override fun onDestroy() {
+        imageActions?.detach()
         updater?.detach()
         super.onDestroy()
     }
 
     @Deprecated("Android callback retained for FlutterActivity compatibility")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        if (requestCode == AndroidImageActions.requestCode) { imageActions?.returned(resultCode); return }
         if (requestCode == AndroidUpdater.permissionRequest) { updater?.permissionReturned(); return }
         if (requestCode != saveRequest) { super.onActivityResult(requestCode, resultCode, data); return }
         val result = pendingResult ?: return
