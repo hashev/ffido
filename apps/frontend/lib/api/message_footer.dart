@@ -4,13 +4,9 @@ import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'api_exceptions.dart';
-import 'api_transport.dart';
-import 'generated/ffido/v1/ffido.pb.dart' as wire;
 
-/// Only the authenticated server session can advertise support for this extension.
-abstract interface class MessageFooterSupport {
-  bool get supportsMessageFooter;
-}
+export 'message_footer_snapshot.dart';
+import 'generated/ffido/v1/ffido.pb.dart' as wire;
 
 class MessageFooterSettings {
   static const taglineKey = 'ffido_tagline_v1';
@@ -69,44 +65,5 @@ class MessageFooterSettings {
     validate(tagline, 'tagline');
     validate(origin, 'origin');
     return wire.MessageFooter(tagline: tagline, origin: origin);
-  }
-}
-
-/// Freeze the footer with the operation, including absence on legacy servers.
-/// Session changes discard all snapshots; failed preflight can be retried after reset.
-class MessageFooterSnapshots {
-  final ApiTransport api;
-  final Map<String, Future<wire.MessageFooter?>> _operations = {};
-  int _epoch = -1;
-  MessageFooterSnapshots(this.api);
-  Future<wire.MessageFooter?> capture(
-    String operation, {
-    bool enabled = true,
-  }) async {
-    if (!enabled || api is! MessageFooterSupport) return null;
-    if (_epoch != api.epoch) {
-      _operations.clear();
-      _epoch = api.epoch;
-    }
-    final future = _operations.putIfAbsent(operation, () async {
-      final settings = await MessageFooterSettings.load();
-      if (!(api as MessageFooterSupport).supportsMessageFooter) {
-        if (settings.hasOverrides) {
-          throw const ValidationException(
-            message: 'Сервер не поддерживает Tagline/Origin. Обновите сервер или сбросьте оформление; черновик сохранён.',
-          );
-        }
-        return null;
-      }
-      return settings.snapshot();
-    });
-    try {
-      return (await future)?.deepCopy();
-    } catch (_) {
-      if (identical(_operations[operation], future)) {
-        _operations.remove(operation);
-      }
-      rethrow;
-    }
   }
 }

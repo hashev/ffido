@@ -1,4 +1,4 @@
-import 'message_footer.dart';
+import 'message_footer_snapshot.dart';
 
 import 'dart:async';
 import 'dart:convert';

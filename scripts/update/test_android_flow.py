@@ -298,6 +298,8 @@ def run(args):
         # Do not silently replace a real device install: this emulator is explicit.
         device('uninstall', PACKAGE) if PACKAGE in device('shell', 'pm', 'list', 'packages', PACKAGE) else None
         device('install', str(web/'A.apk'))
+        # Fresh A must not inherit restored data from another QA run.
+        assert device('shell', 'pm', 'clear', PACKAGE).strip() == 'Success'
         device('logcat', '-b', 'main', '-c')
         events = QAEvents(adb, args.serial, directory)
         device('shell', 'am', 'start', '-W', '-n', PACKAGE+'/.MainActivity')

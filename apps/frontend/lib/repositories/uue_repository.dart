@@ -1,4 +1,4 @@
-import '../api/message_footer.dart';
+import '../api/message_footer_snapshot.dart';
 
 import 'dart:math';
 import 'dart:typed_data';
