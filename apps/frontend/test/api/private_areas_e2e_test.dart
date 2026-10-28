@@ -1,3 +1,7 @@
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:fido/api/message_footer.dart';
+import 'package:fido/repositories/message_repository.dart';
+
 // Optional deployment check against the real C++ server and isolated JAM files.
 import 'dart:io';
 import 'dart:typed_data';
@@ -11,6 +15,7 @@ import 'package:fido/api/generated/ffido/v1/ffido.pb.dart' as wire;
 import 'package:fido/api/model_mapping.dart';
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
   final binary = Platform.environment['FFIDO_E2E_BACKEND'];
   test(
     'real Flutter transport isolates owner and two points across server restart',
@@ -212,6 +217,30 @@ LocalArea OLD ${root.path}/OLD -b Squish
       );
       expect(old.statisticsKnown, isFalse);
       expect(old.unsupportedFormat, isTrue);
+      expect(api.supportsMessageFooter, isTrue);
+      SharedPreferences.setMockInitialValues({});
+      final footer = await MessageFooterSettings.load();
+      await footer.save('FFIDO e2e', 'https://github.com/hashev/ffido');
+      final echo = catalog.conferences.firstWhere(
+        (c) => c.kind == wire.AreaKind.AREA_KIND_ECHO && c.canPost,
+      );
+      final custom = await MessageRepository(api).sendMessage(
+        conferenceId: echo.id,
+        toName: 'All',
+        toAddress: '',
+        subject: 'Footer test',
+        body: 'Body',
+        operationId: 'e2e-footer',
+      );
+      final customDetail = await api.getMessage(
+        wire.MessageReference(conferenceId: echo.id, messageId: custom.id),
+      );
+      expect(
+        customDetail.body,
+        contains(
+          '--- FFIDO e2e\n * Origin: https://github.com/hashev/ffido (2:1/2.1)',
+        ),
+      );
       final request = wire.CreateMessageRequest(
         conferenceId: net,
         operationId: 'e2e-net',
@@ -219,6 +248,10 @@ LocalArea OLD ${root.path}/OLD -b Squish
         toAddress: '2:1/3.4',
         subject: 'Н тема',
         body: 'Н текст',
+        footer: wire.MessageFooter(
+          tagline: 'Ignored for netmail',
+          origin: 'Ignored',
+        ),
       );
       final sent = await api.createMessage(request);
       final detail = await api.getMessage(sent.message);

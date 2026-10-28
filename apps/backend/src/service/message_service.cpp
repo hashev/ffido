@@ -33,6 +33,23 @@ std::string NormalizeOutgoingText(std::string_view text) {
   return result;
 }
 
+std::expected<void, domain::ApiError> ValidateFooter(const domain::CreateMessageRequest& request,
+                                                     std::string_view encoding) {
+  if (request.footer) {
+    for (const auto& [name, text] :
+         {std::pair{"tagline", &request.footer->tagline}, std::pair{"origin", &request.footer->origin}}) {
+      if (text->empty() || text->size() > 256 || !storage::ConvertText(*text, "UTF-8", "UTF-8") ||
+          std::any_of(text->begin(), text->end(), [](unsigned char c) { return c < 32 || c == 127; }))
+        return std::unexpected(domain::ApiError::Validation(
+            std::vector<domain::ErrorDetail>{{name, "Use a single line of 1-256 UTF-8 bytes without controls"}}));
+      if (!storage::ConvertText(NormalizeOutgoingText(*text), "UTF-8", encoding))
+        return std::unexpected(domain::ApiError::Validation(
+            std::vector<domain::ErrorDetail>{{name, "Footer cannot be represented in configured JAM encoding"}}));
+    }
+  }
+  return {};
+}
+
 std::string OriginAddress(const msgapi::JamMessage& message) {
   auto address = message.origin_address();
   if (!address.empty())
@@ -305,6 +322,8 @@ std::expected<domain::CreateMessageResponse, domain::ApiError> MessageService::C
       !safe(request.body, msgapi::jam_wire::kMaxBody - 256, true) || !safe(request.to_name, 256, false) ||
       (!request.to_address.empty() && !ValidFtnAddress(request.to_address)))
     return std::unexpected(domain::ApiError::Validation("Invalid operation, recipient, subject or body"));
+  if (auto footer = ValidateFooter(request, encoding_); !footer)
+    return std::unexpected(footer.error());
   auto profile = metadata_->GetProfile(user);
   if (!profile)
     return std::unexpected(profile.error());
@@ -348,6 +367,11 @@ std::expected<domain::CreateMessageResponse, domain::ApiError> MessageService::C
     for (const auto& field : {crosspost->profile.name, crosspost->profile.address, crosspost->generation,
                               crosspost->msgid, crosspost->to_name, crosspost->to_address})
       payload += std::to_string(field.size()) + ":" + field;
+  }
+  if (request.footer) {
+    payload += "FOOTER1:";
+    for (const auto& text : {request.footer->tagline, request.footer->origin})
+      payload += std::to_string(text.size()) + ":" + text;
   }
   auto hashed = Sha256(payload);
   if (!hashed)
@@ -460,8 +484,11 @@ std::expected<domain::CreateMessageResponse, domain::ApiError> MessageService::C
   }
   if (!body.empty() && body.back() != '\r')
     body += '\r';
-  if (kind == AreaKind::kEcho)
-    body += "--- FFIDO\r * Origin: FFIDO (" + profile->address + ")\r";
+  if (kind == AreaKind::kEcho) {
+    const auto tagline = request.footer ? request.footer->tagline : "FFIDO";
+    const auto origin = request.footer ? request.footer->origin : "FFIDO";
+    body += "--- " + tagline + "\r * Origin: " + origin + " (" + profile->address + ")\r";
+  }
   message.SetText(body);
   message.AddRawSubField(msgapi::JamSubFieldType::kFtsKludge, "PID: FFIDO gRPC");
   if (uue)
@@ -581,9 +608,13 @@ std::expected<domain::CreateCrosspostResponse, domain::ApiError> MessageService:
   auto allowed = check_permissions();
   if (!allowed)
     return std::unexpected(allowed.error());
+  if (auto footer = ValidateFooter(request, encoding_); !footer)
+    return std::unexpected(footer.error());
   // Hash the input, not mutable derived fields such as profile or display names.
   Json input = {std::string(conference), additional,   request.to_name,    request.to_address,
                 request.subject,         request.body, request.in_reply_to};
+  if (request.footer)
+    input.push_back({{"tagline", request.footer->tagline}, {"origin", request.footer->origin}});
   auto hash = Sha256(input.dump());
   if (!hash)
     return std::unexpected(hash.error());
@@ -616,6 +647,8 @@ std::expected<domain::CreateCrosspostResponse, domain::ApiError> MessageService:
                 {"to_address", request.to_address},
                 {"body", block + "\n" + request.body},
                 {"copies", Json::array()}};
+    if (request.footer)
+      manifest["footer"] = {{"tagline", request.footer->tagline}, {"origin", request.footer->origin}};
     // Validate the parent and resolve its recipient using the same composer path.
     auto probe = request;
     std::array<unsigned char, 16> probe_nonce{};
@@ -708,6 +741,10 @@ std::expected<domain::CreateCrosspostResponse, domain::ApiError> MessageService:
     CrosspostPublishOptions options{profile, generation, copy.at("msgid"), manifest.at("to_name"),
                                     manifest.at("to_address")};
     auto child = request;
+    if (manifest.contains("footer"))
+      child.footer = domain::MessageFooter{manifest["footer"]["tagline"], manifest["footer"]["origin"]};
+    else
+      child.footer.reset();
     child.operation_id = key;
     child.body = manifest.at("body");
     if (i)

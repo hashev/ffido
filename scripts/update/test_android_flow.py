@@ -304,7 +304,7 @@ def run(args):
         def records():
             return events.records()
         def ready(stage):
-            return next((value for value in records() if value.get('stage') == stage and value.get('preferences') and value.get('secureSession')), None)
+            return next((value for value in records() if value.get('stage') == stage and value.get('preferences') and value.get('secureSession') and value.get('footerPreferences')), None)
         wait(lambda: ready('A'))
         def nodes():
             return window_nodes(device, directory)
@@ -336,17 +336,35 @@ def run(args):
         count = len(records()); click('Cancel')
         assert wait(lambda: result_since(count)) == 'cancelled'
         checks.extend(['pending_user_action', 'installer_cancelled'])
+        if args.process_restart:
+            # am kill deliberately spares processes referenced by a pending installer.
+            # Root is used only on an explicitly selected disposable QA emulator;
+            # unlike force-stop, SIGKILL preserves delivery to the private receiver.
+            click('Install B')
+            wait(lambda: any(node.get('text', '').casefold() == 'cancel' for node in nodes()))
+            assert 'uid=0' in device('shell', 'su', '0', 'id')
+            pid = device('shell', 'pidof', PACKAGE).strip()
+            assert re.fullmatch(r'\d+', pid)
+            device('shell', 'su', '0', 'kill', '-9', pid)
+            wait(lambda: not device('shell', 'pidof '+PACKAGE+' || true').strip())
+            click('Cancel')
+            count = len(records())
+            device('shell', 'am', 'start', '-W', '-n', PACKAGE+'/.MainActivity')
+            assert wait(lambda: result_since(count)) == 'cancelled'
+            checks.append('cancelled_result_after_process_restart')
         for name, expected in [('foreign-key', 'Подпись APK отличается'), ('foreign-id', 'Другой пакет'), ('A', 'Другой пакет'), ('lower', 'Другой пакет')]:
             count = len(records()); click('Install '+name)
             value = wait(lambda: result_since(count))
             assert expected in value, value
             checks.append('rejected_'+name)
         click('Install B'); click(('Update', 'Install'))
-        print('Waiting for system installation; if Play Protect requests a scan for the QA key, use More details → Install without scanning. Do not upload the APK.', flush=True)
+        print('Installer QA only. Play Protect is not checked by this fixture test; a warning or block must be recorded separately. Do not disable protection or upload private QA fixtures.', flush=True)
         wait(lambda: 'versionCode=41002' in device('shell', 'dumpsys', 'package', PACKAGE))
         launch_updated(device, lambda: ready('B'))
+        wait(lambda: any(row.get('stage') == 'B' and row.get('recovered') == 'success' for row in records()))
+        checks.append('successful_result_after_package_replacement')
         if metadata['production_certificate']: assert any(row.get('manifestVerified') is True for row in records())
-        result = {'production_certificate': bool(args.production_keys), 'production_update_manifest_verified': metadata['production_certificate'], 'certificate_sha256': metadata['certificate_sha256'], 'api': api, 'from': 41001, 'to': 41002, 'release_apks': True, 'system_installer': True, 'same_ephemeral_certificate': not bool(args.production_keys), 'same_certificate': True, 'preferences_preserved': True, 'secure_session_preserved': True, 'checks': checks}
+        result = {'production_certificate': bool(args.production_keys), 'production_update_manifest_verified': metadata['production_certificate'], 'certificate_sha256': metadata['certificate_sha256'], 'api': api, 'from': 41001, 'to': 41002, 'release_apks': True, 'system_installer': True, 'same_ephemeral_certificate': not bool(args.production_keys), 'same_certificate': True, 'preferences_preserved': True, 'secure_session_preserved': True, 'footer_preferences_preserved': True, 'checks': checks, 'play_protect': {'status': 'not_checked', 'reason': 'isolated installer fixtures; not a certified-device security acceptance', 'apk_sha256': hashlib.sha256((web/'B.apk').read_bytes()).hexdigest()}}
         (directory/'result.json').write_text(json.dumps(result, indent=2)+'\n')
         (directory/'device.log').write_text(device('logcat', '-d', '-s', 'flutter:I', '*:S'))
         print(json.dumps(result))
@@ -379,6 +397,7 @@ if __name__ == '__main__':
     parser.add_argument('--prebuilt-b', type=pathlib.Path)
     parser.add_argument('--prepare-only', action='store_true')
     parser.add_argument('--fixtures', type=pathlib.Path)
+    parser.add_argument('--process-restart', action='store_true', help='Also verify process death on a rootable disposable QA emulator')
     parser.add_argument('--production-keys', type=pathlib.Path, help='Read production keys in place, only on the selected disposable emulator')
     args = parser.parse_args()
     if args.production_keys: args.production_keys = args.production_keys.resolve()

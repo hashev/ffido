@@ -12,6 +12,7 @@ from unittest.mock import patch
 HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 from update_metadata import COMPATIBILITY, package_platform, release_metadata
+import android_audit
 
 
 def load(name):
@@ -160,6 +161,29 @@ class PublicationTest(unittest.TestCase):
                         **package_platform('client', 'android', 'universal', 'API 24 (Android 7)'))
         self.sidecar = self.root/'client.package.json'
         self.sidecar.write_text(json.dumps(self.row))
+        self.certificate = '6'*64
+        self.report = dict(schema_version=1, identity=self.identity, certificate_sha256=self.certificate,
+                           application_id=android_audit.PACKAGE, version_name=self.identity['version'],
+                           version_code=self.identity['build_number'], min_sdk=24, target_sdk=36,
+                           debuggable=0, test_only=0, permissions=android_audit.PERMISSIONS,
+                           components=android_audit.COMPONENTS, declared_permissions=android_audit.DECLARED_PERMISSIONS, qa_markers_found=False, play_protect='not_checked',
+                           sha256=self.row['sha256'], file=self.file.name, size=self.file.stat().st_size)
+        self.audit_file = pathlib.Path(str(self.file)+'.audit.json')
+        self.audit_file.write_text(json.dumps(self.report))
+        environment = patch.dict(os.environ, {'ANDROID_CERT_SHA256': self.certificate})
+        environment.start()
+        self.addCleanup(environment.stop)
+
+    def test_audit_is_required_and_tied_to_published_apk(self):
+        self.assertEqual(publisher.inventory(self.root, self.identity, [self.row['id']]), [self.row])
+        for change in ({'sha256': '0'*64}, {'identity': {}}, {'debuggable': 1},
+                       {'permissions': []}, {'certificate_sha256': '0'*64}):
+            self.audit_file.write_text(json.dumps({**self.report, **change}))
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                publisher.inventory(self.root, self.identity, [self.row['id']])
+        self.audit_file.unlink()
+        with self.assertRaises(FileNotFoundError):
+            publisher.inventory(self.root, self.identity, [self.row['id']])
 
     def test_incomplete_unsigned_mixed_and_corrupted(self):
         for updates, expected in [({}, ['missing']), ({'signing': 'unsigned'}, [self.row['id']]),
@@ -322,6 +346,71 @@ class PackagingGateTest(unittest.TestCase):
                                           ('Release signer 123456', 'does not match')]:
                 with patch.object(module, 'ROOT', root), patch.object(module, 'run', return_value=certificate), patch.dict(os.environ, environment), self.assertRaisesRegex(ValueError, message):
                     module.package('client', 'android', 'universal', {'tag': 'test'}, root/'out', root/'build', root/'deps', True)
+
+
+class AndroidAuditTest(unittest.TestCase):
+    def test_known_qa_entrypoint_is_detected_inside_native_code(self):
+        import zipfile
+        import io
+        for name, data in [('lib/arm64-v8a/libapp.so', b'prefix FFIDO_UPDATE_QA suffix'),
+                           ('assets/flutter_assets/fixture.json', b'fixture'),
+                           ('classes.dex', b'update-qa.invalid')]:
+            with self.subTest(name=name), io.BytesIO() as output:
+                with zipfile.ZipFile(output, 'w') as archive:
+                    archive.writestr(name, data)
+                with zipfile.ZipFile(output) as archive:
+                    self.assertTrue(android_audit.contains_qa(archive))
+        with io.BytesIO() as output:
+            with zipfile.ZipFile(output, 'w') as archive:
+                archive.writestr('lib/arm64-v8a/libapp.so', b'ordinary release')
+            with zipfile.ZipFile(output) as archive:
+                self.assertFalse(android_audit.contains_qa(archive))
+
+
+    def test_manifest_nesting_typed_attributes_and_exported_component(self):
+        text = """N: android=http://schemas.android.com/apk/res/android
+  E: manifest
+    A: package="io.github.hashev.ffido"
+    A: android:versionCode(0x0101021b)=(type 0x10)0x3fb
+    A: android:versionName(0x0101021c)="1.0.4" (Raw: "1.0.4")
+    E: uses-sdk
+      A: android:minSdkVersion(0x0101020c)=(type 0x10)0x18
+      A: android:targetSdkVersion(0x01010270)=(type 0x10)0x24
+    E: uses-permission
+      A: android:name="android.permission.INTERNET"
+    E: application
+      A: android:debuggable=(type 0x12)0x0
+      E: activity
+        A: android:name=".MainActivity"
+        A: android:exported=(type 0x12)0xffffffff
+        E: intent-filter
+          E: action
+            A: android:name="android.intent.action.MAIN"
+"""
+        record = android_audit.manifest_record(text)
+        self.assertEqual(record['version_code'], 1019)
+        self.assertEqual(record['min_sdk'], 24)
+        self.assertEqual(record['target_sdk'], 36)
+        self.assertEqual(record['permissions'], ['android.permission.INTERNET'])
+        self.assertEqual(record['components'], [next(row for row in android_audit.COMPONENTS if row['kind'] == 'activity')])
+        with self.assertRaisesRegex(ValueError, 'explicit'):
+            android_audit.manifest_record(text.replace('        A: android:exported=(type 0x12)0xffffffff', ''))
+
+    def test_rejects_unapproved_security_and_identity_changes(self):
+        identity = {'version': '1.0.4', 'build_number': 1019, 'sha': 'a'*40, 'stable': True, 'tag': 'v1.0.4'}
+        record = dict(schema_version=1, identity=identity, certificate_sha256='6'*64,
+                      application_id=android_audit.PACKAGE, version_name='1.0.4', version_code=1019,
+                      min_sdk=24, target_sdk=36, debuggable=0, test_only=0,
+                      permissions=android_audit.PERMISSIONS, components=android_audit.COMPONENTS,
+                      declared_permissions=android_audit.DECLARED_PERMISSIONS, qa_markers_found=False, play_protect='not_checked')
+        android_audit.validate_record(record, identity, '6'*64)
+        for change in ({'debuggable': 0xffffffff}, {'test_only': 0xffffffff}, {'application_id': 'foreign'},
+                       {'version_code': 1020}, {'version_name': '1.0.5'}, {'identity': {}},
+                       {'permissions': android_audit.PERMISSIONS+['android.permission.READ_SMS']},
+                       {'components': []}, {'declared_permissions': []}, {'qa_markers_found': True}, {'target_sdk': 23},
+                       {'certificate_sha256': '0'*64}, {'play_protect': 'passed'}):
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                android_audit.validate_record({**record, **change}, identity, '6'*64)
 
 
 class LicenseTest(unittest.TestCase):

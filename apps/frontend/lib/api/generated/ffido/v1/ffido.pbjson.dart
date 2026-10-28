@@ -430,6 +430,20 @@ final $typed_data.Uint8List listMessagesResponseDescriptor = $convert.base64Deco
     'aGFzTW9yZRIoCg1hY3R1YWxfb2Zmc2V0GAQgASgDSABSDGFjdHVhbE9mZnNldIgBAUIQCg5fYW'
     'N0dWFsX29mZnNldA==');
 
+@$core.Deprecated('Use messageFooterDescriptor instead')
+const MessageFooter$json = {
+  '1': 'MessageFooter',
+  '2': [
+    {'1': 'tagline', '3': 1, '4': 1, '5': 9, '10': 'tagline'},
+    {'1': 'origin', '3': 2, '4': 1, '5': 9, '10': 'origin'},
+  ],
+};
+
+/// Descriptor for `MessageFooter`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List messageFooterDescriptor = $convert.base64Decode(
+    'Cg1NZXNzYWdlRm9vdGVyEhgKB3RhZ2xpbmUYASABKAlSB3RhZ2xpbmUSFgoGb3JpZ2luGAIgAS'
+    'gJUgZvcmlnaW4=');
+
 @$core.Deprecated('Use createMessageRequestDescriptor instead')
 const CreateMessageRequest$json = {
   '1': 'CreateMessageRequest',
@@ -441,6 +455,14 @@ const CreateMessageRequest$json = {
     {'1': 'subject', '3': 5, '4': 1, '5': 9, '10': 'subject'},
     {'1': 'body', '3': 6, '4': 1, '5': 9, '10': 'body'},
     {'1': 'in_reply_to', '3': 7, '4': 1, '5': 9, '10': 'inReplyTo'},
+    {
+      '1': 'footer',
+      '3': 8,
+      '4': 1,
+      '5': 11,
+      '6': '.ffido.v1.MessageFooter',
+      '10': 'footer'
+    },
   ],
 };
 
@@ -450,7 +472,8 @@ final $typed_data.Uint8List createMessageRequestDescriptor = $convert.base64Deco
     'NlSWQSIQoMb3BlcmF0aW9uX2lkGAIgASgJUgtvcGVyYXRpb25JZBIXCgd0b19uYW1lGAMgASgJ'
     'UgZ0b05hbWUSHQoKdG9fYWRkcmVzcxgEIAEoCVIJdG9BZGRyZXNzEhgKB3N1YmplY3QYBSABKA'
     'lSB3N1YmplY3QSEgoEYm9keRgGIAEoCVIEYm9keRIeCgtpbl9yZXBseV90bxgHIAEoCVIJaW5S'
-    'ZXBseVRv');
+    'ZXBseVRvEi8KBmZvb3RlchgIIAEoCzIXLmZmaWRvLnYxLk1lc3NhZ2VGb290ZXJSBmZvb3Rlcg'
+    '==');
 
 @$core.Deprecated('Use createCrosspostRequestDescriptor instead')
 const CreateCrosspostRequest$json = {
@@ -762,6 +785,13 @@ const SessionInfo$json = {
   '1': 'SessionInfo',
   '2': [
     {
+      '1': 'supports_message_footer',
+      '3': 3,
+      '4': 1,
+      '5': 8,
+      '10': 'supportsMessageFooter'
+    },
+    {
       '1': 'profile',
       '3': 1,
       '4': 1,
@@ -782,9 +812,10 @@ const SessionInfo$json = {
 
 /// Descriptor for `SessionInfo`. Decode as a `google.protobuf.DescriptorProto`.
 final $typed_data.Uint8List sessionInfoDescriptor = $convert.base64Decode(
-    'CgtTZXNzaW9uSW5mbxIrCgdwcm9maWxlGAEgASgLMhEuZmZpZG8udjEuUHJvZmlsZVIHcHJvZm'
-    'lsZRI5CgpleHBpcmVzX2F0GAIgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcFIJZXhw'
-    'aXJlc0F0');
+    'CgtTZXNzaW9uSW5mbxI2ChdzdXBwb3J0c19tZXNzYWdlX2Zvb3RlchgDIAEoCFIVc3VwcG9ydH'
+    'NNZXNzYWdlRm9vdGVyEisKB3Byb2ZpbGUYASABKAsyES5mZmlkby52MS5Qcm9maWxlUgdwcm9m'
+    'aWxlEjkKCmV4cGlyZXNfYXQYAiABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wUglleH'
+    'BpcmVzQXQ=');
 
 @$core.Deprecated('Use loginResponseDescriptor instead')
 const LoginResponse$json = {

@@ -5,6 +5,28 @@ import 'package:protobuf/well_known_types/google/protobuf/empty.pb.dart';
 import 'package:protobuf/well_known_types/google/protobuf/timestamp.pb.dart';
 
 void main() {
+  test('footer extension distinguishes legacy absence and round-trips with session capability', () {
+    expect(
+      CreateMessageRequest.fromBuffer(
+        CreateMessageRequest(body: 'legacy').writeToBuffer(),
+      ).hasFooter(),
+      isFalse,
+    );
+    final request = CreateMessageRequest(
+      footer: MessageFooter(tagline: 'FFIDO 1.0.5', origin: 'Мой сайт'),
+    );
+    expect(
+      CreateMessageRequest.fromBuffer(request.writeToBuffer()).footer.origin,
+      'Мой сайт',
+    );
+    expect(SessionInfo.fromBuffer([]).supportsMessageFooter, isFalse);
+    expect(
+      SessionInfo.fromBuffer(
+        SessionInfo(supportsMessageFooter: true).writeToBuffer(),
+      ).supportsMessageFooter,
+      isTrue,
+    );
+  });
   test('контракт сохраняет Unicode и UTC Timestamp', () {
     final original = Message(
       id: 'generation:42',

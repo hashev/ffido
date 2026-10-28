@@ -34,7 +34,7 @@ class _UpdateShellState extends State<UpdateShell> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) unawaited(controller.check());
+    if (state == AppLifecycleState.resumed) unawaited(controller.resume());
   }
 
   @override
@@ -161,6 +161,25 @@ class UpdateScreen extends StatelessWidget {
               ),
             if (updates.message.isNotEmpty)
               Text(updates.message, key: const Key('update-message')),
+            if (updates.isAndroid)
+              OutlinedButton(
+                onPressed: () => showDialog<void>(
+                  context: context,
+                  builder: (context) => AlertDialog(
+                    title: const Text('Диагностика обновления'),
+                    content: SingleChildScrollView(
+                      child: SelectableText(updates.diagnosticSummary),
+                    ),
+                    actions: [
+                      TextButton(
+                        onPressed: () => Navigator.pop(context),
+                        child: const Text('Закрыть'),
+                      ),
+                    ],
+                  ),
+                ),
+                child: const Text('Диагностика обновления'),
+              ),
             const SizedBox(height: 16),
             const Text(
               'На macOS после обновления может потребоваться разрешить доступ к Keychain или войти снова.',

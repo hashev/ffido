@@ -532,6 +532,7 @@ TEST_F(GrpcTest, HptLoginTwoDevicesShareServerDataAndLogoutIsIndependent) {
   EXPECT_EQ(login("wrong", denied).error_code(), grpc::StatusCode::UNAUTHENTICATED);
   ASSERT_TRUE(login("fixture-a", phone).ok());
   ASSERT_TRUE(login("fixture-a", laptop).ok());
+  EXPECT_TRUE(phone.session().supports_message_footer());
   EXPECT_EQ(phone.session().profile().user_id(), "A");
   EXPECT_EQ(phone.session().profile().name(), "Алексей");
   EXPECT_NE(phone.session_secret(), laptop.session_secret());
@@ -575,6 +576,7 @@ TEST_F(GrpcTest, HptLoginTwoDevicesShareServerDataAndLogoutIsIndependent) {
             grpc::StatusCode::UNAUTHENTICATED);
   EXPECT_TRUE(
       invoke(laptop.session_secret(), [&](auto& c) { return client->RestoreSession(&c, empty, &restored); }).ok());
+  EXPECT_TRUE(restored.supports_message_footer());
 }
 TEST_F(GrpcTest, LoginLimitsAndFieldValidationAreAppliedBeforeSessionCreation) {
   ASSERT_TRUE(service->ConfigureAuth({{"2:1/3", "fixture"}}, std::string(32, 'k')));

@@ -1066,6 +1066,7 @@ TEST_F(ServicesTest, UueRestartAfterEachAppendStageAndLostReplyDoesNotDuplicate)
       service::UueService interrupted(catalog, metadata, policy, "cp866", std::chrono::steady_clock::now, config, io);
       std::string bytes(10000, 'a');
       auto request = Request("fault-" + std::to_string(sync_fault) + "-" + std::to_string(stage));
+      request.footer = domain::MessageFooter{"Multipart client", "Multipart origin"};
       ASSERT_TRUE(interrupted.Upload(request.operation_id, "a.bin", bytes.size(), UueHash(bytes), 0, bytes, "A"));
       auto partial = interrupted.Commit("echo.one", request, "A");
       ASSERT_TRUE(partial);
@@ -1083,6 +1084,16 @@ TEST_F(ServicesTest, UueRestartAfterEachAppendStageAndLostReplyDoesNotDuplicate)
       ASSERT_TRUE(repeated);
       EXPECT_EQ(repeated->messages, resumed->messages);
       EXPECT_EQ(messages->GetMessages("echo.one", {}, "oldest", "A")->total, total);
+      for (const auto& id : resumed->messages) {
+        auto detail = messages->GetMessage("echo.one", id, "A");
+        ASSERT_TRUE(detail);
+        EXPECT_NE(detail->body.find("--- Multipart client\n * Origin: Multipart origin (2:5015/1.1)"),
+                  std::string::npos);
+      }
+      request.footer->origin = "Changed";
+      auto conflict = laptop.Commit("echo.one", request, "A");
+      ASSERT_FALSE(conflict);
+      EXPECT_EQ(conflict.error().code, domain::ErrorCode::kConflict);
     }
   }
 }
@@ -1309,7 +1320,8 @@ public:
 TEST_F(ServicesTest, CrosspostPartialRetryAfterReopenUsesSameCopiesAndProfile) {
   auto io = std::make_shared<FailSecondCopy>();
   service::MessageService failing(catalog, metadata, test::EchoAccess(*catalog, temp.path()), "cp866", io);
-  const auto request = Request("partial-group");
+  auto request = Request("partial-group");
+  request.footer = domain::MessageFooter{"Partial footer", "Saved origin"};
   auto partial = failing.CreateCrosspost("echo.one", request, {"echo.two"}, "A");
   ASSERT_TRUE(partial);
   ASSERT_FALSE(partial->complete);
@@ -1328,6 +1340,15 @@ TEST_F(ServicesTest, CrosspostPartialRetryAfterReopenUsesSameCopiesAndProfile) {
   ASSERT_TRUE(first && second);
   EXPECT_EQ(first->from_name, second->from_name);
   EXPECT_NE(second->from_name, "Changed");
+  for (const auto& copy : result->saved) {
+    auto detail = recovered.GetMessage(copy.conference, copy.id, "A");
+    ASSERT_TRUE(detail);
+    EXPECT_NE(detail->body.find("--- Partial footer\n * Origin: Saved origin (2:5015/1.1)"), std::string::npos);
+  }
+  request.footer->tagline = "Changed footer";
+  auto conflict = recovered.CreateCrosspost("echo.one", request, {"echo.two"}, "A");
+  ASSERT_FALSE(conflict);
+  EXPECT_EQ(conflict.error().code, domain::ErrorCode::kConflict);
 }
 
 TEST_F(ServicesTest, ConcurrentCrosspostRetriesHaveOneCopyPerArea) {
@@ -1436,4 +1457,53 @@ TEST_F(ServicesTest, CrosspostTwentyDestinationsValidateAndPublishAllCopies) {
   ASSERT_TRUE(retry && retry->complete);
   for (size_t i = 0; i < 21; ++i)
     EXPECT_EQ(sent->saved[i].id, retry->saved[i].id);
+}
+
+TEST_F(ServicesTest, CustomFooterIsValidatedNormalizedAndPartOfOperationIdentity) {
+  auto request = Request("footer-custom");
+  request.footer = domain::MessageFooter{"Новый клиент", "https://github.com/hashev/ffido"};
+  auto sent = messages->CreateMessage("echo.one", request, "A");
+  ASSERT_TRUE(sent);
+  auto detail = messages->GetMessage("echo.one", sent->id, "A");
+  ASSERT_TRUE(detail);
+  EXPECT_NE(detail->body.find("--- Hовый клиент\n * Origin: https://github.com/hashev/ffido (2:5015/1.1)"),
+            std::string::npos);
+  EXPECT_EQ(detail->body.find("--- FFIDO"), std::string::npos);
+  auto retry = messages->CreateMessage("echo.one", request, "A");
+  ASSERT_TRUE(retry);
+  EXPECT_EQ(retry->id, sent->id);
+  request.footer->tagline = "Hовый клиент";
+  auto conflict = messages->CreateMessage("echo.one", request, "A");
+  ASSERT_FALSE(conflict);
+  EXPECT_EQ(conflict.error().code, domain::ErrorCode::kConflict);
+  for (const auto& value :
+       {std::string("injected\n * Origin: false"), std::string("x\1y"), std::string(257, 'x'), std::string("😀")}) {
+    request.operation_id = "footer-invalid";
+    request.footer->tagline = value;
+    EXPECT_FALSE(messages->CreateMessage("echo.one", request, "A"));
+  }
+  auto count = conferences->GetConference("echo.one", "A");
+  ASSERT_TRUE(count);
+  EXPECT_EQ(count->total_count, 1);
+}
+
+TEST_F(ServicesTest, CrosspostFooterSurvivesServiceRestartAndRejectsChanges) {
+  auto request = Request("footer-crosspost");
+  request.footer = domain::MessageFooter{"FFIDO custom", "My origin"};
+  auto result = messages->CreateCrosspost("echo.one", request, {"echo.two"}, "A");
+  ASSERT_TRUE(result);
+  ASSERT_TRUE(result->complete);
+  for (const auto& copy : result->saved) {
+    auto detail = messages->GetMessage(copy.conference, copy.id, "A");
+    ASSERT_TRUE(detail);
+    EXPECT_NE(detail->body.find("--- FFIDO custom\n * Origin: My origin (2:5015/1.1)"), std::string::npos);
+  }
+  messages = std::make_unique<service::MessageService>(catalog, metadata, test::EchoAccess(*catalog, temp.path()));
+  auto retry = messages->CreateCrosspost("echo.one", request, {"echo.two"}, "A");
+  ASSERT_TRUE(retry);
+  EXPECT_TRUE(retry->complete);
+  request.footer->origin = "Other";
+  auto conflict = messages->CreateCrosspost("echo.one", request, {"echo.two"}, "A");
+  ASSERT_FALSE(conflict);
+  EXPECT_EQ(conflict.error().code, domain::ErrorCode::kConflict);
 }
