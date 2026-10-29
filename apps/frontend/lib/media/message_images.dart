@@ -14,7 +14,16 @@ class ImageEntry {
   ui.Image? thumbnail;
   String? error;
   bool loading = false, requested = false;
+  bool imageDetected = false, notImage = false;
   ImageEntry(this.uri);
+  bool get showPreview =>
+      !notImage &&
+      (source != null ||
+          imageDetected ||
+          RegExp(
+            r'\.(png|jpe?g|gif|webp)$',
+            caseSensitive: false,
+          ).hasMatch(uri.path));
   void release() {
     source = null;
     thumbnail?.dispose();
@@ -84,6 +93,7 @@ class MessageImages extends ChangeNotifier {
     try {
       final source = await load.load(entry.uri);
       if (!active) return;
+      entry.imageDetected = true;
       final scale = min(1.0, 1000 / max(source.info.width, source.info.height));
       final codec = await ui.instantiateImageCodec(
         source.bytes,
@@ -110,7 +120,15 @@ class MessageImages extends ChangeNotifier {
         old.error = 'Изображение выгружено из памяти. Загрузить повторно';
       }
     } catch (error) {
-      if (active) entry.error = error is ImageLoadException ? error.message : 'Не удалось загрузить изображение: сеть, TLS, ограничения браузера или повреждённый файл';
+      if (active) {
+        entry.imageDetected |= load.imageDetected;
+        entry.notImage = error is NotPreviewImageException;
+        entry.error = entry.notImage
+            ? null
+            : error is ImageLoadException
+            ? error.message
+            : 'Не удалось загрузить изображение: сеть, TLS, ограничения браузера или повреждённый файл';
+      }
     } finally {
       decoded?.dispose();
       load.cancel();

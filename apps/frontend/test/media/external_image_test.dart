@@ -34,6 +34,62 @@ ImageResponse response({
   List<int>? bytes,
 }) => ImageResponse(status, headers, Stream.value(bytes ?? png));
 void main() {
+  test('classification separates non-images and damaged images', () async {
+    for (final headStatus in [200, 405]) {
+      for (final mime in ['text/html', 'image/svg+xml']) {
+        final http = FakeHttp(
+          (_, method) => method == 'HEAD'
+              ? response(status: headStatus, headers: {'content-type': mime})
+              : response(headers: {'content-type': mime}),
+        );
+        await expectLater(
+          ExternalImageLoad(http: http)
+              .load(Uri.parse('https://e.org/fake.JPG?q=1')),
+          throwsA(isA<NotPreviewImageException>()),
+        );
+        expect(http.calls.length, headStatus == 200 ? 1 : 2);
+      }
+    }
+    for (final bytes in [
+      [60, 104, 116, 109, 108, 62],
+      List.filled(32, 65),
+    ]) {
+      await expectLater(
+        ExternalImageLoad(http: FakeHttp((_, _) => response(bytes: bytes)))
+            .load(Uri.parse('https://e.org/page')),
+        throwsA(isA<NotPreviewImageException>()),
+      );
+    }
+    final load = ExternalImageLoad(
+      http: FakeHttp(
+        (_, method) => method == 'HEAD'
+            ? response(headers: {'content-type': 'image/jpeg'})
+            : throw StateError('network'),
+      ),
+    );
+    await expectLater(
+      load.load(Uri.parse('https://e.org/no-extension')),
+      throwsStateError,
+    );
+    expect(load.imageDetected, isTrue);
+    final damaged = ExternalImageLoad(
+      http: FakeHttp(
+        (_, _) =>
+            response(headers: {'content-type': 'image/png'}, bytes: [1, 2, 3]),
+      ),
+    );
+    await expectLater(
+      damaged.load(Uri.parse('https://e.org/damaged')),
+      throwsA(
+        isA<ImageLoadException>().having(
+          (e) => e is NotPreviewImageException,
+          'not image',
+          isFalse,
+        ),
+      ),
+    );
+    expect(damaged.imageDetected, isTrue);
+  });
   test(
     'extensionless sniff and unsupported HEAD preserve actual bytes/MIME',
     () async {
