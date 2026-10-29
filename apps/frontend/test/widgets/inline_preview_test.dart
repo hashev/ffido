@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'dart:ui' show PointerDeviceKind;
 
 import 'package:flutter/material.dart';
@@ -33,6 +35,7 @@ Future<MessageImages> mount(
       home: Scaffold(
         body: SingleChildScrollView(
           child: UueBody(
+            key: UniqueKey(),
             conference: 'echo',
             repository: UueRepository(api),
             message: Message(
@@ -67,6 +70,100 @@ Future<MessageImages> mount(
 }
 
 void main() {
+  testWidgets(
+    'unknown URL has no loading card and HTML or network failure stays hidden',
+    (tester) async {
+      final gate = Completer<ImageResponse>();
+      await mount(
+        tester,
+        'https://e.org/page',
+        http: () => FakeHttp((_, _) => gate.future),
+      );
+      expect(find.byType(ExternalImagePreview), findsNothing);
+      expect(find.byType(Card), findsNothing);
+      gate.complete(response(headers: {'content-type': 'text/html'}));
+      await tester.pumpAndSettle();
+      expect(find.byType(Card), findsNothing);
+      await mount(
+        tester,
+        'https://e.org/offline',
+        http: () => FakeHttp((_, _) => throw StateError('network')),
+      );
+      expect(find.byType(ExternalImagePreview), findsNothing);
+      expect(find.text('Повторить загрузку изображения'), findsNothing);
+    },
+  );
+  testWidgets('late unknown image response cannot populate a new message', (
+    tester,
+  ) async {
+    final gate = Completer<ImageResponse>();
+    final old = await mount(
+      tester,
+      'https://e.org/old',
+      http: () => FakeHttp((_, _) => gate.future),
+    );
+    expect(find.byType(ExternalImagePreview), findsNothing);
+    await mount(
+      tester,
+      'https://e.org/new-page',
+      http: () =>
+          FakeHttp((_, _) => response(headers: {'content-type': 'text/html'})),
+    );
+    gate.complete(response());
+    await tester.pumpAndSettle();
+    expect(old.active, isFalse);
+    expect(old.entries.single.thumbnail, isNull);
+    expect(find.byType(ExternalImagePreview), findsNothing);
+    expect(textBlock('https://e.org/new-page'), findsOneWidget);
+  });
+  for (final width in [360.0, 1000.0]) {
+    testWidgets('mixed pages, Origin and extensionless image at width $width', (
+      tester,
+    ) async {
+      tester.view.physicalSize = Size(width, 1600);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      const body =
+          'https://башорг.рф/quote/470067\n'
+          'https://e.org/photo.JPG?q=1#first\nПосле картинки\n'
+          'https://e.org/photo.JPG?q=1#again\n'
+          'https://e.org/fake.jpg\n'
+          ' * Origin: https://github.com/hashev/ffido https://wfido.ru';
+      final gets = <Uri>[];
+      await mount(
+        tester,
+        body,
+        http: () => FakeHttp((uri, method) {
+          if (method == 'GET') gets.add(uri);
+          return uri.path == '/photo.JPG'
+              ? response()
+              : response(headers: {'content-type': 'text/html'});
+        }),
+      );
+      expect(find.byType(ExternalImagePreview), findsOneWidget);
+      expect(find.text('Повторить загрузку изображения'), findsNothing);
+      expect(gets.length, 1);
+      expect(
+        tester.getTopLeft(find.byType(ExternalImagePreview)).dy,
+        greaterThanOrEqualTo(
+          tester.getBottomLeft(textBlock('photo.JPG?q=1#first')).dy,
+        ),
+      );
+      expect(
+        tester.getBottomLeft(find.byType(ExternalImagePreview)).dy,
+        lessThanOrEqualTo(tester.getTopLeft(textBlock('После картинки')).dy),
+      );
+      expect(
+        find
+            .byType(MessageLinkText)
+            .evaluate()
+            .map((e) => (e.widget as MessageLinkText).text)
+            .join(),
+        body,
+      );
+    });
+  }
   for (final width in [360.0, 1000.0]) {
     testWidgets(
       'preview lies between full URL line and subsequent text at width $width',
@@ -122,13 +219,15 @@ void main() {
       var fail = true;
       final gets = <String>[];
       final body =
-          '${List.generate(11, (i) => 'https://e.org/$i\nпосле$i').join('\n')}\nКонец';
+          '${List.generate(11, (i) => 'https://e.org/$i.png\nпосле$i').join('\n')}\nКонец';
       final images = await mount(
         tester,
         body,
         http: () => FakeHttp((uri, method) {
           if (method == 'GET') gets.add(uri.path);
-          return fail && uri.path == '/0' ? response(status: 403) : response();
+          return fail && uri.path == '/0.png'
+              ? response(status: 403)
+              : response();
         }),
       );
       expect(images.entries.first.error, isNotNull);
@@ -147,7 +246,7 @@ void main() {
         tester.getBottomLeft(find.byType(ExternalImagePreview).last).dy,
         lessThanOrEqualTo(tester.getTopLeft(textBlock('после10')).dy),
       );
-      expect(gets.where((s) => s == '/10').length, 1);
+      expect(gets.where((s) => s == '/10.png').length, 1);
     },
   );
   for (final brightness in Brightness.values) {

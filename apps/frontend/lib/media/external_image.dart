@@ -23,11 +23,18 @@ class ExternalImage {
   String get name => 'ffido-image.$extension';
 }
 
+/// A successfully fetched resource that cannot be previewed as an image.
+class NotPreviewImageException extends ImageLoadException {
+  const NotPreviewImageException()
+    : super('Ссылка не является прямым PNG/JPEG/GIF/WebP');
+}
+
 class ExternalImageLoad {
   static const maxBytes = 16 * 1024 * 1024;
   final ImageHttp http;
   final Duration timeout;
   bool _closed = false;
+  bool imageDetected = false;
   ExternalImageLoad({
     ImageHttp? http,
     this.timeout = const Duration(seconds: 15),
@@ -87,37 +94,36 @@ class ExternalImageLoad {
       }
     }
 
-    bool rejectedMime(ImageResponse response) {
+    void inspectMime(ImageResponse response) {
       final mime = response.headers['content-type']
           ?.split(';')
           .first
           .trim()
           .toLowerCase();
-      return mime != null &&
+      if ({
+        'image/png',
+        'image/jpeg',
+        'image/gif',
+        'image/webp',
+      }.contains(mime)) {
+        imageDetected = true;
+      } else if (mime != null &&
           mime.isNotEmpty &&
-          !{
-            'image/png',
-            'image/jpeg',
-            'image/gif',
-            'image/webp',
-            'application/octet-stream',
-            'binary/octet-stream',
-          }.contains(mime);
+          !{'application/octet-stream', 'binary/octet-stream'}.contains(mime)) {
+        throw const NotPreviewImageException();
+      }
     }
 
     final head = await request('HEAD');
     await head.body.take(0).drain<void>();
-    if (head.status >= 200 && head.status < 300 && rejectedMime(head)) {
-      throw const ImageLoadException(
-        'Ссылка не является прямым PNG/JPEG/GIF/WebP',
-      );
-    }
+    if (head.status >= 200 && head.status < 300) inspectMime(head);
     final response = await request('GET');
-    if (response.status != 200 || rejectedMime(response)) {
+    if (response.status != 200) {
       throw const ImageLoadException(
         'Изображение недоступно или формат не поддерживается',
       );
     }
+    inspectMime(response);
     final length = int.tryParse(response.headers['content-length'] ?? '');
     if (length != null && length > maxBytes) {
       throw const ImageLoadException('Изображение больше 16 МиБ');
@@ -132,13 +138,16 @@ class ExternalImageLoad {
         final needed = 65536 - prefix.length;
         prefix.add(chunk.length <= needed ? chunk : chunk.sublist(0, needed));
         final probe = prefix.toBytes();
+        imageDetected |= _signature(probe);
         if (probe.length >= 12) {
           if (!_signature(probe)) {
+            if (!imageDetected) throw const NotPreviewImageException();
             throw const ImageLoadException(
               'Неподдерживаемый формат изображения',
             );
           }
           signatureKnown = true;
+          imageDetected = true;
         }
         final dimensions = uueImageInfo(probe);
         if (dimensions != null && !dimensions.allowed(16000000, 8192)) {
@@ -155,8 +164,10 @@ class ExternalImageLoad {
     }
     _check();
     final bytes = builder.takeBytes();
+    imageDetected |= _signature(bytes);
     final info = uueImageInfo(bytes);
     if (info == null) {
+      if (!imageDetected) throw const NotPreviewImageException();
       throw const ImageLoadException(
         'Повреждённое или неподдерживаемое изображение',
       );

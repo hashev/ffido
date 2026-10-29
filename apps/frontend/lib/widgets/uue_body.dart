@@ -99,7 +99,8 @@ class _UueBodyState extends State<UueBody> {
   final shownImages = <Uri>{};
   Widget text(String value) {
     final available = {
-      for (final entry in images.entries.take(images.visible)) entry.uri: entry,
+      for (final entry in images.entries.take(images.visible))
+        if (entry.showPreview) entry.uri: entry,
     };
     final slots = <int, List<ImageEntry>>{};
     for (final link in messageLinks(value)) {

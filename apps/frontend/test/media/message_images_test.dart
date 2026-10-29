@@ -23,6 +23,55 @@ Future<void> ready(WidgetTester tester, MessageImages owner) async {
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+  testWidgets('classification controls cards independently from queue', (
+    tester,
+  ) async {
+    final pending = Completer<ImageResponse>();
+    final owner = MessageImages(
+      'https://e.org/page https://e.org/fake.JPG?q=1#f '
+      'https://e.org/offline https://e.org/broken.JpEg?x=1 '
+      'https://e.org/detected https://e.org/image',
+      createLoad: () => ExternalImageLoad(
+        http: FakeHttp((uri, method) {
+          switch (uri.path) {
+            case '/page':
+              return pending.future;
+            case '/fake.JPG':
+              return response(headers: {'content-type': 'text/html'});
+            case '/offline':
+            case '/broken.JpEg':
+              throw StateError('offline');
+            case '/detected':
+              if (method == 'HEAD') {
+                return response(headers: {'content-type': 'image/png'});
+              }
+              throw StateError('offline');
+            default:
+              return response();
+          }
+        }),
+      ),
+    );
+    addTearDown(owner.dispose);
+    owner.more();
+    expect(owner.entries.first.loading, isTrue);
+    expect(owner.entries.first.showPreview, isFalse);
+    pending.complete(response(headers: {'content-type': 'text/html'}));
+    await ready(tester, owner);
+    expect(owner.entries.map((e) => e.showPreview), [
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+    ]);
+    expect(owner.entries[1].notImage, isTrue);
+    expect(owner.entries[1].error, isNull);
+    expect(owner.entries[3].error, isNotNull);
+    expect(owner.entries[4].imageDetected, isTrue);
+    expect(owner.entries.last.thumbnail, isNotNull);
+  });
   test('portrait thumbnail fits both axes within 1000 pixels', () async {
     final recorder = ui.PictureRecorder();
     ui.Canvas(recorder)

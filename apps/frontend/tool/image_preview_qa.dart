@@ -11,6 +11,12 @@ import 'package:fido/widgets/message_link_text.dart';
 import 'package:fido/widgets/external_image_preview.dart';
 
 const marker = 'FFIDO_IMAGE_QA';
+const live = bool.fromEnvironment('FFIDO_IMAGE_QA_LIVE');
+const body =
+    'https://башорг.рф/quote/470067\n'
+    'https://brorabbit.g0x.ru/pic/6ada3fe6.jpg\n'
+    'После изображения\n'
+    ' * Origin: https://github.com/hashev/ffido https://wfido.ru';
 final bytes = base64Decode(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==',
 );
@@ -18,7 +24,11 @@ final bytes = base64Decode(
 class FixtureHttp implements ImageHttp {
   @override
   Future<ImageResponse> request(Uri uri, String method) async =>
-      ImageResponse(200, {'content-type': 'image/png'}, Stream.value(bytes));
+      uri.path.endsWith('.jpg')
+      ? ImageResponse(200, {'content-type': 'image/png'}, Stream.value(bytes))
+      : ImageResponse(200, {
+          'content-type': 'text/html',
+        }, Stream.value(utf8.encode('<html>Page</html>')));
   @override
   void close() {}
 }
@@ -37,8 +47,9 @@ class QaReader extends StatefulWidget {
 
 class _QaReaderState extends State<QaReader> {
   final owner = MessageImages(
-    'https://ffido-media-qa.invalid/image.png',
-    createLoad: () => ExternalImageLoad(http: FixtureHttp()),
+    body,
+    createLoad: () =>
+        live ? ExternalImageLoad() : ExternalImageLoad(http: FixtureHttp()),
   );
   @override
   void initState() {
@@ -59,11 +70,13 @@ class _QaReaderState extends State<QaReader> {
       listenable: owner,
       builder: (_, _) => ListView(
         children: [
-          MessageLinkText(
-            'https://ffido-media-qa.invalid/image.png',
-            actions: PlatformImageActions(),
-          ),
-          ExternalImagePreview(owner: owner, entry: owner.entries.single),
+          for (final line in body.split('\n')) ...[
+            MessageLinkText(line, actions: PlatformImageActions()),
+            for (final entry in owner.entries)
+              if (line.contains(entry.uri.toString()) && entry.showPreview)
+                ExternalImagePreview(owner: owner, entry: entry),
+          ],
+          Text(live ? 'Live network' : 'Deterministic fixtures'),
           TextButton(
             onPressed: owner.invalidate,
             child: const Text('Invalidate session'),
