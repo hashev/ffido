@@ -76,6 +76,10 @@ void main() {
       expect(find.byType(UueAttachmentCard), findsOneWidget);
       expect(find.byType(ExternalImagePreview), findsOneWidget);
       expect(gets, 1);
+      expect(
+        tester.getBottomLeft(find.byType(ExternalImagePreview)).dy,
+        lessThanOrEqualTo(tester.getTopLeft(find.byType(UueAttachmentCard)).dy),
+      );
       await tester.tap(find.text('Показать исходный UUE'));
       await tester.pumpAndSettle();
       expect(find.byType(ExternalImagePreview), findsOneWidget);

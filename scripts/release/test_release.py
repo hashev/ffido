@@ -243,6 +243,7 @@ class PublicationTest(unittest.TestCase):
         self.assertEqual(manifest['update_sequence'], self.identity['build_number'])
         self.assertEqual(manifest['channel'], 'dev')
         self.assertEqual(manifest['compatibility']['state_schema_min'], 9)
+        self.assertEqual(manifest['compatibility']['state_schema_max'], 10)
 
     def test_inventory_rejects_mixed_identity_platform_size_and_compatibility(self):
         for change in ({'version': '2.0.0'}, {'build_number': 1002}, {'stable': True},

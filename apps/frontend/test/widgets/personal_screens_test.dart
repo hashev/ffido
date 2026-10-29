@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:fixnum/fixnum.dart';
 
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:protobuf/well_known_types/google/protobuf/empty.pb.dart';
 import 'package:fido/api/api_exceptions.dart';
@@ -14,6 +15,7 @@ import 'package:fido/repositories/account_repository.dart';
 import '../support/fake_transport.dart';
 
 void main() {
+  setUp(() => SharedPreferences.setMockInitialValues({}));
   testWidgets(
     'bookmark counters preserve order, removal and layout on narrow screen',
     (tester) async {

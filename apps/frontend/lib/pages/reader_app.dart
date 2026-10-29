@@ -163,6 +163,21 @@ class _MainScreenState extends State<MainScreen>
       context,
       MaterialPageRoute(
         builder: (context) => MessageScreen(
+          conferenceOrder: List.unmodifiable(
+            conferences.map(
+              (c) => Conference(
+                id: c.id,
+                name: c.name,
+                description: c.description,
+                unreadCount: c.unreadCount,
+                totalCount: 0,
+                canRead: c.canRead,
+                canPost: c.canPost,
+                kind: c.kind,
+                unsupportedFormat: c.unsupportedFormat,
+              ),
+            ),
+          ),
           conferenceId: conference.id,
           onAccessDenied: _repository.clearCache,
           canRead: conference.canRead,
@@ -172,6 +187,7 @@ class _MainScreenState extends State<MainScreen>
           conferenceName: conference.name,
           conferenceDescription: conference.description,
           repository: MessageRepository(_repository.transport),
+          conferences: _repository,
         ),
       ),
     );

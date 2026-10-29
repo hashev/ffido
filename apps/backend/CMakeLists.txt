@@ -193,3 +193,8 @@ install(FILES
   DESTINATION share/ffido/update COMPONENT ffido)
 
 add_test(NAME UpdateCli COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/test_update_cli.py $<TARGET_FILE:fidoback>)
+add_test(NAME ReleaseSchemaCompatibility
+  COMMAND ${CMAKE_COMMAND} -E env "FFIDO_E2E_BACKEND=$<TARGET_FILE:fidoback>"
+  ${Python3_EXECUTABLE} -m unittest discover
+  -s ${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/release -p test_schema_compatibility.py)
+set_tests_properties(ReleaseSchemaCompatibility PROPERTIES TIMEOUT 60)
