@@ -59,8 +59,13 @@ void main() {
           .onPressed,
       isNull,
     );
-    await tap(tester, 'Предыдущее');
-    expect(find.text('Тело g#42'), findsOneWidget);
+    expect(
+      tester
+          .widget<TextButton>(find.widgetWithText(TextButton, 'Предыдущее'))
+          .onPressed,
+      isNull,
+    ); // Уже прочитанное письмо доступно через ручной выбор в списке.
+
     await tap(tester, 'К списку');
     expect(find.text('Тема g#99'), findsOneWidget);
   });
@@ -196,7 +201,12 @@ void main() {
       fail = false;
       await tap(tester, 'Повторить');
       expect(find.text('Тело b'), findsOneWidget);
-      api.messages = (_) async => wire.ListMessagesResponse(hasMore: true);
+      api.messages = (r) async => r.page.offset.toInt() == 0
+          ? wire.ListMessagesResponse(
+              messages: [row('a'), row('b')],
+              hasMore: true,
+            )
+          : wire.ListMessagesResponse(hasMore: true);
       await tap(tester, 'Следующее');
       expect(
         tester

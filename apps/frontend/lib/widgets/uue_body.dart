@@ -98,37 +98,67 @@ class _UueBodyState extends State<UueBody> {
 
   final shownImages = <Uri>{};
   Widget text(String value) {
-    final urls = messageLinks(value)
-        .map((link) => link.uri.removeFragment())
-        .toSet();
-    final entries = images.entries
-        .take(images.visible)
-        .where(
-          (entry) => urls.contains(entry.uri) && shownImages.add(entry.uri),
-        )
-        .toList();
+    final available = {
+      for (final entry in images.entries.take(images.visible)) entry.uri: entry,
+    };
+    final slots = <int, List<ImageEntry>>{};
+    for (final link in messageLinks(value)) {
+      final uri = link.uri.removeFragment();
+      final entry = available[uri];
+      if (entry == null || !shownImages.add(uri)) continue;
+      // Keep source line boundaries, independent of wrapping on the screen.
+      final newline = value.indexOf('\n', link.end);
+      final end = newline < 0 ? value.length : newline + 1;
+      (slots[end] ??= []).add(entry);
+    }
+    final children = <Widget>[];
+    var start = 0;
+    void addText(int end) {
+      if (end <= start) return;
+      children.add(
+        MessageLinkText(
+          value.substring(start, end),
+          actions: widget.imageActions,
+          sharedSelection: images.entries.isNotEmpty,
+        ),
+      );
+      start = end;
+    }
+
+    for (final slot in slots.entries) {
+      addText(slot.key);
+      for (final entry in slot.value) {
+        children.add(
+          SelectionContainer.disabled(
+            child: ExternalImagePreview(
+              key: ValueKey(entry.uri),
+              owner: images,
+              entry: entry,
+              actions: widget.imageActions,
+            ),
+          ),
+        );
+      }
+    }
+    addText(value.length);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        MessageLinkText(value, actions: widget.imageActions),
-        for (final entry in entries)
-          ExternalImagePreview(
-            owner: images,
-            entry: entry,
-            actions: widget.imageActions,
-          ),
-      ],
+      children: children,
     );
   }
 
   Widget moreImages() => images.visible < images.entries.length
-      ? TextButton(
-          onPressed: images.more,
-          child: const Text('Загрузить ещё изображения'),
+      ? SelectionContainer.disabled(
+          child: TextButton(
+            onPressed: images.more,
+            child: const Text('Загрузить ещё изображения'),
+          ),
         )
       : const SizedBox.shrink();
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => SelectionArea(child: body(context));
+
+  Widget body(BuildContext context) {
     shownImages.clear();
     if (initialEpoch != widget.repository.epoch) return const SizedBox.shrink();
     if (raw || parts.isEmpty) {

@@ -11,6 +11,9 @@ import '../main.dart';
 import '../repositories/account_repository.dart';
 import 'message_screen.dart';
 import '../repositories/message_repository.dart';
+import '../repositories/conference_repository.dart';
+
+import 'package:shared_preferences/shared_preferences.dart';
 
 /// Закладки и история используют одинаковую пагинацию и смену сессии.
 class PersonalConferences extends StatefulWidget {
@@ -37,6 +40,7 @@ class _PersonalConferencesState extends State<PersonalConferences>
   AccountRepository get repository => widget.repository ?? accountRepository;
   List<PersonalConferenceEntry> entries = [];
   bool loading = false, hasMore = false;
+  bool opening = false;
   String? error;
   int version = 0;
   RpcCancellation? cancellation;
@@ -145,24 +149,53 @@ class _PersonalConferencesState extends State<PersonalConferences>
   }
 
   Future<void> open(PersonalConferenceEntry entry) async {
-    final epoch = repository.epoch;
-    await Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (_) => MessageScreen(
-          conferenceId: entry.conference.id,
-          onAccessDenied: repository.onBookmarksChanged,
-          canRead: entry.conference.canRead,
-          canPost: entry.conference.canPost,
-          kind: entry.conference.kind,
-          personalMailbox: entry.conference.personalMailbox,
-          conferenceName: entry.conference.name,
-          conferenceDescription: entry.conference.description,
-          repository: MessageRepository(repository.transport),
+    if (opening || loading) return;
+    opening = true;
+    ConferenceRepository? conferences;
+    try {
+      final epoch = repository.epoch;
+      while (hasMore) {
+        final count = entries.length;
+        final known = entries.map((e) => e.conference.id).toSet();
+        await load(more: true);
+        if (!mounted || epoch != repository.epoch || error != null) return;
+        if (!entries.skip(count).any((e) => !known.contains(e.conference.id))) {
+          setState(() => error = 'Список устарел. Обновите конференции.');
+          return;
+        }
+      }
+      if (!mounted || epoch != repository.epoch) return;
+      conferences = ConferenceRepository(
+        apiClient: repository.transport,
+        prefs: await SharedPreferences.getInstance(),
+      );
+      if (!mounted || epoch != repository.epoch) return;
+      final order = List<Conference>.unmodifiable(
+        entries.map((e) => e.conference),
+      );
+      await Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => MessageScreen(
+            conferenceOrder: order,
+            conferenceId: entry.conference.id,
+            onAccessDenied: repository.onBookmarksChanged,
+            canRead: entry.conference.canRead,
+            canPost: entry.conference.canPost,
+            kind: entry.conference.kind,
+            personalMailbox: entry.conference.personalMailbox,
+            conferenceName: entry.conference.name,
+            conferenceDescription: entry.conference.description,
+            repository: MessageRepository(repository.transport),
+            conferences: conferences,
+          ),
         ),
-      ),
-    );
-    if (mounted && epoch == repository.epoch) await load();
+      );
+      if (mounted && epoch == repository.epoch) await load();
+    } finally {
+      await conferences?.dispose();
+      opening = false;
+    }
   }
 
   @override

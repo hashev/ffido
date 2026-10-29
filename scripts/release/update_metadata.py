@@ -4,11 +4,12 @@ import base64
 
 SCHEMA_VERSION = 1
 # Supported formats, not permission to migrate a running installation.
+# ReleaseSchemaCompatibility checks these bounds against a real SQLiteStore.
 COMPATIBILITY = {
     'protocol_major': 1,
     'client_protocol_min': 1, 'client_protocol_max': 1,
     'server_protocol_min': 1, 'server_protocol_max': 1,
-    'state_schema_min': 9, 'state_schema_max': 9,
+    'state_schema_min': 9, 'state_schema_max': 10,
     'config_format': 1, 'jam_format': 'JAM-1',
 }
 

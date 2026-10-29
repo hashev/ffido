@@ -11,7 +11,13 @@ import '../utils/message_links.dart';
 class MessageLinkText extends StatefulWidget {
   final String text;
   final ImageActions? actions;
-  const MessageLinkText(this.text, {super.key, this.actions});
+  final bool sharedSelection;
+  const MessageLinkText(
+    this.text, {
+    super.key,
+    this.actions,
+    this.sharedSelection = false,
+  });
   @override
   State<MessageLinkText> createState() => _MessageLinkTextState();
 }
@@ -125,10 +131,15 @@ class _MessageLinkTextState extends State<MessageLinkText> {
       }
       offset = end;
     }
-    Widget result = SelectableText.rich(
-      TextSpan(style: ftnTextStyle(scheme), children: spans),
-      style: ftnTextStyle(scheme),
-    );
+    final textSpan = TextSpan(style: ftnTextStyle(scheme), children: spans);
+    Widget result = widget.sharedSelection
+        ? RichText(
+            text: textSpan,
+            textScaler: MediaQuery.textScalerOf(context),
+            selectionRegistrar: SelectionContainer.maybeOf(context),
+            selectionColor: DefaultSelectionStyle.of(context).selectionColor,
+          )
+        : SelectableText.rich(textSpan, style: ftnTextStyle(scheme));
     // Each URL has a keyboard focus stop without replacing source characters
     // with WidgetSpans (which would change selection/copy offsets).
     for (var i = nodes.length - 1; i >= 0; i--) {

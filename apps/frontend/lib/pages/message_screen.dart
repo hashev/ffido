@@ -31,6 +31,7 @@ class MessageScreen extends StatefulWidget {
   final bool canRead, canPost;
   final AreaKind kind;
   final bool personalMailbox;
+  final List<Conference> conferenceOrder;
   final Future<void> Function()? onAccessDenied;
   const MessageScreen({
     super.key,
@@ -43,6 +44,7 @@ class MessageScreen extends StatefulWidget {
     this.canPost = false,
     this.kind = AreaKind.echo,
     this.personalMailbox = false,
+    this.conferenceOrder = const [],
     this.onAccessDenied,
   });
   @override
@@ -56,15 +58,57 @@ class _MessageScreenState extends State<MessageScreen>
     final message = selected;
     final epoch = repository.epoch;
     await load(
-      preserveThread: widget.personalMailbox,
-      preserveOpenedMessage: widget.personalMailbox,
+      preserveThread: personalMailbox,
+      preserveOpenedMessage: personalMailbox,
     );
-    if (!widget.personalMailbox &&
+    if (!personalMailbox &&
         mounted &&
         repository.epoch == epoch &&
         message != null) {
       await open(message);
     }
+  }
+
+  late Conference activeConference;
+  late final List<Conference> conferenceOrder;
+  late final int orderEpoch;
+  final Set<String> opened = {};
+  bool echoesExhausted = false;
+  String get conferenceId => activeConference.id;
+  String get conferenceName => activeConference.name;
+  bool get canRead => activeConference.canRead;
+  bool get canPost => activeConference.canPost;
+  AreaKind get kind => activeConference.kind;
+  bool get personalMailbox => activeConference.personalMailbox;
+  bool get unreadNavigation => kind == AreaKind.echo && threadId == null;
+  bool unread(Message message) =>
+      !message.isRead && !opened.contains('$conferenceId/${message.id}');
+  bool get hasNextEcho {
+    if (echoesExhausted || repository.epoch != orderEpoch) return false;
+    final index = conferenceOrder.indexWhere((c) => c.id == conferenceId);
+    return index >= 0 &&
+        conferenceOrder
+            .skip(index + 1)
+            .any(
+              (c) =>
+                  c.kind == AreaKind.echo && c.canRead && !c.unsupportedFormat,
+            );
+  }
+
+  bool canNavigate(int direction) {
+    if (loading || bulkBusy || !canRead) return false;
+    final index = messages.indexWhere((m) => m.id == selected?.id);
+    if (unreadNavigation) {
+      final rows = direction > 0
+          ? messages.skip(index + 1)
+          : messages.take(index < 0 ? 0 : index);
+      return rows.any(unread) ||
+          (direction > 0 ? hasMore || hasNextEcho : firstOffset > 0);
+    }
+    return selected != null &&
+        (direction > 0
+            ? index + 1 < messages.length || hasMore
+            : index > 0 || firstOffset > 0);
   }
 
   MessageRepository get repository => widget.repository ?? messageRepository;
@@ -89,7 +133,22 @@ class _MessageScreenState extends State<MessageScreen>
   @override
   void initState() {
     super.initState();
+    activeConference = Conference(
+      id: widget.conferenceId,
+      name: widget.conferenceName,
+      description: widget.conferenceDescription,
+      unreadCount: 0,
+      totalCount: 0,
+      canRead: widget.canRead,
+      canPost: widget.canPost,
+      kind: widget.kind,
+      personalMailbox: widget.personalMailbox,
+    );
+    conferenceOrder = List.unmodifiable(widget.conferenceOrder);
+    orderEpoch = repository.epoch;
     subscription = repository.sessionChanges.listen((_) {
+      opened.clear();
+      echoesExhausted = true;
       bulkOperation = null;
       bulkBusy = false;
       unawaited(bulkCancellation?.cancel());
@@ -121,7 +180,8 @@ class _MessageScreenState extends State<MessageScreen>
     bool preserveOpenedMessage = false,
     String? anchorMessageId,
   }) async {
-    if (!widget.canRead || (more && loading)) return;
+    if (!canRead || (more && loading)) return;
+    if (!more) echoesExhausted = false;
     final current = ++version;
     unawaited(cancellation?.cancel());
     final token = cancellation = RpcCancellation();
@@ -141,9 +201,9 @@ class _MessageScreenState extends State<MessageScreen>
       );
     });
     try {
-      if (widget.personalMailbox && !more) {
+      if (personalMailbox && !more) {
         final state = await repository.getMailboxState(
-          widget.conferenceId,
+          conferenceId,
           cancellation: token,
         );
         if (!mounted || current != version) return;
@@ -160,7 +220,7 @@ class _MessageScreenState extends State<MessageScreen>
       }
       final keptMessage =
           preserveOpenedMessage &&
-              widget.personalMailbox &&
+              personalMailbox &&
               parent != null &&
               lastOpenedMessageId == parent.id
           ? parent
@@ -170,7 +230,7 @@ class _MessageScreenState extends State<MessageScreen>
           : messages.indexWhere((message) => message.id == keptMessage.id);
       if (threadId != null) {
         final result = await repository.getThreadPage(
-          conferenceId: widget.conferenceId,
+          conferenceId: conferenceId,
           threadId: threadId!,
           offset: more
               ? pageOffset
@@ -189,14 +249,14 @@ class _MessageScreenState extends State<MessageScreen>
             actualOffset: result.actualOffset,
             keptMessage: keptMessage,
           );
-          if (widget.personalMailbox && !more) {
+          if (personalMailbox && !more) {
             mailboxUpdatedAt = DateTime.now();
           }
           loading = false;
         });
       } else {
         final result = await repository.getConferenceMessages(
-          conferenceId: widget.conferenceId,
+          conferenceId: conferenceId,
           offset: more ? pageOffset : 0,
           anchorMessageId: anchorMessageId ?? keptMessage?.id,
           cancellation: token,
@@ -210,7 +270,7 @@ class _MessageScreenState extends State<MessageScreen>
             actualOffset: result.actualOffset,
             keptMessage: keptMessage,
           );
-          if (widget.personalMailbox && !more) {
+          if (personalMailbox && !more) {
             mailboxUpdatedAt = DateTime.now();
           }
           loading = false;
@@ -222,7 +282,7 @@ class _MessageScreenState extends State<MessageScreen>
       if (!mounted || current != version) return;
       setState(() {
         loading = false;
-        if (widget.personalMailbox) {
+        if (personalMailbox) {
           messages = [];
           selected = null;
           hasMore = false;
@@ -271,8 +331,207 @@ class _MessageScreenState extends State<MessageScreen>
     }
   }
 
+  Future<void> navigateUnread(int direction) async {
+    final current = ++version;
+    final epoch = repository.epoch;
+    unawaited(cancellation?.cancel());
+    final token = cancellation = RpcCancellation();
+    final originalId = conferenceId;
+    final selectedId = selected?.id;
+    bool valid() => mounted && current == version && epoch == repository.epoch;
+    void check() {
+      if (!valid()) throw const CancelledException();
+    }
+
+    setState(() {
+      loading = true;
+      error = null;
+      listStale = false;
+      retry = () => navigate(direction);
+    });
+    try {
+      var destination = activeConference;
+      var orderIndex = conferenceOrder.indexWhere((c) => c.id == originalId);
+      var inCurrent = true;
+      while (true) {
+        final rows = <Message>[];
+        final seen = <String>{};
+        var offset = 0;
+        var more = true;
+        var foundCurrent = selectedId == null || !inCurrent;
+        Message? candidate;
+        while (more) {
+          final page = await (() async {
+            try {
+              return await repository.getConferenceMessages(
+                conferenceId: destination.id,
+                offset: offset,
+                cancellation: token,
+              );
+            } on ApiException catch (e) {
+              check();
+              if (inCurrent ||
+                  (!e.isAccessDenied && e.statusCode != StatusCode.notFound)) {
+                rethrow;
+              }
+              return null;
+            }
+          })();
+          if (page == null) break;
+          check();
+          final added = page.messages.where((m) => seen.add(m.id)).toList();
+          // Opaque IDs include a JAM generation. Never combine generations.
+          final reference = inCurrent ? selectedId : rows.firstOrNull?.id;
+          if (reference != null && reference.contains('#')) {
+            final generation = reference.substring(
+              0,
+              reference.lastIndexOf('#'),
+            );
+            if (added.any((m) => !m.id.startsWith('$generation#'))) {
+              throw const NotFoundException(
+                message: 'Поколение базы изменилось',
+              );
+            }
+          }
+          rows.addAll(added);
+          offset = (page.actualOffset ?? offset) + page.messages.length;
+          more = page.hasMore && added.isNotEmpty;
+          for (final message in added) {
+            if (inCurrent && message.id == selectedId) {
+              foundCurrent = true;
+              continue;
+            }
+            final eligible =
+                !message.isRead &&
+                !opened.contains('${destination.id}/${message.id}');
+            if (!eligible) continue;
+            if (direction > 0 && foundCurrent) {
+              candidate = message;
+              break;
+            }
+            if (direction < 0 && !foundCurrent) candidate = message;
+          }
+          if (direction > 0 && candidate != null ||
+              direction < 0 && foundCurrent) {
+            break;
+          }
+        }
+        if (!foundCurrent && inCurrent && selectedId != null) {
+          throw const NotFoundException(
+            message: 'Список устарел. Обновите сообщения.',
+          );
+        }
+        if (candidate != null) {
+          final result = await (() async {
+            try {
+              return await repository.getMessage(
+                conferenceId: destination.id,
+                messageId: candidate!.id,
+                cancellation: token,
+              );
+            } on ApiException catch (e) {
+              check();
+              if (inCurrent ||
+                  (!e.isAccessDenied && e.statusCode != StatusCode.notFound)) {
+                rethrow;
+              }
+              return null;
+            }
+          })();
+          check();
+          if (result != null) {
+            if (result.id != candidate.id) throw const NotFoundException();
+            setState(() {
+              activeConference = destination;
+              messages = rows
+                  .map((m) => m.id == result.id ? result : m)
+                  .toList();
+              selected = result;
+              opened.add('${destination.id}/${result.id}');
+              firstOffset = 0;
+              pageOffset = offset;
+              hasMore = more;
+              loading = false;
+              if (!inCurrent) {
+                bulkOperation = null;
+                lastOpenedMessageId = null;
+                positionRevision = 0;
+                mailboxUpdatedAt = null;
+              }
+            });
+            if (bodyController.hasClients) bodyController.jumpTo(0);
+            return;
+          }
+        }
+        if (inCurrent) {
+          setState(() {
+            messages = rows;
+            firstOffset = 0;
+            pageOffset = offset;
+            hasMore = false;
+          });
+        }
+        if (direction < 0) break;
+        Conference? next;
+        while (repository.epoch == orderEpoch &&
+            orderIndex >= 0 &&
+            ++orderIndex < conferenceOrder.length) {
+          final entry = conferenceOrder[orderIndex];
+          if (entry.kind != AreaKind.echo ||
+              !entry.canRead ||
+              entry.unsupportedFormat) {
+            continue;
+          }
+          try {
+            final fresh = await repository.getMailboxState(
+              entry.id,
+              cancellation: token,
+            );
+            check();
+            if (fresh.id == entry.id &&
+                fresh.kind == AreaKind.echo &&
+                fresh.canRead &&
+                !fresh.unsupportedFormat) {
+              next = fresh;
+              break;
+            }
+          } on ApiException catch (e) {
+            check();
+            if (!e.isAccessDenied && e.statusCode != StatusCode.notFound) {
+              rethrow;
+            }
+          }
+        }
+        if (next == null) {
+          echoesExhausted = true;
+          break;
+        }
+        destination = next;
+        inCurrent = false;
+      }
+      if (valid()) setState(() => loading = false);
+    } catch (e) {
+      if (!valid()) return;
+      if (e is ApiException && e.isAccessDenied) await accessDenied();
+      if (!valid()) return;
+      setState(() {
+        loading = false;
+        error = e is NotFoundException
+            ? 'Список устарел. Обновите сообщения.'
+            : e.toString();
+        listStale = e is NotFoundException;
+        retry = listStale ? () => load() : () => navigate(direction);
+      });
+    }
+  }
+
   Future<void> navigate(int direction) async {
-    if (loading || selected == null) return;
+    if (loading || bulkBusy) return;
+    if (unreadNavigation) {
+      await navigateUnread(direction);
+      return;
+    }
+    if (selected == null) return;
     final id = selected!.id;
     var index = messages.indexWhere((m) => m.id == id);
     if (index < 0) return;
@@ -294,7 +553,7 @@ class _MessageScreenState extends State<MessageScreen>
       setState(() => loading = true);
       try {
         final result = await repository.getConferenceMessages(
-          conferenceId: widget.conferenceId,
+          conferenceId: conferenceId,
           offset: (firstOffset - 20).clamp(0, firstOffset),
           cancellation: token,
         );
@@ -327,7 +586,7 @@ class _MessageScreenState extends State<MessageScreen>
           loading = false;
           error = e.toString();
           retry = () => load();
-          if (widget.personalMailbox) {
+          if (personalMailbox) {
             messages = [];
             selected = null;
             hasMore = false;
@@ -353,7 +612,7 @@ class _MessageScreenState extends State<MessageScreen>
     });
     try {
       final result = await repository.getMessage(
-        conferenceId: widget.conferenceId,
+        conferenceId: conferenceId,
         messageId: message.id,
         cancellation: token,
       );
@@ -361,8 +620,8 @@ class _MessageScreenState extends State<MessageScreen>
       if (result.id != message.id) throw const NotFoundException();
       setState(() {
         selected = result;
-        if (widget.personalMailbox &&
-            result.positionRevision >= positionRevision) {
+        opened.add('$conferenceId/${result.id}');
+        if (personalMailbox && result.positionRevision >= positionRevision) {
           positionRevision = result.positionRevision;
           lastOpenedMessageId = result.id;
         }
@@ -377,7 +636,7 @@ class _MessageScreenState extends State<MessageScreen>
       if (!mounted || current != version) return;
       setState(() {
         loading = false;
-        if (widget.personalMailbox) {
+        if (personalMailbox) {
           messages = [];
           selected = null;
           hasMore = false;
@@ -407,10 +666,10 @@ class _MessageScreenState extends State<MessageScreen>
   }
 
   Future<void> compose({bool reply = false, bool forward = false}) async {
-    if ((forward && widget.kind != AreaKind.echo) ||
+    if ((forward && kind != AreaKind.echo) ||
         loading ||
-        (!forward && !widget.canPost) ||
-        ((reply || forward) && !widget.canRead)) {
+        (!forward && !canPost) ||
+        ((reply || forward) && !canRead)) {
       return;
     }
     final epoch = repository.epoch;
@@ -432,9 +691,9 @@ class _MessageScreenState extends State<MessageScreen>
         builder: (_) => _ComposeScreen(
           repository: repository,
           onAccessDenied: accessDenied,
-          conferenceId: widget.conferenceId,
-          kind: widget.kind,
-          conferenceName: widget.conferenceName,
+          conferenceId: conferenceId,
+          kind: kind,
+          conferenceName: conferenceName,
           conferences:
               widget.conferences ??
               (widget.repository == null ? conferenceRepository : null),
@@ -445,7 +704,7 @@ class _MessageScreenState extends State<MessageScreen>
       ),
     );
     if (mounted && result == true && !forward) {
-      load(preserveThread: widget.personalMailbox);
+      load(preserveThread: personalMailbox);
     }
   }
 
@@ -464,7 +723,7 @@ class _MessageScreenState extends State<MessageScreen>
   }
 
   Future<void> markEchoRead() async {
-    if (bulkBusy || !widget.canRead || widget.kind != AreaKind.echo) return;
+    if (bulkBusy || !canRead || kind != AreaKind.echo) return;
     final captured = repository.epoch;
     if (bulkOperation == null) {
       final confirmed = await showDialog<bool>(
@@ -472,7 +731,7 @@ class _MessageScreenState extends State<MessageScreen>
         builder: (context) => AlertDialog(
           title: const Text('Отметить всё прочитанным'),
           content: Text(
-            'Отметить все сообщения в «${widget.conferenceName}» прочитанными? '
+            'Отметить все сообщения в «$conferenceName» прочитанными? '
             'Это относится ко всей эхе, включая сообщения вне текущей страницы и цепочки.',
           ),
           actions: [
@@ -495,7 +754,7 @@ class _MessageScreenState extends State<MessageScreen>
     var confirmed = false;
     try {
       await repository.markConferenceRead(
-        conferenceId: widget.conferenceId,
+        conferenceId: conferenceId,
         operationId: bulkOperation!,
         cancellation: token,
       );
@@ -541,13 +800,13 @@ class _MessageScreenState extends State<MessageScreen>
       final limit = (firstOffset + count - offset).clamp(1, 100);
       final result = threadId == null
           ? await repository.getConferenceMessages(
-              conferenceId: widget.conferenceId,
+              conferenceId: conferenceId,
               offset: offset,
               limit: limit,
               cancellation: token,
             )
           : await repository.getThreadPage(
-              conferenceId: widget.conferenceId,
+              conferenceId: conferenceId,
               threadId: threadId!,
               offset: offset,
               limit: limit,
@@ -583,9 +842,9 @@ class _MessageScreenState extends State<MessageScreen>
   @override
   Widget build(BuildContext context) => Scaffold(
     appBar: AppBar(
-      title: Text(widget.conferenceName),
+      title: Text(conferenceName),
       actions: [
-        if (widget.canRead && widget.kind == AreaKind.echo)
+        if (canRead && kind == AreaKind.echo)
           PopupMenuButton<String>(
             tooltip: 'Действия эхи',
             enabled: !bulkBusy && !loading,
@@ -610,15 +869,15 @@ class _MessageScreenState extends State<MessageScreen>
               ),
             ],
           ),
-        if (widget.canRead)
+        if (canRead)
           IconButton(
             onPressed: loading
                 ? null
-                : () => load(preserveThread: widget.personalMailbox),
+                : () => load(preserveThread: personalMailbox),
             icon: const Icon(Icons.refresh),
             tooltip: 'Обновить',
           ),
-        if (widget.canPost)
+        if (canPost)
           IconButton(
             onPressed: loading ? null : () => compose(),
             icon: const Icon(Icons.create),
@@ -626,7 +885,7 @@ class _MessageScreenState extends State<MessageScreen>
           ),
       ],
     ),
-    bottomNavigationBar: selected == null
+    bottomNavigationBar: selected == null && !unreadNavigation
         ? null
         : SafeArea(
             child: Padding(
@@ -635,30 +894,14 @@ class _MessageScreenState extends State<MessageScreen>
                 children: [
                   Expanded(
                     child: TextButton.icon(
-                      onPressed:
-                          loading ||
-                              (messages.indexWhere(
-                                        (m) => m.id == selected!.id,
-                                      ) <=
-                                      0 &&
-                                  firstOffset == 0)
-                          ? null
-                          : () => navigate(-1),
+                      onPressed: canNavigate(-1) ? () => navigate(-1) : null,
                       icon: const Icon(Icons.chevron_left),
                       label: const Text('Предыдущее'),
                     ),
                   ),
                   Expanded(
                     child: TextButton.icon(
-                      onPressed:
-                          loading ||
-                              (messages.indexWhere(
-                                        (m) => m.id == selected!.id,
-                                      ) ==
-                                      messages.length - 1 &&
-                                  !hasMore)
-                          ? null
-                          : () => navigate(1),
+                      onPressed: canNavigate(1) ? () => navigate(1) : null,
                       icon: const Icon(Icons.chevron_right),
                       label: const Text('Следующее'),
                     ),
@@ -669,11 +912,16 @@ class _MessageScreenState extends State<MessageScreen>
           ),
     body: Column(
       children: [
-        if (!widget.canRead)
+        if (unreadNavigation && !loading && !canNavigate(1) && error == null)
+          const Padding(
+            padding: EdgeInsets.all(8),
+            child: Text('Дальнейших непрочитанных сообщений нет'),
+          ),
+        if (!canRead)
           Padding(
             padding: const EdgeInsets.all(16),
             child: Text(
-              widget.canPost
+              canPost
                   ? "Разрешена только отправка сообщений"
                   : "Нет доступа к конференции",
             ),
@@ -692,17 +940,17 @@ class _MessageScreenState extends State<MessageScreen>
               ],
             ),
           ),
-        if (widget.personalMailbox && mailboxUpdatedAt != null && error == null)
+        if (personalMailbox && mailboxUpdatedAt != null && error == null)
           Text(
             'Обновлено с сервера: ${mailboxUpdatedAt!.toIso8601String().substring(11, 19)}',
             style: Theme.of(context).textTheme.labelSmall,
           ),
-        if (widget.personalMailbox && threadId != null)
+        if (personalMailbox && threadId != null)
           TextButton(
             onPressed: loading ? null : () => load(),
             child: const Text('Все письма'),
           ),
-        if (widget.personalMailbox &&
+        if (personalMailbox &&
             selected == null &&
             threadId == null &&
             lastOpenedMessageId != null &&
@@ -721,16 +969,18 @@ class _MessageScreenState extends State<MessageScreen>
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   TextButton(
-                    onPressed: () {
-                      if (widget.personalMailbox) {
-                        load(preserveThread: true);
-                      } else {
-                        setState(() => selected = null);
-                      }
-                    },
+                    onPressed: loading
+                        ? null
+                        : () {
+                            if (personalMailbox) {
+                              load(preserveThread: true);
+                            } else {
+                              setState(() => selected = null);
+                            }
+                          },
                     child: const Text('К списку'),
                   ),
-                  if (widget.personalMailbox &&
+                  if (personalMailbox &&
                       selected!.direction != MailDirection.unspecified)
                     Text(
                       selected!.direction == MailDirection.outgoing
@@ -754,20 +1004,20 @@ class _MessageScreenState extends State<MessageScreen>
                       '${selected!.id}:${selected!.body.hashCode}:${repository.epoch}',
                     ),
                     repository: repository.uue,
-                    conference: widget.conferenceId,
+                    conference: conferenceId,
                     message: selected!,
                   ),
                   Wrap(
                     children: [
-                      if (widget.canPost)
+                      if (canPost)
                         TextButton(
                           onPressed: loading
                               ? null
                               : () => compose(reply: true),
-                          child: Text(widget.kind.replyLabel),
+                          child: Text(kind.replyLabel),
                         ),
 
-                      if (widget.canRead && widget.kind == AreaKind.echo)
+                      if (canRead && kind == AreaKind.echo)
                         TextButton(
                           onPressed: loading
                               ? null
@@ -805,7 +1055,7 @@ class _MessageScreenState extends State<MessageScreen>
                     overflow: TextOverflow.ellipsis,
                   ),
                   subtitle: Text(
-                    '${widget.personalMailbox && message.direction != MailDirection.unspecified ? (message.direction == MailDirection.outgoing ? 'Исходящее · ' : 'Входящее · ') : ''}${message.fromName}\n${(message.bodyPreview ?? "").replaceAll(RegExp(r'\s+'), ' ').trim()}',
+                    '${personalMailbox && message.direction != MailDirection.unspecified ? (message.direction == MailDirection.outgoing ? 'Исходящее · ' : 'Входящее · ') : ''}${message.fromName}\n${(message.bodyPreview ?? "").replaceAll(RegExp(r'\s+'), ' ').trim()}',
                     maxLines: 3,
                     overflow: TextOverflow.ellipsis,
                   ),
@@ -816,7 +1066,7 @@ class _MessageScreenState extends State<MessageScreen>
               },
             ),
           ),
-        if (widget.canRead && !loading && error == null && messages.isEmpty)
+        if (canRead && !loading && error == null && messages.isEmpty)
           const Expanded(child: Center(child: Text('Сообщений нет'))),
       ],
     ),
