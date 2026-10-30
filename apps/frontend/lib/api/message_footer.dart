@@ -14,7 +14,8 @@ class MessageFooterSettings {
   static const defaultOrigin = 'https://github.com/hashev/ffido';
   final SharedPreferences preferences;
   final String version;
-  MessageFooterSettings(this.preferences, this.version);
+  final String revision;
+  MessageFooterSettings(this.preferences, this.version, {this.revision = ''});
   static Future<MessageFooterSettings> load([
     SharedPreferences? preferences,
   ]) async {
@@ -24,6 +25,7 @@ class MessageFooterSettings {
     return MessageFooterSettings(
       preferences ?? await SharedPreferences.getInstance(),
       identity['version'] as String,
+      revision: identity['build_number']?.toString() ?? '',
     );
   }
 

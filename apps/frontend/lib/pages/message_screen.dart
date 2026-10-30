@@ -1,3 +1,9 @@
+import '../templates/template_engine.dart';
+import '../templates/template_settings.dart';
+import '../api/message_footer.dart';
+
+import 'package:flutter/foundation.dart' show defaultTargetPlatform, kIsWeb;
+
 import '../updates/update_controller.dart';
 import '../utils/refresh_on_resume.dart';
 import '../widgets/uue_body.dart';
@@ -27,6 +33,7 @@ String _correspondent(String name, String address) =>
 class MessageScreen extends StatefulWidget {
   final String conferenceId, conferenceName, conferenceDescription;
   final MessageRepository? repository;
+  final Future<TemplateBundle?> Function()? loadTemplate;
   final ConferenceRepository? conferences;
   final bool canRead, canPost;
   final AreaKind kind;
@@ -39,6 +46,7 @@ class MessageScreen extends StatefulWidget {
     required this.conferenceName,
     required this.conferenceDescription,
     this.repository,
+    this.loadTemplate,
     this.conferences,
     this.canRead = false,
     this.canPost = false,
@@ -664,7 +672,11 @@ class _MessageScreenState extends State<MessageScreen>
     if (index >= 0) await open(messages[index]);
   }
 
-  Future<void> compose({bool reply = false, bool forward = false}) async {
+  Future<void> compose({
+    bool reply = false,
+    bool forward = false,
+    bool quoted = true,
+  }) async {
     if ((forward && kind != AreaKind.echo) ||
         loading ||
         (!forward && !canPost) ||
@@ -699,6 +711,9 @@ class _MessageScreenState extends State<MessageScreen>
           destination: destination,
           original: reply || forward ? selected : null,
           forward: forward,
+          quoted: quoted,
+          loadTemplate: widget.loadTemplate,
+          conferenceDescription: widget.conferenceDescription,
         ),
       ),
     );
@@ -1009,11 +1024,33 @@ class _MessageScreenState extends State<MessageScreen>
                   Wrap(
                     children: [
                       if (canPost)
-                        TextButton(
-                          onPressed: loading
-                              ? null
-                              : () => compose(reply: true),
-                          child: Text(kind.replyLabel),
+                        Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            TextButton(
+                              onPressed: loading
+                                  ? null
+                                  : () => compose(reply: true),
+                              child: Text(kind.replyLabel),
+                            ),
+                            PopupMenuButton<bool>(
+                              tooltip: 'Вид ответа',
+                              enabled: !loading,
+                              icon: const Icon(Icons.arrow_drop_down),
+                              onSelected: (quoted) =>
+                                  compose(reply: true, quoted: quoted),
+                              itemBuilder: (_) => const [
+                                PopupMenuItem(
+                                  value: true,
+                                  child: Text('С цитатой'),
+                                ),
+                                PopupMenuItem(
+                                  value: false,
+                                  child: Text('Без цитаты'),
+                                ),
+                              ],
+                            ),
+                          ],
                         ),
 
                       if (canRead && kind == AreaKind.echo)
@@ -1075,7 +1112,9 @@ class _MessageScreenState extends State<MessageScreen>
 class _ComposeScreen extends StatefulWidget {
   final MessageRepository repository;
   final Future<void> Function() onAccessDenied;
-  final String conferenceId, conferenceName;
+  final String conferenceId, conferenceName, conferenceDescription;
+  final Future<TemplateBundle?> Function()? loadTemplate;
+  final bool quoted;
   final ConferenceRepository? conferences;
   final Conference? destination;
   final Message? original;
@@ -1086,6 +1125,9 @@ class _ComposeScreen extends StatefulWidget {
     required this.onAccessDenied,
     required this.conferenceId,
     required this.conferenceName,
+    required this.conferenceDescription,
+    this.loadTemplate,
+    this.quoted = true,
     this.conferences,
     this.destination,
     this.original,
@@ -1104,6 +1146,9 @@ class _ComposeScreenState extends State<_ComposeScreen> {
   String operationId = MessageRepository.newOperationId();
   final cancellation = RpcCancellation();
   bool sending = false, uncertain = false;
+  bool templateReady = false;
+  String? templateError;
+  bool customTemplate = false;
   SelectedUueFile? attachment;
   UueCapabilities? uueLimits;
   bool uueLoading = true;
@@ -1136,7 +1181,7 @@ class _ComposeScreenState extends State<_ComposeScreen> {
 
   Future<void> pickFile() async {
     final limits = uueLimits;
-    if (limits == null || sending || uncertain) return;
+    if (!templateReady || limits == null || sending || uncertain) return;
     try {
       final file = await uueFiles.pick(limits.fileBytes);
       if (mounted && widget.repository.epoch == epoch && file != null) {
@@ -1261,9 +1306,71 @@ class _ComposeScreenState extends State<_ComposeScreen> {
       if (widget.forward) {
         body.text =
             '--- Forwarded message ---\nArea: ${widget.conferenceId}\nFrom: ${original.fromName} <${original.fromAddress}>\nDate: ${original.date}\nSubject: ${original.subject}\n\n${original.body}';
-      } else {
+      } else if (widget.quoted) {
         body.text = quoteReply(original.body, original.fromName);
         body.selection = TextSelection.collapsed(offset: body.text.length);
+      }
+    }
+    unawaited(initializeTemplate());
+  }
+
+  Future<void> initializeTemplate() async {
+    try {
+      final bundle =
+          await (widget.loadTemplate?.call() ??
+              TemplateSettings.load().then((settings) => settings.read()));
+      if (!mounted || widget.repository.epoch != epoch) return;
+      if (bundle != null) {
+        final profile = await widget.repository.getAuthorProfile(
+          cancellation: cancellation,
+        );
+        final footer = await MessageFooterSettings.load();
+        if (!mounted || widget.repository.epoch != epoch) return;
+        final result = TemplateEngine().render(
+          bundle.text,
+          TemplateContext(
+            action: widget.forward
+                ? TemplateAction.forward
+                : widget.original == null
+                ? TemplateAction.newMessage
+                : widget.quoted
+                ? TemplateAction.quoted
+                : TemplateAction.reply,
+            kind: destination?.kind ?? widget.kind,
+            original: widget.original,
+            name: profile.name,
+            address: profile.address,
+            toName: toName.text,
+            toAddress: toAddress.text,
+            subject: subject.text,
+            area: primaryName,
+            description:
+                destination?.description ?? widget.conferenceDescription,
+            originalArea: widget.conferenceName,
+            originalDescription: widget.conferenceDescription,
+            version: footer.version,
+            revision: footer.revision,
+            platform: kIsWeb ? 'Web' : defaultTargetPlatform.name,
+            tagline: footer.tagline,
+            origin: footer.origin,
+            uptime: applicationUptime.elapsed,
+          ),
+        );
+        if (!result.valid) {
+          throw FormatException(
+            result.diagnostics.where((d) => d.error).join('\n'),
+          );
+        }
+        body.text = result.body;
+        body.selection = TextSelection.collapsed(offset: result.cursor);
+        subject.text = result.subject;
+        toName.text = result.toName;
+        customTemplate = true;
+      }
+      setState(() => templateReady = true);
+    } catch (e) {
+      if (mounted && widget.repository.epoch == epoch) {
+        setState(() => templateError = 'Не удалось применить шаблон: $e');
       }
     }
   }
@@ -1297,7 +1404,7 @@ class _ComposeScreenState extends State<_ComposeScreen> {
   }
 
   Future<void> send() async {
-    if (sending || widget.repository.epoch != epoch) return;
+    if (!templateReady || sending || widget.repository.epoch != epoch) return;
     setState(() {
       sending = true;
       error = null;
@@ -1501,7 +1608,11 @@ class _ComposeScreenState extends State<_ComposeScreen> {
           if (canCrosspost)
             PopupMenuButton<String>(
               tooltip: 'Дополнительно',
-              enabled: widget.conferences != null && !sending && !uncertain,
+              enabled:
+                  templateReady &&
+                  widget.conferences != null &&
+                  !sending &&
+                  !uncertain,
               onSelected: (_) => selectCrosspost(),
               itemBuilder: (_) => [
                 PopupMenuItem(
@@ -1526,7 +1637,7 @@ class _ComposeScreenState extends State<_ComposeScreen> {
             children: [
               if (error != null) Text(error!),
               ElevatedButton(
-                onPressed: sending ? null : send,
+                onPressed: sending || !templateReady ? null : send,
                 child: Text(
                   sending
                       ? 'Сохранение...'
@@ -1543,6 +1654,26 @@ class _ComposeScreenState extends State<_ComposeScreen> {
         controller: composerScroll,
         padding: const EdgeInsets.all(16),
         children: [
+          if (!templateReady && templateError == null)
+            const LinearProgressIndicator(),
+          if (templateError != null) ...[
+            Text(templateError!),
+            TextButton(
+              onPressed: () => setState(() {
+                templateReady = true;
+                templateError = null;
+              }),
+              child: const Text('Использовать штатное оформление'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pushNamed(context, '/settings'),
+              child: const Text('Открыть настройки шаблона'),
+            ),
+          ],
+          if (widget.forward && customTemplate)
+            const Text(
+              'Шаблон применён при открытии. После смены эхи проверьте оформление вручную.',
+            ),
           Text(
             '${widget.kind == AreaKind.echo ? 'Эха' : widget.kind.groupLabel}: ${widget.forward ? destination?.name ?? "не выбрана" : widget.conferenceName}',
           ),
@@ -1565,7 +1696,9 @@ class _ComposeScreenState extends State<_ComposeScreen> {
           if (widget.forward) ...[
             Text('Источник: ${widget.conferenceName} (${widget.conferenceId})'),
             TextButton(
-              onPressed: sending || uncertain ? null : changeDestination,
+              onPressed: !templateReady || sending || uncertain
+                  ? null
+                  : changeDestination,
               child: const Text('Изменить эху назначения'),
             ),
           ],
@@ -1573,14 +1706,17 @@ class _ComposeScreenState extends State<_ComposeScreen> {
             controller: toName,
             style: TextStyle(color: Theme.of(context).colorScheme.onSurface),
             enabled:
-                !sending && !uncertain && widget.original == null ||
-                !sending && !uncertain && widget.forward,
+                templateReady &&
+                !sending &&
+                !uncertain &&
+                (widget.original == null || widget.forward),
             decoration: const InputDecoration(labelText: 'Получатель'),
           ),
           TextField(
             controller: toAddress,
             style: TextStyle(color: Theme.of(context).colorScheme.onSurface),
             enabled:
+                templateReady &&
                 !sending &&
                 !uncertain &&
                 (widget.original == null || widget.forward),
@@ -1590,13 +1726,13 @@ class _ComposeScreenState extends State<_ComposeScreen> {
           ),
           TextField(
             controller: subject,
-            enabled: !sending && !uncertain,
+            enabled: templateReady && !sending && !uncertain,
             decoration: const InputDecoration(labelText: 'Тема'),
           ),
           TextField(
             controller: body,
             style: ftnTextStyle(Theme.of(context).colorScheme),
-            enabled: !sending && !uncertain,
+            enabled: templateReady && !sending && !uncertain,
             minLines: 6,
             maxLines: null,
             decoration: const InputDecoration(labelText: 'Текст'),

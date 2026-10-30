@@ -52,6 +52,13 @@ class MessageRepository {
     return result;
   }
 
+  Future<UserProfile> getAuthorProfile({RpcCancellation? cancellation}) async {
+    final captured = epoch;
+    final profile = await _apiClient.getProfile(cancellation: cancellation);
+    _check(captured, cancellation);
+    return mapProfile(profile);
+  }
+
   Stream<int> get sessionChanges => _apiClient.sessionChanges;
   static String newOperationId() => List.generate(
     16,

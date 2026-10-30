@@ -1,3 +1,4 @@
+import '../templates/template_settings_panel.dart';
 import '../api/message_footer.dart';
 import '../updates/update_controller.dart';
 import '../updates/update_ui.dart';
@@ -323,6 +324,7 @@ class _SettingsWidgetState extends State<SettingsWidget> {
         if (_busy) const Center(child: CircularProgressIndicator()),
         if (_message.isNotEmpty)
           Text(_message, key: const Key('connection-message')),
+        TemplateSettingsPanel(preferences: widget.preferences),
       ],
     ),
   );
