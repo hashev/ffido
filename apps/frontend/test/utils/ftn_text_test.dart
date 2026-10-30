@@ -40,9 +40,37 @@ void main() {
           );
         }
       }
-      expect(quoteReply('AB> q\n>> n'), '> AB> q\n> >> n\n\n');
+      expect(quoteReply('AB> q\n>> n', 'Yuriy Khashev'), 'AB>> q\nYK>>> n\n\n');
     },
   );
+  test('reply initials, nesting and text preservation', () {
+    expect(
+      quoteReply(' AB> CD> текст', 'Yuriy Khashev'),
+      ' AB>> CD> текст\n\n',
+    );
+    const cases = {
+      'Yuriy Khashev': 'YK',
+      'Иван Петров': 'ИП',
+      'Sysop': 'S',
+      '': '?',
+      ' ... ': '?',
+      ' (Yuriy)  [Khashev] ': 'YK',
+      'a b c d e f g h i': 'ABCDEFGH',
+      '𐐨 test': '𐐀T',
+    };
+    for (final entry in cases.entries) {
+      final text = quoteReply('текст', entry.key);
+      expect(text, '${entry.value}> текст\n\n');
+      expect(quoteDepth(text.split('\n').first), 1);
+    }
+    expect(
+      quoteReply(
+        'Текст\r\n\r\n AB> цитата\rAB>> глубже\n> старое\n> > старее\n  отступ\n \t\na > b',
+        'Yuriy Khashev',
+      ),
+      'YK> Текст\n\n AB>> цитата\nAB>>> глубже\nYK>> старое\nYK>>> старее\nYK>   отступ\n \t\nYK> a > b\n\n',
+    );
+  });
   testWidgets(
     'controller preserves composing, selection, edits and clipboard',
     (tester) async {

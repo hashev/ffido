@@ -53,6 +53,48 @@ Future<void> tap(WidgetTester tester, String text) async {
 
 void main() {
   testWidgets(
+    'bulk preserves mailbox position and selected body without GetMessage',
+    (tester) async {
+      final api = FakeTransport();
+      addTearDown(api.dispose);
+      var marked = false;
+      api.conference = (_) async => state(position: 'g#0', revision: 1);
+      api.messages = (_) async => wire.ListMessagesResponse(
+        messages: [row(0)..isRead = marked, row(1)..isRead = marked],
+      );
+      api.message = (_) async => row(0);
+      api.bulkRead = (_) async {
+        marked = true;
+        return wire.MarkConferenceReadResponse();
+      };
+      await tester.pumpWidget(screen(api));
+      await tester.pumpAndSettle();
+      await tap(tester, 'Тема 0');
+      final details = api.calls.whereType<wire.MessageReference>().length;
+      final states = api.calls.whereType<wire.GetConferenceRequest>().length;
+      await tester.tap(find.byTooltip('Действия области'));
+      await tester.pumpAndSettle();
+      await tap(tester, 'Отметить всё прочитанным');
+      await tap(tester, 'Отметить');
+      expect(
+        api.calls
+            .whereType<wire.MarkConferenceReadRequest>()
+            .single
+            .conferenceId,
+        'mailbox',
+      );
+      expect(api.calls.whereType<wire.MessageReference>().length, details);
+      expect(api.calls.whereType<wire.GetConferenceRequest>().length, states);
+      expect(find.text('Тело 0'), findsOneWidget);
+      expect(find.text('Сообщения отмечены прочитанными'), findsOneWidget);
+      await tap(tester, 'Ответить лично');
+      expect(
+        tester.widget<TextField>(find.byType(TextField).at(3)).controller!.text,
+        'А> Тело 0\n\n',
+      );
+    },
+  );
+  testWidgets(
     'continue loads actual anchor page and navigates both directions',
     (tester) async {
       final api = FakeTransport();

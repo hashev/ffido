@@ -838,12 +838,15 @@ TEST_F(PrivateAreasTest, SameMsgIdFromDifferentOriginsIsTwoAddressedDeliveries) 
   EXPECT_EQ(list->messages[1].from_address, "2:1/9.8");
 }
 
-TEST_F(PrivateAreasTest, BulkReadOnlyEchoAndReadPermissionWithoutPost) {
+TEST_F(PrivateAreasTest, BulkReadAllSupportedAreasAndReadPermissionWithoutPost) {
   for (const auto& [id, area] : catalog->areas()) {
-    if (area.config.kind == AreaKind::kEcho)
-      continue;
-    const auto result = messages->MarkConferenceRead(id, "bulk", "owner");
-    EXPECT_FALSE(result);
+    const auto result = messages->MarkConferenceRead(id, "bulk-" + area.config.name, "owner");
+    if (area.config.msgbase_type != "JAM") {
+      EXPECT_FALSE(result);
+    } else {
+      ASSERT_TRUE(result) << id;
+      EXPECT_EQ(result->snapshot_count, 0);
+    }
   }
   for (auto& [address, permission] : hpt.echoes.front().links)
     permission.post = false;
@@ -863,6 +866,60 @@ TEST_F(PrivateAreasTest, BulkReadOnlyEchoAndReadPermissionWithoutPost) {
   ASSERT_TRUE(policy);
   service::MessageService denied(catalog, metadata, *policy);
   EXPECT_FALSE(denied.MarkConferenceRead("ECHO", "empty", "point1"));
+}
+
+TEST_F(PrivateAreasTest, BulkReadPrivateSnapshotsReplayAndAccessBoundary) {
+  const auto config = Mailboxes();
+  const auto box = storage::MailboxId("2:1/2.2");
+  int operation_number = 0;
+  for (const auto& [id, area] : catalog->areas()) {
+    if (area.config.msgbase_type != "JAM")
+      continue;
+    // Seed read-only areas through storage: the RPC must not grant publication.
+    {
+      auto view =
+          storage::JamAccess::Open(*catalog, id, true, std::chrono::steady_clock::now() + std::chrono::seconds(2));
+      ASSERT_TRUE(view) << id;
+      msgapi::JamMessage message;
+      message.SetText("fixture");
+      message.SetSubject("fixture");
+      EXPECT_EQ((*view)->messages().AddMessage(message), msgapi::JamError::kSuccess);
+    }
+    const std::string user = area.files->personal_mailbox ? (id == box ? "point1" : "point2") : "owner";
+    const auto operation = "bulk-" + std::to_string(++operation_number);
+    auto first = messages->MarkConferenceRead(id, operation, user);
+    ASSERT_TRUE(first) << id;
+    EXPECT_EQ(first->marked_count, 1);
+    EXPECT_EQ(first->snapshot_count, 1);
+    EXPECT_TRUE(*metadata->IsMessageRead(user, {id, first->generation, "1"}));
+    const auto before = metadata->LastOpened(user, id).value();
+    {
+      auto view =
+          storage::JamAccess::Open(*catalog, id, true, std::chrono::steady_clock::now() + std::chrono::seconds(2));
+      ASSERT_TRUE(view);
+      msgapi::JamMessage message;
+      message.SetText("new arrival");
+      EXPECT_EQ((*view)->messages().AddMessage(message), msgapi::JamError::kSuccess);
+    }
+    service::MessageService restarted(catalog, metadata, access);
+    auto replay = restarted.MarkConferenceRead(id, operation, user);
+    ASSERT_TRUE(replay);
+    EXPECT_EQ(replay->snapshot_count, 1);
+    EXPECT_FALSE(*metadata->IsMessageRead(user, {id, first->generation, "2"}));
+    EXPECT_FALSE(*metadata->IsMessageRead("another", {id, first->generation, "1"}));
+    EXPECT_EQ(metadata->LastOpened(user, id)->revision, before.revision);
+    if (area.config.kind != AreaKind::kEcho) {
+      const auto denied_user = user == "point1" ? "point2" : "point1";
+      EXPECT_FALSE(messages->MarkConferenceRead(id, "denied", denied_user));
+      EXPECT_FALSE(*metadata->FindBulkRead(denied_user, "denied", id));
+    }
+  }
+  EXPECT_TRUE(metadata->GetHistory("owner")->empty());
+  EXPECT_TRUE(metadata->GetHistory("point1")->empty());
+  auto revoked = service::EchoAccess::Build(hpt, *catalog);
+  ASSERT_TRUE(revoked);
+  service::MessageService denied(catalog, metadata, *revoked);
+  EXPECT_FALSE(denied.MarkConferenceRead(net, "bulk-MAIL", "owner"));
 }
 
 TEST_F(PrivateAreasTest, BulkReadSkipsDeletedAndNeverDecodesOrWritesJam) {
@@ -893,6 +950,110 @@ TEST_F(PrivateAreasTest, BulkReadSkipsDeletedAndNeverDecodesOrWritesJam) {
   EXPECT_FALSE(*metadata->IsMessageRead("point1", {"ECHO", result->generation, "2"}));
   for (const auto& [extension, bytes] : before)
     EXPECT_EQ(test::ReadFile(temp.path() / ("ECHO." + extension)), bytes);
+}
+
+TEST_F(PrivateAreasTest, HistoricalUtf8RepairPreservesApiIdentityAndMetadata) {
+  std::vector<EchoAreaConfig> areas;
+  for (const auto& [id, area] : catalog->areas())
+    areas.push_back(area.config);
+  auto rebuilt = storage::JamCatalog::Build(temp.path(), areas, {}, {{"ECHO", "UTF-8"}});
+  ASSERT_TRUE(rebuilt);
+  auto utf_catalog = std::shared_ptr<storage::JamCatalog>(std::move(*rebuilt));
+  service::MessageService utf(utf_catalog, metadata, access);
+  {
+    auto view = storage::JamAccess::Open(*utf_catalog, "ECHO", true,
+                                         std::chrono::steady_clock::now() + std::chrono::seconds(2));
+    ASSERT_TRUE(view);
+    for (int i = 0; i < 3; ++i) {
+      msgapi::JamMessage message;
+      message.SetSenderName("Автор");
+      message.SetReceiverName("Получатель");
+      message.SetSubject("Тема");
+      message.SetText("Привет UTF-8");
+      message.SetMsgId("2:1/2 fixture-" + std::to_string(i));
+      EXPECT_EQ((*view)->messages().AddMessage(message), msgapi::JamError::kSuccess);
+    }
+  }
+  const auto listed = utf.GetMessages("ECHO", {0, 1}, "oldest", "owner");
+  ASSERT_TRUE(listed);
+  const auto id = listed->messages.front().id;
+  ASSERT_TRUE(utf.GetMessage("ECHO", id, "owner"));
+  ASSERT_TRUE(metadata->AddBookmark("owner", "ECHO"));
+  const auto position = metadata->LastOpened("owner", "ECHO").value();
+  const auto history = metadata->GetHistory("owner")->size();
+  const auto original_header = test::ReadFile(temp.path() / "ECHO.jhr");
+  const auto original_text = test::ReadFile(temp.path() / "ECHO.jdt");
+  for (const auto& [extension, original] : {std::pair{"jhr", original_header}, {"jdt", original_text}}) {
+    // Single-byte transport mapping applied to UTF-8 bytes, as in the incident.
+    auto damaged =
+        storage::ConvertText(std::string_view(extension) == "jhr" ? std::string{} : original, "CP866", "KOI8-R");
+    ASSERT_TRUE(damaged);
+    // Header binary layout must not be transformed: only textual fields are damaged.
+    if (std::string_view(extension) == "jhr") {
+      *damaged = original;
+      for (const auto& value : {std::string("Автор"), std::string("Получатель"), std::string("Тема")}) {
+        const auto replacement = storage::ConvertText(value, "CP866", "KOI8-R").value();
+        size_t offset = 0;
+        while ((offset = damaged->find(value, offset)) != std::string::npos) {
+          damaged->replace(offset, value.size(), replacement);
+          offset += replacement.size();
+        }
+      }
+    }
+    std::ofstream output(temp.path() / (std::string("ECHO.") + extension), std::ios::binary | std::ios::trunc);
+    output.write(damaged->data(), damaged->size());
+  }
+  EXPECT_FALSE(utf.GetMessages("ECHO", {}, "oldest", "owner"));
+  std::ofstream(temp.path() / "hpt.lock");
+  const nlohmann::json configuration = {{"ftn",
+                                         {{"jam_base_path", temp.path().string()},
+                                          {"coordination_lock", (temp.path() / "hpt.lock").string()},
+                                          {"jam_encoding_overrides", {{"ECHO", "UTF-8"}}}}}};
+  std::ofstream(temp.path() / "repair.json") << configuration;
+  const std::string program = R"PY(
+import hashlib, json, pathlib, subprocess, sys
+root = pathlib.Path(sys.argv[1]); script = sys.argv[2]
+report = root/'report.json'; marker = root/'maintenance.json'
+command = [sys.executable, script, '--config', str(root/'repair.json'), '--base', 'ECHO', '--report', str(report)]
+subprocess.run(command, check=True)
+marker.write_text(json.dumps({'report_sha256': hashlib.sha256(report.read_bytes()).hexdigest(), 'stopped': ['backend','hpt','jamnntpd','cron']}))
+subprocess.run(command + ['--apply', '--backup', str(root/'backup'), '--maintenance-file', str(marker)], check=True)
+)PY";
+  std::vector<std::string> args = {
+      FFIDO_PYTHON, "-c", program, temp.path().string(),
+      (std::filesystem::path(FFIDO_HPT_WRAPPER).parent_path() / "repair_jam_utf8.py").string()};
+  std::vector<char*> pointers;
+  for (auto& argument : args)
+    pointers.push_back(argument.data());
+  pointers.push_back(nullptr);
+  pid_t child;
+  ASSERT_EQ(posix_spawn(&child, args[0].c_str(), nullptr, nullptr, pointers.data(), environ), 0);
+  int status = 0;
+  ASSERT_EQ(waitpid(child, &status, 0), child);
+  ASSERT_TRUE(WIFEXITED(status));
+  ASSERT_EQ(WEXITSTATUS(status), 0);
+  EXPECT_EQ(test::ReadFile(temp.path() / "ECHO.jhr"), original_header);
+  EXPECT_EQ(test::ReadFile(temp.path() / "ECHO.jdt"), original_text);
+  EXPECT_EQ(metadata->LastOpened("owner", "ECHO")->revision, position.revision);
+  EXPECT_EQ(metadata->LastOpened("owner", "ECHO")->message, position.message);
+  EXPECT_EQ(metadata->GetHistory("owner")->size(), history);
+  EXPECT_TRUE(*metadata->IsBookmarked("owner", "ECHO"));
+  for (int offset = 0; offset < 3; ++offset) {
+    const auto page = utf.GetMessages("ECHO", {offset, 1}, "oldest", "owner");
+    ASSERT_TRUE(page);
+    ASSERT_EQ(page->messages.size(), 1);
+    if (offset == 0) {
+      EXPECT_EQ(page->messages.front().id, id);
+      EXPECT_TRUE(page->messages.front().is_read);
+    } else {
+      EXPECT_FALSE(page->messages.front().is_read);
+    }
+    auto detail = utf.GetMessage("ECHO", page->messages.front().id, "owner");
+    ASSERT_TRUE(detail);
+    EXPECT_EQ(detail->body, "Привет UTF-8");
+    EXPECT_EQ(detail->from_name, "Автор");
+    EXPECT_EQ(detail->subject, "Тема");
+  }
 }
 
 TEST_F(PrivateAreasTest, UueOwnerAndPointMailboxesStayIsolated) {

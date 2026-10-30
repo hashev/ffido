@@ -105,7 +105,7 @@ void main() {
       final fields = find.byType(TextField);
       expect(
         tester.widget<TextField>(fields.at(3)).controller!.text,
-        '> Текст\n>  AB> Цитата\n\n',
+        'А> Текст\n AB>> Цитата\n\n',
       );
       await tester.enterText(fields.at(3), '> Текст\nМой ответ');
       await tap(tester, 'Отправить');

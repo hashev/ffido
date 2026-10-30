@@ -261,9 +261,6 @@ std::expected<storage::BulkReadResult, domain::ApiError> MessageService::MarkCon
     return std::unexpected(permission.error());
   if (!permission->read)
     return std::unexpected(EchoAccess::Denied());
-  if (area->second.config.kind != AreaKind::kEcho)
-    return std::unexpected(
-        domain::ApiError{domain::ErrorCode::kPrecondition, "Bulk read is available only for echoes", {}});
   if (operation.empty() || operation.size() > 128 ||
       operation.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_") !=
           std::string_view::npos)

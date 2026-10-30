@@ -722,8 +722,8 @@ class _MessageScreenState extends State<MessageScreen>
     await widget.onAccessDenied?.call();
   }
 
-  Future<void> markEchoRead() async {
-    if (bulkBusy || !canRead || kind != AreaKind.echo) return;
+  Future<void> markAreaRead() async {
+    if (bulkBusy || !canRead || activeConference.unsupportedFormat) return;
     final captured = repository.epoch;
     if (bulkOperation == null) {
       final confirmed = await showDialog<bool>(
@@ -732,7 +732,7 @@ class _MessageScreenState extends State<MessageScreen>
           title: const Text('Отметить всё прочитанным'),
           content: Text(
             'Отметить все сообщения в «$conferenceName» прочитанными? '
-            'Это относится ко всей эхе, включая сообщения вне текущей страницы и цепочки.',
+            'Это относится ко всей области, включая сообщения вне текущей страницы и цепочки.',
           ),
           actions: [
             TextButton(
@@ -768,7 +768,7 @@ class _MessageScreenState extends State<MessageScreen>
       await refreshBulkPage(captured);
       if (!mounted || captured != repository.epoch) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Сообщения эхи отмечены прочитанными')),
+        const SnackBar(content: Text('Сообщения отмечены прочитанными')),
       );
     } catch (e) {
       if (!mounted || captured != repository.epoch) return;
@@ -844,11 +844,11 @@ class _MessageScreenState extends State<MessageScreen>
     appBar: AppBar(
       title: Text(conferenceName),
       actions: [
-        if (canRead && kind == AreaKind.echo)
+        if (canRead && !activeConference.unsupportedFormat)
           PopupMenuButton<String>(
-            tooltip: 'Действия эхи',
+            tooltip: 'Действия области',
             enabled: !bulkBusy && !loading,
-            onSelected: (_) => markEchoRead(),
+            onSelected: (_) => markAreaRead(),
             itemBuilder: (_) => [
               PopupMenuItem(
                 value: 'read',
@@ -1263,7 +1263,7 @@ class _ComposeScreenState extends State<_ComposeScreen> {
         body.text =
             '--- Forwarded message ---\nArea: ${widget.conferenceId}\nFrom: ${original.fromName} <${original.fromAddress}>\nDate: ${original.date}\nSubject: ${original.subject}\n\n${original.body}';
       } else {
-        body.text = quoteReply(original.body);
+        body.text = quoteReply(original.body, original.fromName);
         body.selection = TextSelection.collapsed(offset: body.text.length);
       }
     }

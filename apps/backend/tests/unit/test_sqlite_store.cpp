@@ -847,38 +847,39 @@ TEST(SQLiteStore, ConcurrentViewsUseCommitRevisionsAndKeepBothReadMarks) {
 TEST_F(SQLiteStoreTest, BulkReadAtomicReplayAndIsolation) {
   ASSERT_TRUE(store_->SaveProfile("A", {"A", "2:1/2.1", "", ""}));
   ASSERT_TRUE(store_->SaveProfile("B", {"B", "2:1/2.2", "", ""}));
-  ASSERT_TRUE(store_->RecordMessageView("A", {"ECHO", "g", "1"}));
-  const auto position = *store_->LastOpened("A", "ECHO");
-  auto result = store_->MarkConferenceRead("A", "bulk", "ECHO", "g", {1, 3, 7});
+  ASSERT_TRUE(store_->RecordMessageView("A", {"@ffido/2/local", "g", "1"}));
+  const auto position = *store_->LastOpened("A", "@ffido/2/local");
+  auto result = store_->MarkConferenceRead("A", "bulk", "@ffido/2/local", "g", {1, 3, 7});
   ASSERT_TRUE(result);
   EXPECT_EQ(result->marked_count, 2);
   EXPECT_EQ(result->snapshot_count, 3);
-  EXPECT_FALSE(*store_->IsMessageRead("B", {"ECHO", "g", "3"}));
-  EXPECT_EQ(store_->LastOpened("A", "ECHO")->revision, position.revision);
+  EXPECT_FALSE(*store_->IsMessageRead("B", {"@ffido/2/local", "g", "3"}));
+  EXPECT_EQ(store_->LastOpened("A", "@ffido/2/local")->revision, position.revision);
   EXPECT_EQ(store_->GetHistory("A")->size(), 1);
   store_.reset();
   store_ = storage::CreateSQLiteStore(db_path_);
   ASSERT_TRUE(store_->Init());
-  auto replay = store_->MarkConferenceRead("A", "bulk", "ECHO", "new-generation", {1, 3, 7, 8});
+  auto replay = store_->MarkConferenceRead("A", "bulk", "@ffido/2/local", "new-generation", {1, 3, 7, 8});
   ASSERT_TRUE(replay);
   EXPECT_EQ(replay->generation, "g");
   EXPECT_EQ(replay->marked_count, 2);
-  EXPECT_FALSE(*store_->IsMessageRead("A", {"ECHO", "g", "8"}));
-  EXPECT_FALSE(*store_->IsMessageRead("A", {"ECHO", "new-generation", "1"}));
+  EXPECT_FALSE(*store_->IsMessageRead("A", {"@ffido/2/local", "g", "8"}));
+  EXPECT_FALSE(*store_->IsMessageRead("A", {"@ffido/2/local", "new-generation", "1"}));
   auto conflict = store_->MarkConferenceRead("A", "bulk", "OTHER", "g", {});
   ASSERT_FALSE(conflict);
   EXPECT_EQ(conflict.error().code, domain::ErrorCode::kConflict);
-  auto empty = store_->MarkConferenceRead("A", "empty", "ECHO", "g", {});
+  auto empty = store_->MarkConferenceRead("A", "empty", "@ffido/2/local", "g", {});
   ASSERT_TRUE(empty);
   EXPECT_EQ(empty->snapshot_count, 0);
 }
 TEST_F(SQLiteStoreTest, BulkReadRollsBackOnCancellationOrSqlFailure) {
   ASSERT_TRUE(store_->SaveProfile("A", {"A", "2:1/2.1", "", ""}));
   int checked = 0;
-  auto cancelled = store_->MarkConferenceRead("A", "cancel", "ECHO", "g", {1, 2, 3}, [&] { return ++checked < 3; });
+  auto cancelled =
+      store_->MarkConferenceRead("A", "cancel", "@ffido/2/local", "g", {1, 2, 3}, [&] { return ++checked < 3; });
   EXPECT_FALSE(cancelled);
-  EXPECT_EQ(*store_->GetReadCount("A", "ECHO", "g"), 0);
-  EXPECT_FALSE(*store_->FindBulkRead("A", "cancel", "ECHO"));
+  EXPECT_EQ(*store_->GetReadCount("A", "@ffido/2/local", "g"), 0);
+  EXPECT_FALSE(*store_->FindBulkRead("A", "cancel", "@ffido/2/local"));
   sqlite3* db = nullptr;
   ASSERT_EQ(sqlite3_open(db_path_.c_str(), &db), SQLITE_OK);
   ASSERT_EQ(
@@ -886,15 +887,16 @@ TEST_F(SQLiteStoreTest, BulkReadRollsBackOnCancellationOrSqlFailure) {
           db, "CREATE TRIGGER fail_bulk BEFORE INSERT ON bulk_read_operations BEGIN SELECT RAISE(ABORT,'fixture'); END",
           nullptr, nullptr, nullptr),
       SQLITE_OK);
-  auto failed = store_->MarkConferenceRead("A", "failure", "ECHO", "g", {1, 2, 3});
+  auto failed = store_->MarkConferenceRead("A", "failure", "@ffido/2/local", "g", {1, 2, 3});
   EXPECT_FALSE(failed);
-  EXPECT_EQ(*store_->GetReadCount("A", "ECHO", "g"), 0);
+  EXPECT_EQ(*store_->GetReadCount("A", "@ffido/2/local", "g"), 0);
   ASSERT_EQ(sqlite3_exec(db, "DROP TRIGGER fail_bulk", nullptr, nullptr, nullptr), SQLITE_OK);
   sqlite3_close(db);
-  auto reading = std::async(std::launch::async, [&] { return store_->RecordMessageView("A", {"ECHO", "g", "1"}); });
-  ASSERT_TRUE(store_->MarkConferenceRead("A", "success", "ECHO", "g", {1, 2, 3}));
+  auto reading =
+      std::async(std::launch::async, [&] { return store_->RecordMessageView("A", {"@ffido/2/local", "g", "1"}); });
+  ASSERT_TRUE(store_->MarkConferenceRead("A", "success", "@ffido/2/local", "g", {1, 2, 3}));
   ASSERT_TRUE(reading.get());
-  EXPECT_EQ(*store_->GetReadCount("A", "ECHO", "g"), 3);
+  EXPECT_EQ(*store_->GetReadCount("A", "@ffido/2/local", "g"), 3);
 }
 TEST_F(SQLiteStoreTest, BulkReadMigratesSevenWithoutLosingExistingData) {
   ASSERT_TRUE(store_->SaveProfile("A", {"A", "2:1/2.1", "", ""}));

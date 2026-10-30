@@ -9,7 +9,13 @@ parser=argparse.ArgumentParser(description='Isolated amster2 HPT charset verific
 parser.add_argument('--image',required=True)
 parser.add_argument('--worker',default='ffido-tosser:local')
 parser.add_argument('--control-worker',default='ffido-tosser:before-hpt-transport-20261023')
+parser.add_argument('--repair-script',type=Path)
+
 options=parser.parse_args()
+if options.repair_script is None:
+ candidate=Path(__file__).resolve().parents[2]/'scripts/repair_jam_utf8.py'
+ options.repair_script=candidate if candidate.is_file() else Path(__file__).with_name('repair_jam_utf8.py')
+if not options.repair_script.is_file():raise SystemExit('Pass --repair-script with the operator repair tool path')
 BASE=Path('/home/yurik/fido');WORK=BASE/'ffido/verification/hpt-charset';WORK.mkdir(parents=True,exist_ok=True)
 ROOT=WORK/('isolated-cycle-'+time.strftime('%Y%m%d-%H%M%S'));ROOT.mkdir(exist_ok=False)
 IMAGE=options.image;WORKER=options.worker;NAME='ffido-hpt-charset-fixture'
@@ -76,10 +82,10 @@ for node,addr,peer in [('sender','2:1/1','2:1/2'),('receiver','2:1/2','2:1/1')]:
 shutil.copyfile(BASE/'spool/outkoi8alt',ROOT/'outtab')
 shutil.copyfile(BASE/'spool/outaltkoi8',ROOT/'intab')
 
-def start(node):
+def start(node,address=None):
  run('docker','run','-d','--name',NAME,'--user','1000:1000','-p','127.0.0.1:18082:8080','-v',str(ROOT)+':/fixture','-v',str(BASE/'ffido/tls')+':/etc/ffido/tls:ro',IMAGE,f'/fixture/{node}/config.json')
  ch=grpc.secure_channel('127.0.0.1:18082',grpc.ssl_channel_credentials(),options=(('grpc.ssl_target_name_override','v1002682.hosted-by-vdsina.com'),));grpc.channel_ready_future(ch).result(timeout=30);stub=g.FfidoStub(ch)
- addr='2:1/1.1' if node=='sender' else '2:1/2.1'
+ addr=address or ('2:1/1.1' if node=='sender' else '2:1/2.1')
  login=stub.Login(p.LoginRequest(name='Николай Ёж',address=addr,password=password),timeout=10);md=(('authorization','Bearer '+login.session_secret),)
  return ch,stub,md
 
@@ -108,6 +114,52 @@ try:
    assert f[2]==[sent.from_name.encode(local)] and f[3]==[sent.to_name.encode(local)]
    assert [x for x in f[2000] if x.startswith(b'CHRS:')]==[b'CHRS: '+(b'KOI8-R 2' if area=='ordinary' else b'UTF-8 4')]
  stop(ch,stub,md)
+ # Reproduce and repair the historical byte transformation on an isolated copy.
+ historical=ROOT/'historical';shutil.copytree(ROOT/'sender',historical)
+ for name in ('config.json','hpt.cfg','areas.cfg'):
+  file=historical/name;file.write_text(file.read_text().replace('/sender/','/historical/'))
+ ch,stub,md=start('historical',address='2:1/1.1')
+ prior=stub.ListMessages(p.ListMessagesRequest(conference_id='utf-8',page=p.PageRequest(limit=10),sort=p.MESSAGE_SORT_DATE_DESCENDING),metadata=md,timeout=10)
+ prior_ids=[x.id for x in prior.messages];assert len(prior_ids)==2
+ stub.GetMessage(p.MessageReference(conference_id='utf-8',message_id=prior_ids[0]),metadata=md,timeout=10)
+ prior_read={x.id:x.is_read for x in stub.ListMessages(p.ListMessagesRequest(conference_id='utf-8',page=p.PageRequest(limit=10),sort=p.MESSAGE_SORT_DATE_DESCENDING),metadata=md,timeout=10).messages}
+ stop(ch,stub,md)
+ base=historical/'jam/utf-8';clean={ext:base.with_suffix(ext).read_bytes() for ext in ('.jhr','.jdt','.jdx')}
+ hdr=bytearray(clean['.jhr']);txt=bytearray(clean['.jdt']);idx=clean['.jdx']
+ for slot in range(len(idx)//8):
+  at=struct.unpack_from('<I',idx,slot*8+4)[0];cur=at+76;end=cur+struct.unpack_from('<I',hdr,at+8)[0]
+  while cur<end:
+   lo,hi,n=struct.unpack_from('<HHI',hdr,cur);cur+=8
+   if hi==0 and lo in (2,3,6):hdr[cur:cur+n]=bytes(hdr[cur:cur+n]).decode('cp866').encode('koi8-r')
+   cur+=n
+  off,n=struct.unpack_from('<II',hdr,at+60);txt[off:off+n]=bytes(txt[off:off+n]).decode('cp866').encode('koi8-r')
+ base.with_suffix('.jhr').write_bytes(hdr);base.with_suffix('.jdt').write_bytes(txt)
+ ch,stub,md=start('historical',address='2:1/1.1')
+ try:
+  stub.ListMessages(p.ListMessagesRequest(conference_id='utf-8',page=p.PageRequest(limit=10),sort=p.MESSAGE_SORT_DATE_DESCENDING),metadata=md,timeout=10)
+  raise AssertionError('Historical damage must fail reading')
+ except grpc.RpcError as error:assert error.code()==grpc.StatusCode.INTERNAL
+ stop(ch,stub,md)
+ repair_config=ROOT/'historical-repair.json'
+ repair_config.write_text(json.dumps({'ftn':{'jam_base_path':str(historical/'jam'),'coordination_lock':str(historical/'hpt.lock'),'jam_encoding_overrides':{'utf-8':'UTF-8'}}}))
+ repair_report=ROOT/'historical-report.json';maintenance=ROOT/'historical-maintenance.json'
+ repair_command=[sys.executable,str(options.repair_script),'--config',str(repair_config),'--base','utf-8','--report',str(repair_report)]
+ run(*repair_command)
+ changes=json.loads(repair_report.read_bytes())['changes'];assert changes
+ maintenance.write_text(json.dumps({'report_sha256':hashlib.sha256(repair_report.read_bytes()).hexdigest(),'stopped':['backend','hpt','jamnntpd','cron']}))
+ metadata_before={str(f):hashlib.sha256(f.read_bytes()).hexdigest() for f in historical.glob('metadata.db*')}
+ run(*repair_command,'--apply','--backup',str(ROOT/'historical-backup'),'--maintenance-file',str(maintenance))
+ assert all(base.with_suffix(ext).read_bytes()==raw for ext,raw in clean.items()),'Repair did not restore exact bytes'
+ assert metadata_before=={str(f):hashlib.sha256(f.read_bytes()).hexdigest() for f in historical.glob('metadata.db*')},'Repair changed metadata'
+ ch,stub,md=start('historical',address='2:1/1.1')
+ after=stub.ListMessages(p.ListMessagesRequest(conference_id='utf-8',page=p.PageRequest(limit=10),sort=p.MESSAGE_SORT_DATE_DESCENDING),metadata=md,timeout=10)
+ assert [x.id for x in after.messages]==prior_ids and {x.id:x.is_read for x in after.messages}==prior_read
+ for preview in after.messages:
+  message=stub.GetMessage(p.MessageReference(conference_id='utf-8',message_id=preview.id),metadata=md,timeout=10)
+  sent,_=expected[('utf-8',message.subject)]
+  assert message.from_name==sent.from_name and message.to_name==sent.to_name and sent.body in message.body
+ stop(ch,stub,md)
+ report['historical_utf8']={'invalid_bytes_reproduced':True,'repaired_fields':len(changes),'exact_bytes_restored':True,'api_ids_and_read_state_preserved':True,'metadata_unchanged_by_repair':True}
  # Capture exact new local messages before export; only flags/high-water may change.
  before={a:records(ROOT/'sender/jam'/a) for a in ('ordinary','utf-8')}
  shutil.copytree(ROOT/'sender',ROOT/'before-export')
