@@ -83,17 +83,23 @@ class _MessageScreenState extends State<MessageScreen>
   bool get unreadNavigation => kind == AreaKind.echo && threadId == null;
   bool unread(Message message) =>
       !message.isRead && !opened.contains('$conferenceId/${message.id}');
-  bool get hasNextEcho {
-    if (echoesExhausted || repository.epoch != orderEpoch) return false;
+  Iterable<Conference> nextEchoes() sync* {
+    if (repository.epoch != orderEpoch) return;
     final index = conferenceOrder.indexWhere((c) => c.id == conferenceId);
-    return index >= 0 &&
-        conferenceOrder
-            .skip(index + 1)
-            .any(
-              (c) =>
-                  c.kind == AreaKind.echo && c.canRead && !c.unsupportedFormat,
-            );
+    if (index < 0) return;
+    final seen = <String>{conferenceId};
+    for (var step = 1; step < conferenceOrder.length; step++) {
+      final entry = conferenceOrder[(index + step) % conferenceOrder.length];
+      if (entry.kind == AreaKind.echo &&
+          entry.canRead &&
+          !entry.unsupportedFormat &&
+          seen.add(entry.id)) {
+        yield entry;
+      }
+    }
   }
+
+  bool get hasNextEcho => !echoesExhausted && nextEchoes().isNotEmpty;
 
   bool canNavigate(int direction) {
     if (loading || bulkBusy || !canRead) return false;
@@ -336,7 +342,6 @@ class _MessageScreenState extends State<MessageScreen>
     final epoch = repository.epoch;
     unawaited(cancellation?.cancel());
     final token = cancellation = RpcCancellation();
-    final originalId = conferenceId;
     final selectedId = selected?.id;
     bool valid() => mounted && current == version && epoch == repository.epoch;
     void check() {
@@ -351,7 +356,7 @@ class _MessageScreenState extends State<MessageScreen>
     });
     try {
       var destination = activeConference;
-      var orderIndex = conferenceOrder.indexWhere((c) => c.id == originalId);
+      final candidates = nextEchoes().iterator;
       var inCurrent = true;
       while (true) {
         final rows = <Message>[];
@@ -473,15 +478,8 @@ class _MessageScreenState extends State<MessageScreen>
         }
         if (direction < 0) break;
         Conference? next;
-        while (repository.epoch == orderEpoch &&
-            orderIndex >= 0 &&
-            ++orderIndex < conferenceOrder.length) {
-          final entry = conferenceOrder[orderIndex];
-          if (entry.kind != AreaKind.echo ||
-              !entry.canRead ||
-              entry.unsupportedFormat) {
-            continue;
-          }
+        while (repository.epoch == orderEpoch && candidates.moveNext()) {
+          final entry = candidates.current;
           try {
             final fresh = await repository.getMailboxState(
               entry.id,
@@ -492,6 +490,7 @@ class _MessageScreenState extends State<MessageScreen>
                 fresh.kind == AreaKind.echo &&
                 fresh.canRead &&
                 !fresh.unsupportedFormat) {
+              if (fresh.statisticsKnown && fresh.unreadCount == 0) continue;
               next = fresh;
               break;
             }
