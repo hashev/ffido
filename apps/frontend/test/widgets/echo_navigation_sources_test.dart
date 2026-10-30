@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:fixnum/fixnum.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:fido/api/generated/ffido/v1/ffido.pb.dart' as wire;
@@ -10,8 +11,13 @@ import 'package:fido/repositories/conference_repository.dart';
 
 import '../support/fake_transport.dart';
 
-wire.Conference conference(String id) =>
-    wire.Conference(id: id, name: id, canRead: true);
+wire.Conference conference(String id) => wire.Conference(
+  id: id,
+  name: id,
+  canRead: true,
+  unreadCount: Int64(1),
+  statisticsKnown: true,
+);
 
 void main() {
   testWidgets(
@@ -46,7 +52,7 @@ void main() {
       await tester.enterText(find.byType(TextField), 'filter');
       await tester.pump(const Duration(milliseconds: 350));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('a'));
+      await tester.tap(find.text('z'));
       await tester.pumpAndSettle();
       final reader = tester.widget<MessageScreen>(find.byType(MessageScreen));
       expect(reader.conferenceOrder.map((c) => c.id), ['a', 'z']);
@@ -54,7 +60,13 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.text('Следующее'));
       await tester.pumpAndSettle();
-      expect(find.text('body z'), findsOneWidget);
+      expect(find.text('body a'), findsOneWidget);
+      expect(
+        api.calls.whereType<wire.GetConferenceRequest>().map(
+          (r) => r.conferenceId,
+        ),
+        ['a'],
+      );
       await tester.pageBack();
       await tester.pumpAndSettle();
       expect(find.byType(MessageScreen), findsNothing);
@@ -117,6 +129,23 @@ void main() {
           ],
           hasMore: r.offset.toInt() == 0,
         );
+        var reachedA = false;
+        api.conference = (r) async => conference(r.conferenceId);
+        api.messages = (r) async => wire.ListMessagesResponse(
+          messages: [
+            wire.Message(id: '${r.conferenceId}#1', subject: 'letter'),
+            if (r.conferenceId == 'z')
+              wire.Message(id: 'z#2', subject: 'letter 2', isRead: !reachedA),
+          ],
+        );
+        api.message = (r) async {
+          if (r.conferenceId == 'a') reachedA = true;
+          return wire.Message(
+            id: r.messageId,
+            body: 'body ${r.conferenceId}',
+            isRead: true,
+          );
+        };
         await tester.pumpWidget(
           MaterialApp(
             home: PersonalConferences(
@@ -130,6 +159,22 @@ void main() {
         await tester.pumpAndSettle();
         final reader = tester.widget<MessageScreen>(find.byType(MessageScreen));
         expect(reader.conferenceOrder.map((c) => c.id), ['z', 'a']);
+        await tester.tap(find.text('letter'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Следующее'));
+        await tester.pumpAndSettle();
+        expect(find.text('body a'), findsOneWidget);
+        // The second transition wraps to the start of this personal snapshot.
+        await tester.tap(find.text('Следующее'));
+        await tester.pumpAndSettle();
+        expect(find.text('body z'), findsOneWidget);
+        expect(
+          api.calls.whereType<wire.GetConferenceRequest>().map(
+            (r) => r.conferenceId,
+          ),
+          ['a', 'z'],
+        );
+        expect(api.calls.whereType<wire.ListConferencesRequest>(), isEmpty);
       },
     );
   }
