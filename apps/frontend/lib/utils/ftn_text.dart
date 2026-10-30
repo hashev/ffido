@@ -6,27 +6,46 @@ export 'uue_text.dart';
 final _initial = RegExp(r'[\p{L}\p{N}]', unicode: true);
 
 /// Only a contiguous FTN quote prefix counts; an expression `a > b` does not.
-int quoteDepth(String line) {
-  var offset = 0, depth = 0;
+({int depth, int end, int marker, String initials}) _quotePrefix(String line) {
+  var offset = 0, depth = 0, prefixEnd = 0, marker = -1;
+  var author = '';
   while (offset < line.length) {
     while (offset < line.length &&
         (line[offset] == ' ' || line[offset] == '\t')) {
       offset++;
     }
+    final start = offset;
     var end = offset;
-    for (var initials = 0; initials < 8 && end < line.length; initials++) {
-      final match = _initial.matchAsPrefix(line, end);
-      if (match == null) break;
-      end = match.end;
-    }
-    if (end < line.length && line[end] == '>') {
-      depth++;
-      offset = end + 1;
+    if (end < line.length && line[end] == '?') {
+      end++;
     } else {
-      break;
+      for (var initials = 0; initials < 8 && end < line.length; initials++) {
+        final match = _initial.matchAsPrefix(line, end);
+        if (match == null) break;
+        end = match.end;
+      }
     }
+    if (end >= line.length || line[end] != '>') break;
+    if (author.isEmpty && end > start) author = line.substring(start, end);
+    if (depth == 0) marker = end;
+    depth++;
+    offset = prefixEnd = end + 1;
   }
-  return depth;
+  return (depth: depth, end: prefixEnd, marker: marker, initials: author);
+}
+
+int quoteDepth(String line) => _quotePrefix(line).depth;
+
+String _quoteInitials(String name) {
+  final initials = name
+      .trim()
+      .split(RegExp(r'\s+'))
+      .map((part) {
+        return _initial.firstMatch(part)?.group(0) ?? '';
+      })
+      .join()
+      .toUpperCase();
+  return initials.isEmpty ? '?' : String.fromCharCodes(initials.runes.take(8));
 }
 
 Color quoteColor(ColorScheme scheme, int depth) => depth == 0
@@ -92,8 +111,30 @@ TextSpan ftnTextSpan(
   return TextSpan(style: style ?? ftnTextStyle(scheme), children: spans);
 }
 
-String quoteReply(String original) =>
-    '${original.replaceAll('\r\n', '\n').replaceAll('\r', '\n').split('\n').map((line) => '> $line').join('\n')}\n\n';
+String quoteReply(String original, String authorName) {
+  final initials = _quoteInitials(authorName);
+  final lines = original
+      .replaceAll('\r\n', '\n')
+      .replaceAll('\r', '\n')
+      .split('\n');
+  final quoted = lines
+      .map((line) {
+        if (line.trim().isEmpty) return line;
+        final prefix = _quotePrefix(line);
+        if (prefix.depth == 0) return '$initials> $line';
+        if (prefix.initials.isNotEmpty) {
+          // Preserve named nested prefixes and their whitespace verbatim.
+          return '${line.substring(0, prefix.marker + 1)}>${line.substring(prefix.marker + 1)}';
+        }
+        final author = initials;
+        // Remove only the conventional separator, preserving the quoted text's indent.
+        final rest = line.substring(prefix.end);
+        final text = rest.startsWith(' ') ? rest.substring(1) : rest;
+        return '$author${'>' * (prefix.depth + 1)} $text';
+      })
+      .join('\n');
+  return '$quoted\n\n';
+}
 
 class FtnTextController extends TextEditingController {
   @override

@@ -293,7 +293,7 @@ void main() {
                 .widget<TextField>(find.byType(TextField).at(3))
                 .controller!
                 .text,
-            contains('quoted'),
+            'N>> quoted\n\n',
           );
         } else {
           expect(find.byTooltip('Новое сообщение'), findsNothing);

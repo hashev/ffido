@@ -146,7 +146,7 @@ void main() {
         await tester.tap(find.text('Zulu'));
         await tester.pumpAndSettle();
         if (bulk) {
-          await tester.tap(find.byTooltip('Действия эхи'));
+          await tester.tap(find.byTooltip('Действия области'));
           await tester.pumpAndSettle();
           await tester.tap(find.text('Отметить всё прочитанным'));
           await tester.pumpAndSettle();

@@ -14,6 +14,8 @@ Future<void> show(
   WidgetTester tester,
   FakeTransport api, {
   AreaKind kind = AreaKind.echo,
+  bool canRead = true,
+  bool personalMailbox = false,
 }) async {
   await tester.pumpWidget(
     MaterialApp(
@@ -22,7 +24,8 @@ Future<void> show(
         conferenceName: 'Test Echo',
         conferenceDescription: '',
         repository: MessageRepository(api),
-        canRead: true,
+        canRead: canRead,
+        personalMailbox: personalMailbox,
         kind: kind,
       ),
     ),
@@ -31,7 +34,7 @@ Future<void> show(
 }
 
 Future<void> choose(WidgetTester tester, {bool retry = false}) async {
-  await tester.tap(find.byTooltip('Действия эхи'));
+  await tester.tap(find.byTooltip('Действия области'));
   await tester.pumpAndSettle();
   await tester.tap(
     find.text(retry ? 'Проверить/повторить' : 'Отметить всё прочитанным'),
@@ -66,7 +69,7 @@ void main() {
       );
       expect(api.calls.whereType<wire.MessageReference>(), isEmpty);
       expect(api.calls.whereType<wire.ListMessagesRequest>().length, 2);
-      expect(find.text('Сообщения эхи отмечены прочитанными'), findsOneWidget);
+      expect(find.text('Сообщения отмечены прочитанными'), findsOneWidget);
     },
   );
   testWidgets(
@@ -114,7 +117,7 @@ void main() {
     await tester.pumpAndSettle();
     pending.complete(wire.MarkConferenceReadResponse());
     await tester.pumpAndSettle();
-    expect(find.text('Сообщения эхи отмечены прочитанными'), findsNothing);
+    expect(find.text('Сообщения отмечены прочитанными'), findsNothing);
   });
 
   testWidgets(
@@ -205,11 +208,38 @@ void main() {
     AreaKind.dupe,
     AreaKind.robots,
   ]) {
-    testWidgets('bulk action is absent for $kind', (tester) async {
+    testWidgets('bulk action marks read-only $kind', (tester) async {
       final api = FakeTransport();
       addTearDown(api.dispose);
       await show(tester, api, kind: kind);
-      expect(find.byTooltip('Действия эхи'), findsNothing);
+      await choose(tester);
+      await tester.tap(find.text('Отметить'));
+      await tester.pumpAndSettle();
+      expect(api.calls.whereType<wire.MarkConferenceReadRequest>().length, 1);
+      expect(api.calls.whereType<wire.MessageReference>(), isEmpty);
     });
   }
+  testWidgets('unreadable area has no bulk action', (tester) async {
+    final api = FakeTransport();
+    addTearDown(api.dispose);
+    await show(tester, api, kind: AreaKind.bad, canRead: false);
+    expect(find.byTooltip('Действия области'), findsNothing);
+  });
+
+  testWidgets('old server rejection has no fallback or success', (
+    tester,
+  ) async {
+    final api = FakeTransport();
+    addTearDown(api.dispose);
+    api.bulkRead = (_) async =>
+        throw const ApiException(message: 'Echo only', statusCode: 9);
+    await show(tester, api, kind: AreaKind.netmail);
+    await choose(tester);
+    await tester.tap(find.text('Отметить'));
+    await tester.pumpAndSettle();
+    expect(find.text('Сообщения отмечены прочитанными'), findsNothing);
+    expect(find.textContaining('Echo only'), findsOneWidget);
+    expect(api.calls.whereType<wire.MessageReference>(), isEmpty);
+    expect(api.calls.whereType<wire.MarkConferenceReadRequest>().length, 1);
+  });
 }
