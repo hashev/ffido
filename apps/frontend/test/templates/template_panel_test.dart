@@ -2,14 +2,23 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:fido/templates/template_settings.dart';
+import 'package:fido/templates/default_template.dart';
 import 'package:fido/templates/template_settings_panel.dart';
 import 'package:fido/updates/update_controller.dart';
 
 Future<void> tap(WidgetTester tester, String label) async {
+  await tester.pumpAndSettle();
   final found = find.text(label);
   await tester.ensureVisible(found);
+  await tester.pumpAndSettle();
   await tester.tap(found);
   await tester.pumpAndSettle();
+}
+
+class FailingResetSettings extends TemplateSettings {
+  FailingResetSettings(super.preferences);
+  @override
+  Future<void> reset() async => throw const FormatException('reset failed');
 }
 
 void main() {
@@ -21,6 +30,7 @@ void main() {
   Future<SharedPreferences> open(
     WidgetTester tester, {
     bool fail = false,
+    bool failReset = false,
   }) async {
     final prefs = await SharedPreferences.getInstance();
     await tester.pumpWidget(
@@ -29,10 +39,12 @@ void main() {
           body: ListView(
             children: [
               TemplateSettingsPanel(
-                settings: TemplateSettings(
-                  prefs,
-                  write: fail ? (_) async => false : null,
-                ),
+                settings: failReset
+                    ? FailingResetSettings(prefs)
+                    : TemplateSettings(
+                        prefs,
+                        write: fail ? (_) async => false : null,
+                      ),
               ),
             ],
           ),
@@ -56,9 +68,62 @@ void main() {
     expect(TemplateSettings(prefs).read()!.text, 'Подпись @cfname');
     expect(appUpdates.canExit, isTrue);
     await tap(tester, 'Сбросить шаблон');
-    expect(TemplateSettings(prefs).read(), isNull);
+    expect(TemplateSettings(prefs).read()!.text, defaultMessageTemplate);
+    expect(prefs.containsKey(TemplateSettings.key), isFalse);
+    expect(
+      tester
+          .widget<TextField>(find.byKey(const Key('message-template')))
+          .controller!
+          .text,
+      defaultMessageTemplate,
+    );
+    expect(appUpdates.canExit, isTrue);
     expect(prefs.getString('ffido_origin_v1'), 'Old origin');
   });
+  testWidgets('default loads without writing and example requires save', (
+    tester,
+  ) async {
+    final prefs = await open(tester);
+    final field = find.byKey(const Key('message-template'));
+    expect(
+      tester.widget<TextField>(field).controller!.text,
+      defaultMessageTemplate,
+    );
+    expect(prefs.containsKey(TemplateSettings.key), isFalse);
+    expect(appUpdates.canExit, isTrue);
+    await tap(tester, 'Предпросмотр шаблона');
+    expect(find.textContaining('Hello, Иван!'), findsOneWidget);
+    expect(find.textContaining('Best Regards, Юрий'), findsOneWidget);
+    await tap(tester, 'Закрыть');
+    await tester.enterText(field, '');
+    await tap(tester, 'Сохранить шаблон');
+    expect(TemplateSettings(prefs).read()!.text, '');
+    await tap(tester, 'Вставить пример');
+    expect(
+      tester.widget<TextField>(field).controller!.text,
+      defaultMessageTemplate,
+    );
+    expect(TemplateSettings(prefs).read()!.text, '');
+    expect(appUpdates.canExit, isFalse);
+  });
+
+  testWidgets('reset failure preserves saved override and unsaved input', (
+    tester,
+  ) async {
+    final prefs = await SharedPreferences.getInstance();
+    await TemplateSettings(prefs).save(const TemplateBundle('Сохранённый'));
+    await open(tester, failReset: true);
+    final field = find.byKey(const Key('message-template'));
+    expect(tester.widget<TextField>(field).controller!.text, 'Сохранённый');
+    await tester.enterText(field, 'Несохранённый');
+    await tap(tester, 'Сбросить шаблон');
+    expect(tester.widget<TextField>(field).controller!.text, 'Несохранённый');
+    expect(TemplateSettings(prefs).read()!.text, 'Сохранённый');
+    expect(find.text('Шаблон сброшен'), findsNothing);
+    expect(find.textContaining('Не удалось сохранить шаблон'), findsOneWidget);
+    expect(appUpdates.canExit, isFalse);
+  });
+
   testWidgets('all compatibility errors retain last working setting', (
     tester,
   ) async {

@@ -10,6 +10,7 @@ import 'package:fido/pages/message_screen.dart';
 import 'package:fido/repositories/message_repository.dart';
 
 import '../support/fake_transport.dart';
+import '../support/message_identity.dart';
 
 Widget screen(FakeTransport api) => MaterialApp(
   home: MessageScreen(
@@ -22,6 +23,7 @@ Widget screen(FakeTransport api) => MaterialApp(
   ),
 );
 void main() {
+  setUp(mockMessageIdentity);
   setUp(() => SharedPreferences.setMockInitialValues({}));
   testWidgets('list reads detail, records RPC identity and supports threads', (
     tester,

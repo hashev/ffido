@@ -13,6 +13,7 @@ import 'package:fido/repositories/message_repository.dart';
 import 'package:fido/repositories/conference_repository.dart';
 
 import '../support/fake_transport.dart';
+import '../support/message_identity.dart';
 
 Future<ConferenceRepository> repository(FakeTransport api) async {
   SharedPreferences.setMockInitialValues({});
@@ -74,6 +75,7 @@ Future<void> reader(
 }
 
 void main() {
+  setUp(mockMessageIdentity);
   testWidgets('открытый редактор защищён от завершения updater', (
     tester,
   ) async {
@@ -105,7 +107,7 @@ void main() {
       final fields = find.byType(TextField);
       expect(
         tester.widget<TextField>(fields.at(3)).controller!.text,
-        'А> Текст\n AB>> Цитата\n\n',
+        contains('А> Текст\n AB>> Цитата\n\n'),
       );
       await tester.enterText(fields.at(3), '> Текст\nМой ответ');
       await tap(tester, 'Отправить');
@@ -151,7 +153,7 @@ void main() {
       final fields = find.byType(TextField);
       expect(
         tester.widget<TextField>(fields.at(3)).controller!.text,
-        contains('Area: source'),
+        contains('* Area : Источник ()'),
       );
       await tester.enterText(fields.at(3), 'Комментарий\n> переслано');
       api.create = (_) async => throw const NetworkException();

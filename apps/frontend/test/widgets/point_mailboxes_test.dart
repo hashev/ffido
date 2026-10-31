@@ -9,6 +9,7 @@ import 'package:fido/pages/message_screen.dart';
 import 'package:fido/repositories/message_repository.dart';
 
 import '../support/fake_transport.dart';
+import '../support/message_identity.dart';
 
 wire.Message row(int index, {bool outgoing = false}) => wire.Message(
   id: 'g#$index',
@@ -53,6 +54,7 @@ Future<void> tap(WidgetTester tester, String text) async {
 }
 
 void main() {
+  setUp(mockMessageIdentity);
   setUp(() => SharedPreferences.setMockInitialValues({}));
   testWidgets(
     'bulk preserves mailbox position and selected body without GetMessage',
@@ -92,7 +94,7 @@ void main() {
       await tap(tester, 'Ответить лично');
       expect(
         tester.widget<TextField>(find.byType(TextField).at(3)).controller!.text,
-        'А> Тело 0\n\n',
+        contains('А> Тело 0\n\n'),
       );
     },
   );

@@ -16,6 +16,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../support/fake_transport.dart';
+import '../support/message_identity.dart';
 
 wire.Conference echo(String id, {bool post = true}) => wire.Conference(
   id: id,
@@ -33,6 +34,7 @@ class _CrosspostFiles extends UueFiles {
 }
 
 void main() {
+  setUp(mockMessageIdentity);
   late FakeTransport api;
   ConferenceRepository? repository;
   late SharedPreferences prefs;
@@ -87,6 +89,7 @@ void main() {
     await tester.pumpAndSettle();
     await tester.enterText(find.byType(TextField).at(2), 'Тема');
     await tester.enterText(find.byType(TextField).at(3), 'Текст');
+    await tester.pumpAndSettle();
   }
 
   Future<void> composer(WidgetTester tester) async {

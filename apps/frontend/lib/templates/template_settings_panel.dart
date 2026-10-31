@@ -4,11 +4,10 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../models/conference.dart';
 import '../models/message.dart';
 import '../updates/update_controller.dart';
+import 'default_template.dart';
 import 'template_engine.dart';
 import 'template_settings.dart';
 
-const templateExample =
-    'Привет, @tfname!\n@quoted@oname написал @odate @otime:\n@quote\n@position\nС уважением, @cfname\n';
 const _actions = [
   'Новое письмо',
   'Ответ без цитаты',
@@ -50,11 +49,7 @@ class _TemplateSettingsPanelState extends State<TemplateSettingsPanel>
           );
       if (!mounted) return;
       settings = store;
-      final raw = store.preferences.getString(TemplateSettings.key);
-      if (raw != null) {
-        final bundle = TemplateBundle.decode(raw);
-        text.text = bundle.text;
-      }
+      text.text = store.read()!.text;
     } catch (_) {
       message = 'Не удалось прочитать шаблон. Исправьте его или сбросьте настройки шаблона.';
     }
@@ -91,7 +86,7 @@ class _TemplateSettingsPanelState extends State<TemplateSettingsPanel>
       if (!mounted) return;
       setState(() {
         if (reset) {
-          text.clear();
+          text.text = defaultMessageTemplate;
           diagnostics = [];
         }
         saved = snapshot;
@@ -160,7 +155,7 @@ class _TemplateSettingsPanelState extends State<TemplateSettingsPanel>
         const Divider(),
         const Text('Шаблон писем'),
         const Text(
-          'Общий .tpl для новых писем, ответов и пересылок. Хранится только на этом устройстве.',
+          'Общий .tpl для новых писем, ответов и пересылок. Хранится только на этом устройстве. Сброс восстанавливает встроенный шаблон.',
         ),
         TextField(
           key: const Key('message-template'),
@@ -175,7 +170,7 @@ class _TemplateSettingsPanelState extends State<TemplateSettingsPanel>
             TextButton(
               onPressed: busy
                   ? null
-                  : () => setState(() => text.text = templateExample),
+                  : () => setState(() => text.text = defaultMessageTemplate),
               child: const Text('Вставить пример'),
             ),
             TextButton(

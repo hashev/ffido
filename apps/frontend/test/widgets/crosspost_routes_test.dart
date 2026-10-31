@@ -10,6 +10,7 @@ import 'package:fido/repositories/account_repository.dart';
 import 'package:fido/repositories/conference_repository.dart';
 
 import '../support/fake_transport.dart';
+import '../support/message_identity.dart';
 
 wire.Conference area(String id) => wire.Conference(
   id: id,
@@ -25,6 +26,7 @@ Future<void> tap(WidgetTester tester, Finder finder) async {
 }
 
 void main() {
+  setUp(mockMessageIdentity);
   setUp(() => SharedPreferences.setMockInitialValues({}));
   for (final source in ['home', 'bookmarks', 'history']) {
     for (final mode in ['new', 'reply', 'forward']) {

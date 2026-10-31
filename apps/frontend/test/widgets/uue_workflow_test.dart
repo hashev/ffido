@@ -18,6 +18,7 @@ import 'package:fido/repositories/uue_repository.dart';
 import 'package:fido/widgets/uue_body.dart';
 
 import '../support/fake_transport.dart';
+import '../support/message_identity.dart';
 
 class Files extends UueFiles {
   SelectedUueFile? selected;
@@ -82,12 +83,15 @@ void ready(FakeTransport api, Uint8List bytes, {String name = 'file.bin'}) {
 }
 
 Future<void> tap(WidgetTester tester, String text) async {
+  await tester.pumpAndSettle();
   await tester.ensureVisible(find.text(text));
+  await tester.pumpAndSettle();
   await tester.tap(find.text(text));
   await tester.pumpAndSettle();
 }
 
 void main() {
+  setUp(mockMessageIdentity);
   late FakeTransport api;
   late UueFiles oldFiles;
   late Files files;
@@ -492,10 +496,17 @@ void main() {
       await screen(true);
       await tap(tester, 'File');
       await tap(tester, 'Ответить в эху');
+      await tester.scrollUntilVisible(
+        find.text('Прикрепить файл UUE'),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
       expect(find.text('Прикрепить файл UUE'), findsOneWidget);
-      final fields = find.byType(TextField);
       expect(
-        tester.widget<TextField>(fields.at(3)).controller!.text,
+        tester
+            .widget<TextField>(find.widgetWithText(TextField, 'Текст'))
+            .controller!
+            .text,
         contains('> begin 644 x'),
       );
       await tap(tester, 'Отправить');
