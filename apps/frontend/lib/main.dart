@@ -27,6 +27,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:fido/repositories/account_repository.dart';
 
 String startupMessage = '';
+final applicationUptime = Stopwatch();
 
 // Глобальные экземпляры API клиента и репозиториев
 final ApiClient apiClient = ApiClient();
@@ -73,6 +74,7 @@ Future<void> initializeApp() async {
 }
 
 Future<void> main() async {
+  applicationUptime.start();
   WidgetsFlutterBinding.ensureInitialized();
   await update_host.acquireDesktopLease();
   final initialized = initializeApp().then((_) {

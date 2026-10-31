@@ -1,3 +1,4 @@
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:fixnum/fixnum.dart';
@@ -52,6 +53,7 @@ Future<void> tap(WidgetTester tester, String text) async {
 }
 
 void main() {
+  setUp(() => SharedPreferences.setMockInitialValues({}));
   testWidgets(
     'bulk preserves mailbox position and selected body without GetMessage',
     (tester) async {

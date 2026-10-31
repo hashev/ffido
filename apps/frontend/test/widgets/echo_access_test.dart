@@ -1,3 +1,4 @@
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:fido/api/api_exceptions.dart';
@@ -8,6 +9,7 @@ import 'package:fido/repositories/message_repository.dart';
 import '../support/fake_transport.dart';
 
 void main() {
+  setUp(() => SharedPreferences.setMockInitialValues({}));
   testWidgets('missing permissions deny both actions', (tester) async {
     final api = FakeTransport();
     addTearDown(api.dispose);

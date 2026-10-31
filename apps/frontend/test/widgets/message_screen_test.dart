@@ -1,3 +1,5 @@
+import 'package:shared_preferences/shared_preferences.dart';
+
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -20,6 +22,7 @@ Widget screen(FakeTransport api) => MaterialApp(
   ),
 );
 void main() {
+  setUp(() => SharedPreferences.setMockInitialValues({}));
   testWidgets('list reads detail, records RPC identity and supports threads', (
     tester,
   ) async {

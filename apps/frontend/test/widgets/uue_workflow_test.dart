@@ -1,3 +1,5 @@
+import 'package:shared_preferences/shared_preferences.dart';
+
 import 'dart:convert';
 import 'dart:typed_data';
 
@@ -90,6 +92,7 @@ void main() {
   late UueFiles oldFiles;
   late Files files;
   setUp(() {
+    SharedPreferences.setMockInitialValues({});
     api = FakeTransport();
     oldFiles = uueFiles;
     files = Files();
