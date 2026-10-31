@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'default_template.dart';
 import 'template_engine.dart';
 
 class TemplateBundle {
@@ -31,7 +32,7 @@ class TemplateSettings {
       TemplateSettings(await SharedPreferences.getInstance());
   TemplateBundle? read() {
     final raw = preferences.getString(key);
-    if (raw == null) return null;
+    if (raw == null) return const TemplateBundle(defaultMessageTemplate);
     final bundle = TemplateBundle.decode(raw);
     if (bundle.validate().any((d) => d.error)) {
       throw const FormatException(

@@ -14,13 +14,13 @@
  #endif
 +
 +/* Local amster2 policy: JAM is KOI8-R except the UTF-8 echo. Opt in only. */
-+static int ffidoCharsetPolicy(void)
++int ffidoCharsetPolicy(void)
 +{
 +    const char *value = getenv("FFIDO_HPT_KOI8_CP866");
 +    return value != NULL && strcmp(value, "1") == 0;
 +}
 +
-+static void ffidoTransportChrs(s_message *msg, const char *chrs)
++void ffidoTransportChrs(s_message *msg, const char *chrs)
 +{
 +    const char *p = msg->text, *end;
 +    char *text = safe_malloc(strlen(p) + strlen(chrs) + 10), *out = text;
@@ -125,3 +125,40 @@
 +    }
      w_log(LL_START, "Start");
  } /* processConfig */
+diff --git a/h/scanarea.h b/h/scanarea.h
+index 0b0c362..2f5ae72 100644
+--- a/h/scanarea.h
++++ b/h/scanarea.h
+@@ -5,6 +5,9 @@
+
+ #define MAX_AREA_LEN 60
+
++int ffidoCharsetPolicy(void);
++void ffidoTransportChrs(s_message *msg, const char *chrs);
++
+ void makeMsg(HMSG hmsg, const XMSG * pxmsg, s_message * msg, s_area * echo, int action);
+
+ /* char *createSeenByPath(s_area *echo); */
+diff --git a/src/scan.c b/src/scan.c
+index bd25210..71cf843 100644
+--- a/src/scan.c
++++ b/src/scan.c
+@@ -73,6 +73,7 @@
+ #include <fcommon.h>
+ #include <pkt.h>
+ #include <scan.h>
++#include <scanarea.h>
+ #include <global.h>
+ #include "version.h"
+ #include <toss.h>
+@@ -137,5 +138,10 @@ void convertMsgText(HMSG SQmsg, s_message * msg)
+     if((config->recodeMsgBase) && (config->outtab != NULL))
+     {
+         recodeToTransportCharset((char *)msg->text);
++        /* Netmail uses the same KOI8-R JAM -> CP866 transport policy as echoes. */
++        if(ffidoCharsetPolicy())
++        {
++            ffidoTransportChrs(msg, "CP866 2");
++        }
+     }
+ } /* convertMsgText */

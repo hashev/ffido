@@ -12,8 +12,10 @@ import 'package:fido/repositories/message_repository.dart';
 import 'package:fido/repositories/conference_repository.dart';
 
 import '../support/fake_transport.dart';
+import '../support/message_identity.dart';
 
 void main() {
+  setUp(mockMessageIdentity);
   test(
     'legacy echo and explicit private metadata map without fake statistics',
     () {
@@ -293,7 +295,7 @@ void main() {
                 .widget<TextField>(find.byType(TextField).at(3))
                 .controller!
                 .text,
-            'N>> quoted\n\n',
+            contains('N>> quoted\n\n'),
           );
         } else {
           expect(find.byTooltip('Новое сообщение'), findsNothing);

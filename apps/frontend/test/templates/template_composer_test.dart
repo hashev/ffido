@@ -12,6 +12,7 @@ import 'package:fido/api/generated/ffido/v1/ffido.pb.dart' as wire;
 import 'package:fido/models/conference.dart';
 import 'package:fido/pages/message_screen.dart';
 import 'package:fido/repositories/message_repository.dart';
+import 'package:fido/repositories/conference_repository.dart';
 import 'package:fido/templates/template_settings.dart';
 
 import '../support/fake_transport.dart';
@@ -49,6 +50,24 @@ void main() {
     if (bundle != null) await TemplateSettings(prefs).save(bundle);
     final api = FakeTransport();
     addTearDown(api.dispose);
+    api.conferences = (_) async => wire.ListConferencesResponse(
+      conferences: [
+        wire.Conference(
+          id: 'target',
+          name: 'RU.TARGET',
+          canRead: true,
+          canPost: true,
+        ),
+      ],
+    );
+    api.conference = (_) async => wire.Conference(
+      id: 'target',
+      name: 'RU.TARGET',
+      canRead: true,
+      canPost: true,
+    );
+    final conferences = ConferenceRepository(apiClient: api, prefs: prefs);
+    addTearDown(conferences.dispose);
     api.messages = (_) async => wire.ListMessagesResponse(
       messages: [wire.Message(id: 'g#1', subject: 'Тема')],
     );
@@ -74,6 +93,7 @@ void main() {
           canPost: true,
           canRead: true,
           repository: MessageRepository(api),
+          conferences: conferences,
           loadTemplate: loader,
         ),
       ),
@@ -85,6 +105,92 @@ void main() {
   Future<void> select(WidgetTester tester) async {
     await tap(tester, 'Тема');
   }
+
+  testWidgets('default applies to new drafts after update and reset', (
+    tester,
+  ) async {
+    await open(tester);
+    await tester.tap(find.byTooltip('Новое сообщение'));
+    await tester.pumpAndSettle();
+    expect(field(tester, 'Текст'), contains('Hello, !'));
+    expect(field(tester, 'Текст'), contains('Best Regards, Реальный'));
+    final body = tester
+        .widget<TextField>(find.widgetWithText(TextField, 'Текст'))
+        .controller!;
+    expect(
+      body.selection.baseOffset,
+      body.text.indexOf('Hello, !') + 'Hello, !\n\n'.length,
+    );
+    body.text = 'Ручная правка';
+    final prefs = await SharedPreferences.getInstance();
+    await TemplateSettings(prefs).save(const TemplateBundle('Собственный'));
+    await tester.pump();
+    expect(field(tester, 'Текст'), 'Ручная правка');
+    await tester.pageBack();
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('Новое сообщение'));
+    await tester.pumpAndSettle();
+    expect(field(tester, 'Текст'), 'Собственный');
+    await tester.pageBack();
+    await tester.pumpAndSettle();
+    await TemplateSettings(prefs).reset();
+    await tester.tap(find.byTooltip('Новое сообщение'));
+    await tester.pumpAndSettle();
+    expect(field(tester, 'Текст'), contains('Hello, !'));
+    expect(field(tester, 'Текст'), contains('Best Regards, Реальный'));
+    expect(prefs.containsKey(TemplateSettings.key), isFalse);
+  });
+
+  testWidgets('default reply modes insert one quote or none', (tester) async {
+    await open(tester);
+    await select(tester);
+    await tap(tester, 'Ответить в эху');
+    var text = field(tester, 'Текст');
+    expect(text, contains('Hello, Автор!'));
+    expect(text, contains('from Автор -> Адресат:'));
+    expect('А> Оригинал'.allMatches(text), hasLength(1));
+    expect(text, isNot(contains('Reply to message')));
+    final body = tester
+        .widget<TextField>(find.widgetWithText(TextField, 'Текст'))
+        .controller!;
+    expect(body.selection.baseOffset, lessThan(text.indexOf('from Автор')));
+    await tester.pageBack();
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('Вид ответа'));
+    await tester.pumpAndSettle();
+    await tap(tester, 'Без цитаты');
+    text = field(tester, 'Текст');
+    expect(text, contains('Reply to message from <'));
+    expect(text, contains('>, Автор -> Адресат:'));
+    expect(text, contains('Hello, Автор!'));
+    expect(text, contains('Best Regards, Реальный'));
+    expect(text, isNot(contains('Оригинал')));
+  });
+
+  testWidgets('default forward has one header and original before greeting', (
+    tester,
+  ) async {
+    await open(tester);
+    await select(tester);
+    await tap(tester, 'Переслать');
+    await tap(tester, 'RU.TARGET');
+    final body = tester
+        .widget<TextField>(find.widgetWithText(TextField, 'Текст'))
+        .controller!;
+    expect('* Forwarded by'.allMatches(body.text), hasLength(1));
+    expect('Оригинал'.allMatches(body.text), hasLength(1));
+    expect(body.text, contains('* Area : RU.TEST (Описание)'));
+    expect(
+      body.text.indexOf('Оригинал'),
+      lessThan(body.text.indexOf('Hello,')),
+    );
+    expect(body.text, contains('Best Regards, Реальный'));
+    final initial = body.text;
+    body.text = '$initial\nПравка';
+    await tap(tester, 'Изменить эху назначения');
+    await tap(tester, 'RU.TARGET');
+    expect(body.text, '$initial\nПравка');
+  });
 
   testWidgets(
     'custom new letter applies headers, author, area and cursor once',

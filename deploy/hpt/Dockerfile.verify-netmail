@@ -1,0 +1,7 @@
+ARG WORKER=ffido-tosser:local
+FROM ${WORKER}
+USER root
+COPY hpt-transport.patch /opt/ffido-local/hpt-transport.patch
+RUN git -c safe.directory=/opt/ffido-hpt-src/hpt -C /opt/ffido-hpt-src/hpt reset --hard HEAD && git -c safe.directory=/opt/ffido-hpt-src/hpt -C /opt/ffido-hpt-src/hpt apply --check /opt/ffido-local/hpt-transport.patch && git -c safe.directory=/opt/ffido-hpt-src/hpt -C /opt/ffido-hpt-src/hpt apply /opt/ffido-local/hpt-transport.patch && cmake --build /opt/ffido-hpt-src/hpt-build --parallel 2 && cmake --install /opt/ffido-hpt-src/hpt-build
+COPY netmail-fixture.c /opt/ffido-local/netmail-fixture.c
+RUN gcc -Wall -Wextra -Werror -I/usr/local/include /opt/ffido-local/netmail-fixture.c -L/usr/local/lib -Wl,-rpath,/usr/local/lib -lsmapi -lhusky -o /usr/local/bin/ffido-netmail-fixture
