@@ -8,6 +8,7 @@
 #include <nlohmann/json.hpp>
 #include <set>
 
+#include "domain/ftn_address.hpp"
 #include "ftn/uue_metadata.hpp"
 #include "service/auth_service.hpp"
 #include "service/crypto.hpp"
@@ -59,8 +60,19 @@ std::string OriginAddress(const msgapi::JamMessage& message) {
   const auto separator = id.find_first_of(" \t");
   if (separator == std::string::npos || id.find_first_not_of(" \t", separator) == std::string::npos)
     return {};
-  const auto candidate = std::string_view(id).substr(0, separator);
-  return ValidFtnAddress(candidate) ? std::string(candidate) : std::string{};
+  auto candidate = std::string_view(id).substr(0, separator);
+  if (const auto at = candidate.find('@'); at != std::string_view::npos) {
+    const auto domain = candidate.substr(at + 1);
+    const auto alnum = [](unsigned char c) {
+      return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9');
+    };
+    if (domain.empty() || domain.size() > 255 || !alnum(domain.front()) || !alnum(domain.back()) ||
+        !std::all_of(domain.begin(), domain.end(), [&](unsigned char c) { return alnum(c) || c == '-' || c == '.'; }))
+      return {};
+    candidate = candidate.substr(0, at);
+  }
+  const auto canonical = domain::CanonicalFtnAddress(candidate);
+  return canonical ? *canonical : std::string{};
 }
 
 std::string DisplayText(std::string_view text) {
@@ -298,6 +310,26 @@ std::expected<void, domain::ApiError> MessageService::MarkAsRead(std::string_vie
     return std::unexpected(result.error());
   const auto key_number = std::to_string(*number);
   return metadata_->MarkMessageRead(user, {conference, (*access)->generation(), key_number});
+}
+std::expected<void, domain::ApiError> MessageService::MarkAsUnread(std::string_view conference, std::string_view id,
+                                                                   std::string_view user) {
+  auto permission = access_->Permissions(*metadata_, user, conference);
+  if (!permission)
+    return std::unexpected(permission.error());
+  if (!permission->read)
+    return std::unexpected(EchoAccess::Denied());
+  auto access =
+      storage::JamAccess::Open(*catalog_, conference, false, RequestDeadline(), RequestCancellation(), encoding_);
+  if (!access)
+    return std::unexpected(JamError(access.error()));
+  auto number = MessageNumber(**access, id);
+  if (!number)
+    return std::unexpected(number.error());
+  auto result = Detail(**access, conference, *number, user);
+  if (!result)
+    return std::unexpected(result.error());
+  const auto key_number = std::to_string(*number);
+  return metadata_->MarkMessageUnread(user, {conference, (*access)->generation(), key_number});
 }
 std::expected<domain::CreateMessageResponse, domain::ApiError> MessageService::CreateMessage(
     std::string_view conference, const domain::CreateMessageRequest& request, std::string_view user,

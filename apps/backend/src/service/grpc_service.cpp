@@ -342,6 +342,12 @@ grpc::Status GrpcService::MarkRead(grpc::ServerContext* context, const wire::Mes
     return messages_.MarkAsRead(request->conference_id(), request->message_id(), user.id);
   });
 }
+grpc::Status GrpcService::MarkUnread(grpc::ServerContext* context, const wire::MessageReference* request,
+                                     google::protobuf::Empty*) {
+  return Dispatch(context, [&](const auto& user) -> Result {
+    return messages_.MarkAsUnread(request->conference_id(), request->message_id(), user.id);
+  });
+}
 grpc::Status GrpcService::GetThread(grpc::ServerContext* context, const wire::GetThreadRequest* request,
                                     wire::ListMessagesResponse* response) {
   return Dispatch(context, [&](const auto& user) -> Result {

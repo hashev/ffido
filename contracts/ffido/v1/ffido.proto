@@ -17,6 +17,7 @@ service Ffido {
   rpc CreateMessage(CreateMessageRequest) returns (CreateMessageResponse);
   rpc CreateCrosspost(CreateCrosspostRequest) returns (CreateCrosspostResponse);
   rpc MarkRead(MessageReference) returns (google.protobuf.Empty);
+  rpc MarkUnread(MessageReference) returns (google.protobuf.Empty);
   rpc MarkConferenceRead(MarkConferenceReadRequest) returns (MarkConferenceReadResponse);
   rpc GetThread(GetThreadRequest) returns (ListMessagesResponse);
   rpc ListBookmarks(PageRequest) returns (ListBookmarksResponse);

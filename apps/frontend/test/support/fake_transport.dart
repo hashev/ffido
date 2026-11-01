@@ -38,6 +38,8 @@ class FakeTransport implements ApiTransport {
   Future<Empty> Function()? clear;
   Future<Empty> Function(wire.GetConferenceRequest)? add;
   Future<Empty> Function(wire.GetConferenceRequest)? remove;
+  Future<Empty> Function(wire.MessageReference)? unread;
+  final List<wire.MessageReference> unreadCalls = [];
   Future<wire.ListMessagesResponse> Function(wire.GetThreadRequest)? thread;
   Future<wire.MarkConferenceReadResponse> Function(
     wire.MarkConferenceReadRequest,
@@ -138,6 +140,16 @@ class FakeTransport implements ApiTransport {
   }) async {
     calls.add(r);
     return Empty();
+  }
+
+  @override
+  Future<Empty> markUnread(
+    wire.MessageReference r, {
+    RpcCancellation? cancellation,
+  }) async {
+    calls.add(r);
+    unreadCalls.add(r);
+    return unread == null ? Empty() : unread!(r);
   }
 
   @override

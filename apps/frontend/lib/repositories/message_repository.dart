@@ -366,6 +366,33 @@ class MessageRepository {
     _check(captured, cancellation);
   }
 
+  /// Убрать персональную отметку чтения, сохранив историю и позицию.
+  Future<void> markAsUnread({
+    required String conferenceId,
+    required String messageId,
+    RpcCancellation? cancellation,
+  }) async {
+    final captured = epoch;
+    _check(captured, cancellation);
+    try {
+      await _apiClient.markUnread(
+        wire.MessageReference(conferenceId: conferenceId, messageId: messageId),
+        cancellation: cancellation,
+      );
+      _check(captured, cancellation);
+    } on ApiException catch (error) {
+      _check(captured, cancellation);
+      if (error.statusCode == 12) {
+        throw const ApiException(
+          message: 'Сервер не поддерживает пометку непрочитанности. Обновите сервер.',
+          statusCode: 12,
+          rpcName: 'MarkUnread',
+        );
+      }
+      rethrow;
+    }
+  }
+
   /// Получение thread (цепочки сообщений)
   Future<MessageListResponse> getThreadPage({
     required String conferenceId,

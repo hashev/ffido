@@ -412,6 +412,16 @@ class ApiClient implements ApiTransport, MessageFooterSupport {
     cancellation: cancellation,
   );
   @override
+  Future<Empty> markUnread(
+    wire.MessageReference r, {
+    RpcCancellation? cancellation,
+  }) => _invoke(
+    "MarkUnread",
+    (c, o) => c.markUnread(r, options: o),
+    retry: false,
+    cancellation: cancellation,
+  );
+  @override
   Future<wire.ListMessagesResponse> getThread(
     wire.GetThreadRequest r, {
     RpcCancellation? cancellation,

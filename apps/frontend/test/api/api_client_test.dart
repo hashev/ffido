@@ -103,6 +103,7 @@ class TestService extends wire.FfidoServiceBase {
     return Empty();
   }
 
+  wire.MessageReference? unreadReference;
   int calls = 0, creates = 0;
   String? authorization;
   grpc.GrpcError? failure;
@@ -199,6 +200,13 @@ class TestService extends wire.FfidoServiceBase {
 
   @override
   Future<Empty> markRead(grpc.ServiceCall c, wire.MessageReference r) async {
+    await before(c);
+    return Empty();
+  }
+
+  @override
+  Future<Empty> markUnread(grpc.ServiceCall c, wire.MessageReference r) async {
+    unreadReference = r;
     await before(c);
     return Empty();
   }
@@ -302,6 +310,25 @@ void main() {
     expect(service.creates, 0);
   });
 
+  test('MarkUnread preserves reference, Empty and RPC errors without automatic retry', () async {
+    final reference = wire.MessageReference(
+      conferenceId: 'echo',
+      messageId: 'g#42',
+    );
+    await client.markUnread(reference);
+    expect(service.unreadReference!.conferenceId, 'echo');
+    expect(service.unreadReference!.messageId, 'g#42');
+    service.failure = const grpc.GrpcError.unavailable();
+    final before = service.calls;
+    await expectLater(
+      client.markUnread(reference),
+      throwsA(
+        isA<NetworkException>().having((e) => e.rpcName, 'RPC', 'MarkUnread'),
+      ),
+    );
+    expect(service.calls, before + 1);
+  });
+
   test('all typed RPCs share metadata and preserve Unicode', () async {
     expect((await client.getProfile()).name, 'Юрий');
     await client.listConferences(wire.ListConferencesRequest());
@@ -310,13 +337,14 @@ void main() {
     await client.getMessage(wire.MessageReference());
     await client.createMessage(wire.CreateMessageRequest(operationId: 'op'));
     await client.markRead(wire.MessageReference());
+    await client.markUnread(wire.MessageReference());
     await client.getThread(wire.GetThreadRequest());
     await client.listBookmarks(wire.PageRequest());
     await client.addBookmark(wire.GetConferenceRequest());
     await client.removeBookmark(wire.GetConferenceRequest());
     await client.listHistory(wire.PageRequest());
     await client.clearHistory();
-    expect(service.calls, 13);
+    expect(service.calls, 14);
     expect(service.authorization, 'Bearer $token');
     expect(client.cacheScope, isNot(contains(token)));
   });

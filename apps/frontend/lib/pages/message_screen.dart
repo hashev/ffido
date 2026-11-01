@@ -62,6 +62,9 @@ class MessageScreen extends StatefulWidget {
 class _MessageScreenState extends State<MessageScreen>
     with RefreshOnResume<MessageScreen> {
   @override
+  bool get resumeRefreshEnabled => !unreadBusy && !bulkBusy;
+
+  @override
   Future<void> refreshOnResume() async {
     final message = selected;
     final epoch = repository.epoch;
@@ -110,7 +113,7 @@ class _MessageScreenState extends State<MessageScreen>
   bool get hasNextEcho => !echoesExhausted && nextEchoes().isNotEmpty;
 
   bool canNavigate(int direction) {
-    if (loading || bulkBusy || !canRead) return false;
+    if (loading || bulkBusy || unreadBusy || !canRead) return false;
     final index = messages.indexWhere((m) => m.id == selected?.id);
     if (unreadNavigation) {
       final rows = direction > 0
@@ -139,7 +142,7 @@ class _MessageScreenState extends State<MessageScreen>
   final bodyController = ScrollController();
   int version = 0;
   String? bulkOperation;
-  bool bulkBusy = false;
+  bool bulkBusy = false, unreadBusy = false;
   RpcCancellation? bulkCancellation;
   String? threadId;
   RpcCancellation? cancellation;
@@ -165,6 +168,7 @@ class _MessageScreenState extends State<MessageScreen>
       echoesExhausted = true;
       bulkOperation = null;
       bulkBusy = false;
+      unreadBusy = false;
       unawaited(bulkCancellation?.cancel());
       messages = [];
       selected = null;
@@ -194,7 +198,7 @@ class _MessageScreenState extends State<MessageScreen>
     bool preserveOpenedMessage = false,
     String? anchorMessageId,
   }) async {
-    if (!canRead || (more && loading)) return;
+    if (unreadBusy || !canRead || (more && loading)) return;
     if (!more) echoesExhausted = false;
     final current = ++version;
     unawaited(cancellation?.cancel());
@@ -607,7 +611,7 @@ class _MessageScreenState extends State<MessageScreen>
   }
 
   Future<void> open(Message message) async {
-    if (loading) return;
+    if (loading || unreadBusy || bulkBusy) return;
     final current = ++version;
     unawaited(cancellation?.cancel());
     final token = cancellation = RpcCancellation();
@@ -736,8 +740,122 @@ class _MessageScreenState extends State<MessageScreen>
     await widget.onAccessDenied?.call();
   }
 
+  Future<void> markSelectedUnread() async {
+    final message = selected;
+    if (message == null ||
+        loading ||
+        bulkBusy ||
+        unreadBusy ||
+        !canRead ||
+        activeConference.unsupportedFormat) {
+      return;
+    }
+    final captured = repository.epoch;
+    final current = ++version;
+    unawaited(cancellation?.cancel());
+    final token = cancellation = RpcCancellation();
+    setState(() {
+      loading = true;
+      unreadBusy = true;
+      error = null;
+    });
+    try {
+      await repository.markAsUnread(
+        conferenceId: conferenceId,
+        messageId: message.id,
+        cancellation: token,
+      );
+      if (!mounted || captured != repository.epoch || current != version) {
+        return;
+      }
+      setState(() {
+        opened.remove('$conferenceId/${message.id}');
+        echoesExhausted = false;
+        messages = messages
+            .map(
+              (row) => row.id == message.id
+                  ? Message.fromJson({...row.toJson(), 'is_read': false})
+                  : row,
+            )
+            .toList();
+        selected = null;
+      });
+      await refreshAfterUnread(captured);
+    } catch (e) {
+      if (!mounted || captured != repository.epoch || current != version) {
+        return;
+      }
+      if (e is ApiException && e.isAccessDenied) await accessDenied();
+      if (!mounted || captured != repository.epoch) return;
+      setState(() {
+        error = 'Не удалось подтвердить пометку непрочитанности: $e';
+        retry = markSelectedUnread;
+      });
+    } finally {
+      if (mounted && captured == repository.epoch) {
+        setState(() {
+          unreadBusy = false;
+          loading = false;
+        });
+      }
+    }
+  }
+
+  Future<void> refreshAfterUnread(int captured) async {
+    if (!mounted || captured != repository.epoch) return;
+    setState(() {
+      loading = true;
+      unreadBusy = true;
+      error = null;
+    });
+    try {
+      final conferences =
+          widget.conferences ??
+          (widget.repository == null ? conferenceRepository : null);
+      if (conferences != null) {
+        await conferences.clearCache();
+        if (!mounted || captured != repository.epoch) return;
+        final fresh = await conferences.getConferenceById(
+          conferenceId,
+          cancellation: cancellation,
+        );
+        if (!mounted || captured != repository.epoch) return;
+        if (fresh != null) {
+          setState(() => activeConference = fresh);
+          if (!fresh.canRead) {
+            throw const ApiException(
+              message: 'Доступ к области отозван',
+              statusCode: StatusCode.permissionDenied,
+            );
+          }
+        }
+      }
+      await refreshBulkPage(captured);
+    } catch (e) {
+      if (!mounted || captured != repository.epoch) return;
+      if (e is ApiException && e.isAccessDenied) await accessDenied();
+      if (!mounted || captured != repository.epoch) return;
+      setState(() {
+        error = 'Письмо помечено непрочитанным. Не удалось обновить список: $e';
+        retry = () => refreshAfterUnread(captured);
+      });
+    } finally {
+      if (mounted && captured == repository.epoch) {
+        setState(() {
+          loading = false;
+          unreadBusy = false;
+        });
+      }
+    }
+  }
+
   Future<void> markAreaRead() async {
-    if (bulkBusy || !canRead || activeConference.unsupportedFormat) return;
+    if (bulkBusy ||
+        unreadBusy ||
+        !canRead ||
+        activeConference.unsupportedFormat) {
+      return;
+    }
     final captured = repository.epoch;
     if (bulkOperation == null) {
       final confirmed = await showDialog<bool>(
@@ -861,9 +979,15 @@ class _MessageScreenState extends State<MessageScreen>
         if (canRead && !activeConference.unsupportedFormat)
           PopupMenuButton<String>(
             tooltip: 'Действия области',
-            enabled: !bulkBusy && !loading,
-            onSelected: (_) => markAreaRead(),
+            enabled: !bulkBusy && !unreadBusy && !loading,
+            onSelected: (action) =>
+                action == 'unread' ? markSelectedUnread() : markAreaRead(),
             itemBuilder: (_) => [
+              if (selected != null)
+                const PopupMenuItem(
+                  value: 'unread',
+                  child: Text('Пометить непрочитанным'),
+                ),
               PopupMenuItem(
                 value: 'read',
                 child: Row(
