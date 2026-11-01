@@ -1315,10 +1315,12 @@ class _ComposeScreenState extends State<_ComposeScreen> {
           operationId = MessageRepository.newOperationId();
         });
       }
-    } catch (_) {
-      if (mounted) {
+    } catch (e) {
+      if (mounted && widget.repository.epoch == epoch) {
         setState(
-          () => error = 'Не удалось выбрать файл или превышен лимит сервера',
+          () => error = e is ValidationException
+              ? e.message
+              : 'Не удалось прочитать выбранный файл. Выберите его ещё раз.',
         );
       }
     }
