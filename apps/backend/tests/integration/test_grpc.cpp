@@ -304,6 +304,7 @@ TEST_F(GrpcTest, EveryRpcRequiresTokenBeforeValidationOrSideEffects) {
   UNAUTH(CreateMessage, create, created)
   google::protobuf::Empty empty, none;
   UNAUTH(MarkRead, reference, none)
+  UNAUTH(MarkUnread, reference, none)
   wire::GetThreadRequest thread;
   UNAUTH(GetThread, thread, list_out)
   wire::PageRequest page;
@@ -1257,4 +1258,178 @@ TEST_F(DeniedCrosspostGrpcTest, ForbiddenGroupReturnsNoPrivateCopyReferences) {
   Auth(context, a);
   EXPECT_EQ(client->CreateCrosspost(&context, request, &response).error_code(), grpc::StatusCode::PERMISSION_DENIED);
   EXPECT_EQ(response.saved_size(), 0);
+}
+
+TEST_F(GrpcTest, MsgidOriginAddressIsNarrowCanonicalAndHonorsExplicitAddress) {
+  struct Case {
+    std::string msgid, origin, expected;
+  };
+  const std::vector<Case> cases{
+      {"2:5001/100@fidonet 6ae67e72", "", "2:5001/100"},
+      {"2:5001/100.7@other-net.example serial", "", "2:5001/100.7"},
+      {"2:5001/100.0@FiDoNeT serial", "", "2:5001/100"},
+      {"2:5001/100.7 serial", "", "2:5001/100.7"},
+      {"2:5001/100.0 serial", "", "2:5001/100"},
+      {"2:5001/100@fidonet serial", "2:1/2", "2:1/2"},
+      {"2:5001/100@ serial", "", ""},
+      {"2:5001/100@@fidonet serial", "", ""},
+      {"2:5001/100@fido/net serial", "", ""},
+      {"2:5001/100@-fidonet serial", "", ""},
+      {"2:5001/100@fidonet. serial", "", ""},
+      {"2:5001/100@" + std::string(256, 'a') + " serial", "", ""},
+      {"2:5001/65536@fidonet serial", "", ""},
+      {"2:5001/100@fidonet", "", ""},
+      {"2:5001/100@fidonet \t", "", ""},
+  };
+  for (size_t i = 0; i < cases.size(); ++i) {
+    SCOPED_TRACE(cases[i].msgid);
+    wire::MessageReference ref;
+    ref.set_conference_id("RU.TEST");
+    {
+      auto access = storage::JamAccess::Open(*catalog, "RU.TEST", true,
+                                             std::chrono::steady_clock::now() + std::chrono::seconds(3));
+      ASSERT_TRUE(access);
+      msgapi::JamMessage parent;
+      parent.SetSenderName("Author");
+      parent.SetSubject("Subject");
+      parent.SetText("Body");
+      parent.SetMsgId(cases[i].msgid);
+      if (!cases[i].origin.empty())
+        parent.SetOriginAddress(cases[i].origin);
+      ASSERT_EQ((*access)->messages().AddMessage(parent), msgapi::JamError::kSuccess);
+      ref.set_message_id((*access)->generation() + "#" + std::to_string(42 + i));
+    }
+    wire::Message message;
+    grpc::ClientContext read;
+    Auth(read, a);
+    ASSERT_TRUE(client->GetMessage(&read, ref, &message).ok());
+    EXPECT_EQ(message.from_address(), cases[i].expected);
+    if (cases[i].expected.empty()) {
+      auto request = Request("broken-parent-" + std::to_string(i));
+      request.set_in_reply_to(ref.message_id());
+      wire::CreateMessageResponse response;
+      grpc::ClientContext reply;
+      Auth(reply, a);
+      EXPECT_EQ(client->CreateMessage(&reply, request, &response).error_code(), grpc::StatusCode::INVALID_ARGUMENT);
+      EXPECT_EQ(test::ReadFile(temp.path() / "file.jdx").size(), (i + 1) * 8);
+    }
+  }
+  EXPECT_FALSE(service::ValidFtnAddress("2:5001/100@fidonet"));
+}
+
+TEST_F(GrpcTest, DomainMsgidReplyPreservesOriginalPayloadAndFullReplyId) {
+  const std::string msgid = "2:5001/100@fidonet 6ae67e72";
+  wire::MessageReference ref;
+  ref.set_conference_id("RU.TEST");
+  {
+    auto access =
+        storage::JamAccess::Open(*catalog, "RU.TEST", true, std::chrono::steady_clock::now() + std::chrono::seconds(3));
+    ASSERT_TRUE(access);
+    msgapi::JamMessage parent;
+    parent.SetSenderName("Dmitry Protasoff");
+    parent.SetReceiverName("Nil A");
+    parent.SetSubject("Subject");
+    parent.SetText("Original body\r");
+    parent.SetMsgId(msgid);
+    ASSERT_EQ((*access)->messages().AddMessage(parent), msgapi::JamError::kSuccess);
+    ref.set_message_id((*access)->generation() + "#42");
+  }
+  const auto header_before = test::ReadFile(temp.path() / "file.jhr");
+  const auto text_before = test::ReadFile(temp.path() / "file.jdt");
+  const auto index_before = test::ReadFile(temp.path() / "file.jdx");
+  wire::Message decoded;
+  grpc::ClientContext read;
+  Auth(read, a);
+  ASSERT_TRUE(client->GetMessage(&read, ref, &decoded).ok());
+  EXPECT_EQ(decoded.from_address(), "2:5001/100");
+  EXPECT_EQ(test::ReadFile(temp.path() / "file.jhr"), header_before);
+  EXPECT_EQ(test::ReadFile(temp.path() / "file.jdt"), text_before);
+  EXPECT_EQ(test::ReadFile(temp.path() / "file.jdx"), index_before);
+  const auto original = test::ReadJamWireRecord(temp.path() / "file", 0);
+  auto request = Request("domain-reply");
+  request.set_in_reply_to(ref.message_id());
+  request.set_to_name("");
+  request.set_to_address("");
+  wire::CreateMessageResponse created;
+  grpc::ClientContext reply;
+  Auth(reply, a);
+  ASSERT_TRUE(client->CreateMessage(&reply, request, &created).ok());
+  const auto result = test::ReadJamWireRecord(temp.path() / "file", 1);
+  EXPECT_EQ(result.Field(5), msgid);
+  EXPECT_EQ(result.Field(3), "Dmitry Protasoff");
+  EXPECT_EQ(result.Field(1), "2:5001/100");
+  const auto after = test::ReadJamWireRecord(temp.path() / "file", 0);
+  EXPECT_EQ(after.body, original.body);
+  for (auto field : {2, 3, 4, 6})
+    EXPECT_EQ(after.Field(field), original.Field(field));
+
+  request.set_operation_id("invalid-parent-address");
+  request.set_to_address("2:5001/100@fidonet");
+  grpc::ClientContext invalid;
+  Auth(invalid, a);
+  EXPECT_EQ(client->CreateMessage(&invalid, request, &created).error_code(), grpc::StatusCode::INVALID_ARGUMENT);
+  EXPECT_EQ(test::ReadFile(temp.path() / "file.jdx").size(), 16u);
+}
+
+TEST_F(GrpcTest, MarkUnreadRpcPreservesJamAndOtherUserAndRejectsStaleOrDeletedReferences) {
+  auto request = Request("unread");
+  wire::CreateMessageResponse created;
+  grpc::ClientContext create;
+  Auth(create, a);
+  ASSERT_TRUE(client->CreateMessage(&create, request, &created).ok());
+  wire::Message body;
+  for (const auto& token : {a, b}) {
+    grpc::ClientContext read;
+    Auth(read, token);
+    ASSERT_TRUE(client->GetMessage(&read, created.message(), &body).ok());
+  }
+  const auto header = test::ReadFile(temp.path() / "file.jhr");
+  const auto text = test::ReadFile(temp.path() / "file.jdt");
+  const auto index = test::ReadFile(temp.path() / "file.jdx");
+  const auto position = *metadata->LastOpened("A", "RU.TEST");
+  google::protobuf::Empty empty;
+  for (int i = 0; i < 2; ++i) {
+    grpc::ClientContext unread;
+    Auth(unread, a);
+    ASSERT_TRUE(client->MarkUnread(&unread, created.message(), &empty).ok());
+  }
+  wire::ListMessagesRequest list;
+  list.set_conference_id("RU.TEST");
+  list.mutable_page()->set_limit(20);
+  list.set_sort(wire::MESSAGE_SORT_DATE_DESCENDING);
+  wire::ListMessagesResponse response;
+  grpc::ClientContext mine;
+  Auth(mine, a);
+  ASSERT_TRUE(client->ListMessages(&mine, list, &response).ok());
+  ASSERT_EQ(response.messages_size(), 1);
+  EXPECT_FALSE(response.messages(0).is_read());
+  grpc::ClientContext other;
+  Auth(other, b);
+  ASSERT_TRUE(client->ListMessages(&other, list, &response).ok());
+  EXPECT_TRUE(response.messages(0).is_read());
+  wire::GetConferenceRequest area;
+  area.set_conference_id("RU.TEST");
+  wire::Conference statistics;
+  grpc::ClientContext counts;
+  Auth(counts, a);
+  ASSERT_TRUE(client->GetConference(&counts, area, &statistics).ok());
+  EXPECT_EQ(statistics.unread_count(), 1);
+  EXPECT_EQ(metadata->LastOpened("A", "RU.TEST")->revision, position.revision);
+  EXPECT_EQ(test::ReadFile(temp.path() / "file.jhr"), header);
+  EXPECT_EQ(test::ReadFile(temp.path() / "file.jdt"), text);
+  EXPECT_EQ(test::ReadFile(temp.path() / "file.jdx"), index);
+  auto invalid = created.message();
+  invalid.set_message_id("stale#42");
+  grpc::ClientContext stale;
+  Auth(stale, a);
+  EXPECT_EQ(client->MarkUnread(&stale, invalid, &empty).error_code(), grpc::StatusCode::NOT_FOUND);
+  {
+    std::fstream output(temp.path() / "file.jdx", std::ios::binary | std::ios::in | std::ios::out);
+    output.seekp(4);
+    const char deleted[4] = {'\xff', '\xff', '\xff', '\xff'};
+    output.write(deleted, sizeof(deleted));
+  }
+  grpc::ClientContext deleted;
+  Auth(deleted, a);
+  EXPECT_EQ(client->MarkUnread(&deleted, created.message(), &empty).error_code(), grpc::StatusCode::NOT_FOUND);
 }

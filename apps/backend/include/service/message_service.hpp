@@ -53,6 +53,8 @@ public:
                                                                               std::string_view user);
   std::expected<void, domain::ApiError> MarkAsRead(std::string_view conference, std::string_view message,
                                                    std::string_view user);
+  std::expected<void, domain::ApiError> MarkAsUnread(std::string_view conference, std::string_view message,
+                                                     std::string_view user);
   std::expected<domain::ThreadListResponse, domain::ApiError> GetThread(std::string_view conference,
                                                                         std::string_view thread, std::string_view user,
                                                                         const domain::PaginationRequest& page = {});

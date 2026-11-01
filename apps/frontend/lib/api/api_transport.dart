@@ -54,6 +54,10 @@ abstract interface class ApiTransport {
     wire.MessageReference request, {
     RpcCancellation? cancellation,
   });
+  Future<Empty> markUnread(
+    wire.MessageReference request, {
+    RpcCancellation? cancellation,
+  });
   Future<wire.ListMessagesResponse> getThread(
     wire.GetThreadRequest request, {
     RpcCancellation? cancellation,

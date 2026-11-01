@@ -685,6 +685,7 @@ TEST(SQLiteFaults, AllocationFailuresPropagateThroughQueriesBindingsAndTransacti
   run_faults("add history", [&] { return store->AddToHistory("A", "echo"); });
   run_faults("is read", [&] { return store->IsMessageRead("A", {"echo", "generation", "1"}); });
   run_faults("mark read", [&] { return store->MarkMessageRead("A", {"echo", "generation", "1"}); });
+  run_faults("mark unread", [&] { return store->MarkMessageUnread("A", {"echo", "generation", "1"}); });
   run_faults("read count", [&] { return store->GetReadCount("A", "echo", "generation"); });
   run_faults("record view", [&] { return store->RecordMessageView("A", {"echo", "generation", "1"}); });
   run_faults("profile", [&] { return store->GetProfile("A"); });
@@ -994,4 +995,47 @@ TEST_F(SQLiteStoreTest, CrosspostManifestIsImmutableAndIsolatedAcrossUsersAndReo
   ASSERT_TRUE(b && *b);
   EXPECT_EQ(**a, "manifest");
   EXPECT_EQ(**b, "other");
+}
+
+TEST_F(SQLiteStoreTest, MarkUnreadIsExactDurableAndDoesNotMoveReadingPosition) {
+  ASSERT_TRUE(store_->SaveProfile("A", {"A", "2:1/2.1", "", ""}));
+  ASSERT_TRUE(store_->SaveProfile("B", {"B", "2:1/2.2", "", ""}));
+  const storage::ReadKey key{"echo", "g", "1"};
+  ASSERT_TRUE(store_->RecordMessageView("A", key));
+  const auto position = *store_->LastOpened("A", "echo");
+  ASSERT_TRUE(store_->MarkMessageRead("B", key));
+  for (const auto& other :
+       std::vector<storage::ReadKey>{{"other", "g", "1"}, {"echo", "other", "1"}, {"echo", "g", "2"}})
+    ASSERT_TRUE(store_->MarkMessageRead("A", other));
+  ASSERT_TRUE(store_->MarkMessageUnread("A", key));
+  ASSERT_TRUE(store_->MarkMessageUnread("A", key));
+  EXPECT_FALSE(*store_->IsMessageRead("A", key));
+  EXPECT_TRUE(*store_->IsMessageRead("B", key));
+  EXPECT_TRUE(*store_->IsMessageRead("A", {"other", "g", "1"}));
+  EXPECT_TRUE(*store_->IsMessageRead("A", {"echo", "other", "1"}));
+  EXPECT_EQ(*store_->GetReadCount("A", "echo", "g"), 1);
+  EXPECT_EQ(store_->LastOpened("A", "echo")->revision, position.revision);
+  EXPECT_EQ(store_->LastOpened("A", "echo")->message, position.message);
+  EXPECT_EQ(store_->GetHistory("A")->size(), 1);
+  store_.reset();
+  store_ = storage::CreateSQLiteStore(db_path_);
+  ASSERT_TRUE(store_->Init());
+  EXPECT_FALSE(*store_->IsMessageRead("A", key));
+  ASSERT_TRUE(store_->RecordMessageView("A", key));
+  EXPECT_TRUE(*store_->IsMessageRead("A", key));
+  ASSERT_TRUE(store_->MarkConferenceRead("A", "bulk-before-unread", "echo", "g", {1, 2}));
+  ASSERT_TRUE(store_->MarkMessageUnread("A", key));
+  ASSERT_TRUE(store_->MarkConferenceRead("A", "bulk-before-unread", "echo", "g", {1, 2}));
+  EXPECT_FALSE(*store_->IsMessageRead("A", key));
+  ASSERT_TRUE(store_->MarkConferenceRead("A", "bulk-after-unread", "echo", "g", {1, 2}));
+  EXPECT_TRUE(*store_->IsMessageRead("A", key));
+}
+
+TEST_F(SQLiteStoreTest, MarkUnreadFailureLeavesReadStateIntact) {
+  ASSERT_TRUE(store_->SaveProfile("A", {"A", "2:1/2.1", "", ""}));
+  ASSERT_TRUE(store_->MarkMessageRead("A", {"echo", "g", "1"}));
+  RawDb raw(db_path_);
+  raw.Exec("CREATE TRIGGER reject_unread BEFORE DELETE ON read_status BEGIN SELECT RAISE(ABORT, 'fixture'); END");
+  EXPECT_FALSE(store_->MarkMessageUnread("A", {"echo", "g", "1"}));
+  EXPECT_TRUE(*store_->IsMessageRead("A", {"echo", "g", "1"}));
 }

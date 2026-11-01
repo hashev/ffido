@@ -41,6 +41,7 @@ public:
   FFIDO_RPC(CreateCrosspost, ffido::v1::CreateCrosspostRequest, ffido::v1::CreateCrosspostResponse)
   FFIDO_RPC(MarkConferenceRead, ffido::v1::MarkConferenceReadRequest, ffido::v1::MarkConferenceReadResponse)
   FFIDO_RPC(MarkRead, ffido::v1::MessageReference, google::protobuf::Empty)
+  FFIDO_RPC(MarkUnread, ffido::v1::MessageReference, google::protobuf::Empty)
   FFIDO_RPC(GetThread, ffido::v1::GetThreadRequest, ffido::v1::ListMessagesResponse)
   FFIDO_RPC(ListBookmarks, ffido::v1::PageRequest, ffido::v1::ListBookmarksResponse)
   FFIDO_RPC(AddBookmark, ffido::v1::GetConferenceRequest, google::protobuf::Empty)

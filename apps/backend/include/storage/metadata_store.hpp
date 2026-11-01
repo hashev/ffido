@@ -98,6 +98,8 @@ public:
   [[nodiscard]] virtual std::expected<bool, domain::ApiError> IsMessageRead(std::string_view user_id, ReadKey key) = 0;
   [[nodiscard]] virtual std::expected<void, domain::ApiError> MarkMessageRead(std::string_view user_id,
                                                                               ReadKey key) = 0;
+  [[nodiscard]] virtual std::expected<void, domain::ApiError> MarkMessageUnread(std::string_view user_id,
+                                                                                ReadKey key) = 0;
   [[nodiscard]] virtual std::expected<int64_t, domain::ApiError> GetReadCount(std::string_view user_id,
                                                                               std::string_view conference_id,
                                                                               std::string_view generation) = 0;

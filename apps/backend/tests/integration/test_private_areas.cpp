@@ -9,9 +9,12 @@ extern char** environ;
 #include "../support/jam_wire_record.hpp"
 #include "../support/smapi_oracle.hpp"
 #include "../support/temp_directory.hpp"
+#include "../support/tls_certificate.hpp"
 #include "ftn/uue.hpp"
 #include "service/conference_service.hpp"
 #include "service/crypto.hpp"
+#include "service/grpc_runtime.hpp"
+#include "service/grpc_service.hpp"
 #include "service/mail_bridge.hpp"
 #include "service/message_service.hpp"
 #include "service/uue_service.hpp"
@@ -1142,4 +1145,107 @@ TEST_F(PrivateAreasTest, CompletedIngressSurvivesEncodingPolicyChangeWithoutReap
   EXPECT_EQ(test::ReadFile(mailbox.string() + ".jdt"), body);
   EXPECT_EQ(test::ReadFile(mailbox.string() + ".jdx"), index);
   EXPECT_EQ(test::ReadFile(mailbox.string() + ".jhr"), header);
+}
+
+TEST_F(PrivateAreasTest, MarkUnreadSupportsPrivateMailboxesAndReadOnlyAreasWithoutJamWrites) {
+  Mailboxes();
+  service::GrpcRuntime runtime;
+  for (auto& [address, permission] : hpt.echoes.front().links)
+    permission.post = false;
+  auto rpc_policy = service::EchoAccess::Build(hpt, *catalog, {"2:1/2.1"});
+  ASSERT_TRUE(rpc_policy);
+  service::GrpcService rpc(catalog, metadata, *rpc_policy);
+  test::GenerateTlsCertificate(temp.path());
+  grpc::SslServerCredentialsOptions tls;
+  tls.pem_key_cert_pairs.push_back(
+      {test::ReadFile(temp.path() / "key.pem"), test::ReadFile(temp.path() / "certificate.pem")});
+  grpc::ServerBuilder builder;
+  int port = 0;
+  builder.AddListeningPort("127.0.0.1:0", grpc::SslServerCredentials(tls), &port);
+  builder.RegisterService(&rpc);
+  auto server = builder.BuildAndStart();
+  ASSERT_TRUE(server);
+  struct StopServer {
+    grpc::Server& server;
+    ~StopServer() {
+      server.Shutdown();
+      server.Wait();
+    }
+  } stop{*server};
+  grpc::SslCredentialsOptions roots;
+  roots.pem_root_certs = test::ReadFile(temp.path() / "certificate.pem");
+  auto client =
+      ffido::v1::Ffido::NewStub(grpc::CreateChannel("127.0.0.1:" + std::to_string(port), grpc::SslCredentials(roots)));
+  service::AuthService auth(metadata);
+  std::map<std::string, std::string> tokens;
+  const auto expires =
+      std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count() +
+      3600;
+  for (const auto& user : {"owner", "point1", "point2"}) {
+    auto profile = metadata->GetProfile(user);
+    ASSERT_TRUE(profile);
+    auto token = auth.Provision(user, *profile, expires);
+    ASSERT_TRUE(token);
+    tokens.emplace(user, *token);
+  }
+  const auto mark = [&](const std::string& id, const std::string& message, const std::string& user) {
+    ffido::v1::MessageReference request;
+    request.set_conference_id(id);
+    request.set_message_id(message);
+    grpc::ClientContext context;
+    context.AddMetadata("authorization", "Bearer " + tokens.at(user));
+    context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(3));
+    google::protobuf::Empty response;
+    return client->MarkUnread(&context, request, &response);
+  };
+  for (const auto& [id, area] : catalog->areas()) {
+    if (area.config.msgbase_type != "JAM") {
+      EXPECT_FALSE(mark(id, "invalid#1", "owner").ok());
+      continue;
+    }
+    std::string generation;
+    {
+      auto view =
+          storage::JamAccess::Open(*catalog, id, true, std::chrono::steady_clock::now() + std::chrono::seconds(2));
+      ASSERT_TRUE(view);
+      msgapi::JamMessage message;
+      message.SetText("fixture");
+      message.SetSubject("fixture");
+      ASSERT_EQ((*view)->messages().AddMessage(message), msgapi::JamError::kSuccess);
+      generation = (*view)->generation();
+    }
+    const std::string user =
+        area.files->personal_mailbox ? (id == storage::MailboxId("2:1/2.2") ? "point1" : "point2") : "owner";
+    const auto key = storage::ReadKey{id, generation, "1"};
+    ASSERT_TRUE(metadata->RecordMessageView(user, key));
+    const auto position = *metadata->LastOpened(user, id);
+    const auto path = temp.path() / area.config.filename;
+    const auto header = test::ReadFile(path.string() + ".jhr");
+    const auto text = test::ReadFile(path.string() + ".jdt");
+    ASSERT_TRUE(mark(id, generation + "#1", user).ok()) << id;
+    EXPECT_FALSE(*metadata->IsMessageRead(user, key));
+    EXPECT_EQ(metadata->LastOpened(user, id)->revision, position.revision);
+    EXPECT_EQ(test::ReadFile(path.string() + ".jhr"), header);
+    EXPECT_EQ(test::ReadFile(path.string() + ".jdt"), text);
+    if (area.config.kind != AreaKind::kEcho) {
+      EXPECT_FALSE(mark(id, generation + "#1", user == "point1" ? "point2" : "point1").ok());
+    }
+  }
+  for (auto& [address, permission] : hpt.echoes.front().links)
+    permission.post = false;
+  auto policy = service::EchoAccess::Build(hpt, *catalog, {"2:1/2.1"});
+  ASSERT_TRUE(policy);
+  service::MessageService read_only(catalog, metadata, *policy);
+  auto view =
+      storage::JamAccess::Open(*catalog, "ECHO", false, std::chrono::steady_clock::now() + std::chrono::seconds(2));
+  ASSERT_TRUE(view);
+  const auto generation = (*view)->generation();
+  view->reset();
+  ASSERT_TRUE(read_only.MarkAsUnread("ECHO", generation + "#1", "point1"));
+  ASSERT_TRUE(mark("ECHO", generation + "#1", "point1").ok());
+  hpt.echoes.front().links.erase("2:1/2.2");
+  policy = service::EchoAccess::Build(hpt, *catalog, {"2:1/2.1"});
+  ASSERT_TRUE(policy);
+  service::MessageService denied(catalog, metadata, *policy);
+  EXPECT_FALSE(denied.MarkAsUnread("ECHO", generation + "#1", "point1"));
 }

@@ -973,6 +973,20 @@ public:
     return {};
   }
 
+  std::expected<void, domain::ApiError> MarkMessageUnread(std::string_view user_id, ReadKey key) override {
+    std::lock_guard lock(mutex_);
+    if (!db_.get())
+      return std::unexpected(domain::ApiError::Server("DB not open"));
+    StatementGuard stmt(
+        prepare("DELETE FROM read_status WHERE user_id=? AND conference_id=? AND generation=? AND message_id=?"));
+    if (!stmt.get() || !stmt.Bind(1, user_id) || !stmt.Bind(2, key.conference) || !stmt.Bind(3, key.generation) ||
+        !stmt.Bind(4, key.message))
+      return std::unexpected(SqliteError(db_.get(), "MarkMessageUnread bind"));
+    if (sqlite3_step(stmt.get()) != SQLITE_DONE)
+      return std::unexpected(SqliteError(db_.get(), "MarkMessageUnread exec"));
+    return {};
+  }
+
   std::expected<int64_t, domain::ApiError> GetReadCount(std::string_view user_id, std::string_view conference_id,
                                                         std::string_view generation) override {
     std::lock_guard lock(mutex_);

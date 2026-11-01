@@ -104,6 +104,13 @@ class FfidoClient extends $grpc.Client {
     return $createUnaryCall(_$markRead, request, options: options);
   }
 
+  $grpc.ResponseFuture<$1.Empty> markUnread(
+    $0.MessageReference request, {
+    $grpc.CallOptions? options,
+  }) {
+    return $createUnaryCall(_$markUnread, request, options: options);
+  }
+
   $grpc.ResponseFuture<$0.MarkConferenceReadResponse> markConferenceRead(
     $0.MarkConferenceReadRequest request, {
     $grpc.CallOptions? options,
@@ -255,6 +262,10 @@ class FfidoClient extends $grpc.Client {
           $0.CreateCrosspostResponse.fromBuffer);
   static final _$markRead = $grpc.ClientMethod<$0.MessageReference, $1.Empty>(
       '/ffido.v1.Ffido/MarkRead',
+      ($0.MessageReference value) => value.writeToBuffer(),
+      $1.Empty.fromBuffer);
+  static final _$markUnread = $grpc.ClientMethod<$0.MessageReference, $1.Empty>(
+      '/ffido.v1.Ffido/MarkUnread',
       ($0.MessageReference value) => value.writeToBuffer(),
       $1.Empty.fromBuffer);
   static final _$markConferenceRead = $grpc.ClientMethod<
@@ -411,6 +422,13 @@ abstract class FfidoServiceBase extends $grpc.Service {
     $addMethod($grpc.ServiceMethod<$0.MessageReference, $1.Empty>(
         'MarkRead',
         markRead_Pre,
+        false,
+        false,
+        ($core.List<$core.int> value) => $0.MessageReference.fromBuffer(value),
+        ($1.Empty value) => value.writeToBuffer()));
+    $addMethod($grpc.ServiceMethod<$0.MessageReference, $1.Empty>(
+        'MarkUnread',
+        markUnread_Pre,
         false,
         false,
         ($core.List<$core.int> value) => $0.MessageReference.fromBuffer(value),
@@ -616,6 +634,14 @@ abstract class FfidoServiceBase extends $grpc.Service {
   }
 
   $async.Future<$1.Empty> markRead(
+      $grpc.ServiceCall call, $0.MessageReference request);
+
+  $async.Future<$1.Empty> markUnread_Pre($grpc.ServiceCall $call,
+      $async.Future<$0.MessageReference> $request) async {
+    return markUnread($call, await $request);
+  }
+
+  $async.Future<$1.Empty> markUnread(
       $grpc.ServiceCall call, $0.MessageReference request);
 
   $async.Future<$0.MarkConferenceReadResponse> markConferenceRead_Pre(

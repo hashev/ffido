@@ -1,5 +1,7 @@
 import 'dart:async';
 
+import 'package:protobuf/well_known_types/google/protobuf/empty.pb.dart';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:fido/api/api_exceptions.dart';
 import 'package:fido/api/api_transport.dart';
@@ -27,6 +29,49 @@ void main() {
     repo = MessageRepository(api);
   });
   tearDown(() => api.dispose());
+
+  test('mark unread uses the exact identity and rejects obsolete or cancelled results', () async {
+    await repo.markAsUnread(conferenceId: 'echo', messageId: 'g#42');
+    expect(api.unreadCalls.single.conferenceId, 'echo');
+    expect(api.unreadCalls.single.messageId, 'g#42');
+    expect(api.calls, hasLength(1));
+    api.unread = (_) async => throw const NetworkException();
+    await expectLater(
+      repo.markAsUnread(conferenceId: 'echo', messageId: 'g#42'),
+      throwsA(isA<NetworkException>()),
+    );
+    api.unread = (_) async =>
+        throw const ApiException(statusCode: 12, message: 'unimplemented');
+    await expectLater(
+      repo.markAsUnread(conferenceId: 'echo', messageId: 'g#42'),
+      throwsA(
+        isA<ApiException>().having(
+          (e) => e.message,
+          'message',
+          contains('Обновите сервер'),
+        ),
+      ),
+    );
+    final cancellation = RpcCancellation();
+    await cancellation.cancel();
+    final before = api.unreadCalls.length;
+    await expectLater(
+      repo.markAsUnread(
+        conferenceId: 'echo',
+        messageId: 'g#42',
+        cancellation: cancellation,
+      ),
+      throwsA(isA<CancelledException>()),
+    );
+    expect(api.unreadCalls.length, before);
+    final pending = Completer<Empty>();
+    api.unread = (_) => pending.future;
+    final call = repo.markAsUnread(conferenceId: 'echo', messageId: 'g#42');
+    api.switchSession();
+    final expectation = expectLater(call, throwsA(isA<CancelledException>()));
+    pending.complete(Empty());
+    await expectation;
+  });
 
   test(
     'crosspost refuses false success with missing or duplicate destinations',
