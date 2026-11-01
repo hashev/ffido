@@ -22,12 +22,13 @@ import '../support/message_identity.dart';
 
 class Files extends UueFiles {
   SelectedUueFile? selected;
-  bool cancel = false, fail = false, failPick = false;
+  bool cancel = false, fail = false, failPick = false, failRead = false;
   Uint8List? saved;
   String? name;
   @override
   Future<SelectedUueFile?> pick(int limit) async {
     if (failPick) throw uueFileLimit();
+    if (failRead) throw StateError('provider');
     return selected;
   }
 
@@ -131,27 +132,26 @@ void main() {
       await tester.enterText(fields.at(3), 'Текст черновика');
       files.failPick = true;
       await tap(tester, 'Прикрепить файл UUE');
-      expect(
-        find.text('Не удалось выбрать файл или превышен лимит сервера'),
-        findsOneWidget,
-      );
+      expect(find.text('Файл превышает лимит сервера'), findsOneWidget);
       files.failPick = false;
       // Cancelling does not report a successful selection or discard the error.
       await tap(tester, 'Прикрепить файл UUE');
+      expect(find.text('Файл превышает лимит сервера'), findsOneWidget);
+      files.failRead = true;
+      await tap(tester, 'Прикрепить файл UUE');
       expect(
-        find.text('Не удалось выбрать файл или превышен лимит сервера'),
+        find.text('Не удалось прочитать выбранный файл. Выберите его ещё раз.'),
         findsOneWidget,
       );
+      expect(find.text('Файл превышает лимит сервера'), findsNothing);
+      files.failRead = false;
       files.selected = SelectedUueFile(
         'valid.bin',
         Uint8List.fromList([0, 255, 1]),
       );
       await tap(tester, 'Прикрепить файл UUE');
       expect(find.text('valid.bin'), findsOneWidget);
-      expect(
-        find.text('Не удалось выбрать файл или превышен лимит сервера'),
-        findsNothing,
-      );
+      expect(find.text('Файл превышает лимит сервера'), findsNothing);
       expect(
         tester.widget<TextField>(fields.at(2)).controller!.text,
         'Тема черновика',
