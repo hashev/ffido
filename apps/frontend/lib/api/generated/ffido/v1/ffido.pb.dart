@@ -566,6 +566,7 @@ class ListMessagesRequest extends $pb.GeneratedMessage {
     $core.String? query,
     MessageSort? sort,
     $core.String? anchorMessageId,
+    $core.bool? respectPersonalFilters,
   }) {
     final result = ListMessagesRequest._();
     if (conferenceId != null) result.conferenceId = conferenceId;
@@ -573,6 +574,8 @@ class ListMessagesRequest extends $pb.GeneratedMessage {
     if (query != null) result.query = query;
     if (sort != null) result.sort = sort;
     if (anchorMessageId != null) result.anchorMessageId = anchorMessageId;
+    if (respectPersonalFilters != null)
+      result.respectPersonalFilters = respectPersonalFilters;
     return result;
   }
 
@@ -596,6 +599,7 @@ class ListMessagesRequest extends $pb.GeneratedMessage {
     ..aE<MessageSort>(4, _omitFieldNames ? '' : 'sort',
         enumValues: MessageSort.values)
     ..aOS(5, _omitFieldNames ? '' : 'anchorMessageId')
+    ..aOB(6, _omitFieldNames ? '' : 'respectPersonalFilters')
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -667,6 +671,15 @@ class ListMessagesRequest extends $pb.GeneratedMessage {
   $core.bool hasAnchorMessageId() => $_has(4);
   @$pb.TagNumber(5)
   void clearAnchorMessageId() => $_clearField(5);
+
+  @$pb.TagNumber(6)
+  $core.bool get respectPersonalFilters => $_getBF(5);
+  @$pb.TagNumber(6)
+  set respectPersonalFilters($core.bool value) => $_setBool(5, value);
+  @$pb.TagNumber(6)
+  $core.bool hasRespectPersonalFilters() => $_has(5);
+  @$pb.TagNumber(6)
+  void clearRespectPersonalFilters() => $_clearField(6);
 }
 
 /// message_id — непрозрачный локальный ID с generation, а не FTN MsgID.
@@ -758,6 +771,7 @@ class Message extends $pb.GeneratedMessage {
     $core.int? attributes,
     MailDirection? direction,
     $fixnum.Int64? positionRevision,
+    PersonalMessageCollapse? personalCollapse,
   }) {
     final result = Message._();
     if (id != null) result.id = id;
@@ -777,6 +791,7 @@ class Message extends $pb.GeneratedMessage {
     if (attributes != null) result.attributes = attributes;
     if (direction != null) result.direction = direction;
     if (positionRevision != null) result.positionRevision = positionRevision;
+    if (personalCollapse != null) result.personalCollapse = personalCollapse;
     return result;
   }
 
@@ -815,6 +830,9 @@ class Message extends $pb.GeneratedMessage {
     ..a<$fixnum.Int64>(
         17, _omitFieldNames ? '' : 'positionRevision', $pb.PbFieldType.OU6,
         defaultOrMaker: $fixnum.Int64.ZERO)
+    ..aOM<PersonalMessageCollapse>(
+        18, _omitFieldNames ? '' : 'personalCollapse',
+        subBuilder: PersonalMessageCollapse.$_createMessage)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -992,6 +1010,17 @@ class Message extends $pb.GeneratedMessage {
   $core.bool hasPositionRevision() => $_has(16);
   @$pb.TagNumber(17)
   void clearPositionRevision() => $_clearField(17);
+
+  @$pb.TagNumber(18)
+  PersonalMessageCollapse get personalCollapse => $_getN(17);
+  @$pb.TagNumber(18)
+  set personalCollapse(PersonalMessageCollapse value) => $_setField(18, value);
+  @$pb.TagNumber(18)
+  $core.bool hasPersonalCollapse() => $_has(17);
+  @$pb.TagNumber(18)
+  void clearPersonalCollapse() => $_clearField(18);
+  @$pb.TagNumber(18)
+  PersonalMessageCollapse ensurePersonalCollapse() => $_ensure(17);
 }
 
 class ListMessagesResponse extends $pb.GeneratedMessage {
@@ -1623,11 +1652,14 @@ class GetThreadRequest extends $pb.GeneratedMessage {
     $core.String? conferenceId,
     $core.String? threadId,
     PageRequest? page,
+    $core.bool? respectPersonalFilters,
   }) {
     final result = GetThreadRequest._();
     if (conferenceId != null) result.conferenceId = conferenceId;
     if (threadId != null) result.threadId = threadId;
     if (page != null) result.page = page;
+    if (respectPersonalFilters != null)
+      result.respectPersonalFilters = respectPersonalFilters;
     return result;
   }
 
@@ -1648,6 +1680,7 @@ class GetThreadRequest extends $pb.GeneratedMessage {
     ..aOS(2, _omitFieldNames ? '' : 'threadId')
     ..aOM<PageRequest>(3, _omitFieldNames ? '' : 'page',
         subBuilder: PageRequest.$_createMessage)
+    ..aOB(4, _omitFieldNames ? '' : 'respectPersonalFilters')
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -1700,6 +1733,15 @@ class GetThreadRequest extends $pb.GeneratedMessage {
   void clearPage() => $_clearField(3);
   @$pb.TagNumber(3)
   PageRequest ensurePage() => $_ensure(2);
+
+  @$pb.TagNumber(4)
+  $core.bool get respectPersonalFilters => $_getBF(3);
+  @$pb.TagNumber(4)
+  set respectPersonalFilters($core.bool value) => $_setBool(3, value);
+  @$pb.TagNumber(4)
+  $core.bool hasRespectPersonalFilters() => $_has(3);
+  @$pb.TagNumber(4)
+  void clearRespectPersonalFilters() => $_clearField(4);
 }
 
 class Bookmark extends $pb.GeneratedMessage {
@@ -4105,6 +4147,7 @@ class FindMessageRequest extends $pb.GeneratedMessage {
     MessageSort? sort,
     $core.String? startMessageId,
     $core.bool? includeStart,
+    $core.bool? respectPersonalFilters,
   }) {
     final result = FindMessageRequest._();
     if (conferenceId != null) result.conferenceId = conferenceId;
@@ -4113,6 +4156,8 @@ class FindMessageRequest extends $pb.GeneratedMessage {
     if (sort != null) result.sort = sort;
     if (startMessageId != null) result.startMessageId = startMessageId;
     if (includeStart != null) result.includeStart = includeStart;
+    if (respectPersonalFilters != null)
+      result.respectPersonalFilters = respectPersonalFilters;
     return result;
   }
 
@@ -4137,6 +4182,7 @@ class FindMessageRequest extends $pb.GeneratedMessage {
         enumValues: MessageSort.values)
     ..aOS(5, _omitFieldNames ? '' : 'startMessageId')
     ..aOB(6, _omitFieldNames ? '' : 'includeStart')
+    ..aOB(7, _omitFieldNames ? '' : 'respectPersonalFilters')
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -4214,6 +4260,15 @@ class FindMessageRequest extends $pb.GeneratedMessage {
   $core.bool hasIncludeStart() => $_has(5);
   @$pb.TagNumber(6)
   void clearIncludeStart() => $_clearField(6);
+
+  @$pb.TagNumber(7)
+  $core.bool get respectPersonalFilters => $_getBF(6);
+  @$pb.TagNumber(7)
+  set respectPersonalFilters($core.bool value) => $_setBool(6, value);
+  @$pb.TagNumber(7)
+  $core.bool hasRespectPersonalFilters() => $_has(6);
+  @$pb.TagNumber(7)
+  void clearRespectPersonalFilters() => $_clearField(7);
 }
 
 class SearchMatch extends $pb.GeneratedMessage {
@@ -4366,6 +4421,1004 @@ class FindMessageResponse extends $pb.GeneratedMessage {
 
   @$pb.TagNumber(2)
   $pb.PbList<SearchMatch> get matches => $_getList(1);
+}
+
+/// Сырые технические подполя: порядок, high_id и пустые значения значимы.
+class MessageTechnicalSubfield extends $pb.GeneratedMessage {
+  factory MessageTechnicalSubfield({
+    $core.int? lowId,
+    $core.int? highId,
+    $core.List<$core.int>? value,
+  }) {
+    final result = MessageTechnicalSubfield._();
+    if (lowId != null) result.lowId = lowId;
+    if (highId != null) result.highId = highId;
+    if (value != null) result.value = value;
+    return result;
+  }
+
+  MessageTechnicalSubfield._();
+
+  factory MessageTechnicalSubfield.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      MessageTechnicalSubfield()..mergeFromBuffer(data, registry);
+  factory MessageTechnicalSubfield.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      MessageTechnicalSubfield()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'MessageTechnicalSubfield',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'ffido.v1'),
+      createEmptyInstance: MessageTechnicalSubfield.$_createMessage)
+    ..aI(1, _omitFieldNames ? '' : 'lowId', fieldType: $pb.PbFieldType.OU3)
+    ..aI(2, _omitFieldNames ? '' : 'highId', fieldType: $pb.PbFieldType.OU3)
+    ..a<$core.List<$core.int>>(
+        3, _omitFieldNames ? '' : 'value', $pb.PbFieldType.OY)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  MessageTechnicalSubfield clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  MessageTechnicalSubfield copyWith(
+          void Function(MessageTechnicalSubfield) updates) =>
+      super.copyWith((message) => updates(message as MessageTechnicalSubfield))
+          as MessageTechnicalSubfield;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  @$core.Deprecated(
+      'Use MessageTechnicalSubfield() / MessageTechnicalSubfield.new instead')
+  static MessageTechnicalSubfield create() => MessageTechnicalSubfield._();
+  static $pb.GeneratedMessage $_createMessage() => MessageTechnicalSubfield._();
+  @$core.override
+  MessageTechnicalSubfield createEmptyInstance() =>
+      MessageTechnicalSubfield._();
+  @$core.pragma('dart2js:noInline')
+  static MessageTechnicalSubfield getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<MessageTechnicalSubfield>(
+          MessageTechnicalSubfield.$_createMessage);
+  static MessageTechnicalSubfield? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $core.int get lowId => $_getIZ(0);
+  @$pb.TagNumber(1)
+  set lowId($core.int value) => $_setUnsignedInt32(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasLowId() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearLowId() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  $core.int get highId => $_getIZ(1);
+  @$pb.TagNumber(2)
+  set highId($core.int value) => $_setUnsignedInt32(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasHighId() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearHighId() => $_clearField(2);
+
+  @$pb.TagNumber(3)
+  $core.List<$core.int> get value => $_getN(2);
+  @$pb.TagNumber(3)
+  set value($core.List<$core.int> value) => $_setBytes(2, value);
+  @$pb.TagNumber(3)
+  $core.bool hasValue() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearValue() => $_clearField(3);
+}
+
+class MessageTechnicalData extends $pb.GeneratedMessage {
+  factory MessageTechnicalData({
+    MessageReference? message,
+    $core.int? attributes,
+    $core.int? attributes2,
+    $core.Iterable<MessageTechnicalSubfield>? subfields,
+    TechnicalEncodingStatus? encodingStatus,
+    $core.String? effectiveEncoding,
+  }) {
+    final result = MessageTechnicalData._();
+    if (message != null) result.message = message;
+    if (attributes != null) result.attributes = attributes;
+    if (attributes2 != null) result.attributes2 = attributes2;
+    if (subfields != null) result.subfields.addAll(subfields);
+    if (encodingStatus != null) result.encodingStatus = encodingStatus;
+    if (effectiveEncoding != null) result.effectiveEncoding = effectiveEncoding;
+    return result;
+  }
+
+  MessageTechnicalData._();
+
+  factory MessageTechnicalData.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      MessageTechnicalData()..mergeFromBuffer(data, registry);
+  factory MessageTechnicalData.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      MessageTechnicalData()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'MessageTechnicalData',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'ffido.v1'),
+      createEmptyInstance: MessageTechnicalData.$_createMessage)
+    ..aOM<MessageReference>(1, _omitFieldNames ? '' : 'message',
+        subBuilder: MessageReference.$_createMessage)
+    ..aI(2, _omitFieldNames ? '' : 'attributes', fieldType: $pb.PbFieldType.OU3)
+    ..aI(3, _omitFieldNames ? '' : 'attributes2',
+        fieldType: $pb.PbFieldType.OU3)
+    ..pPM<MessageTechnicalSubfield>(4, _omitFieldNames ? '' : 'subfields',
+        subBuilder: MessageTechnicalSubfield.$_createMessage)
+    ..aE<TechnicalEncodingStatus>(5, _omitFieldNames ? '' : 'encodingStatus',
+        enumValues: TechnicalEncodingStatus.values)
+    ..aOS(6, _omitFieldNames ? '' : 'effectiveEncoding')
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  MessageTechnicalData clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  MessageTechnicalData copyWith(void Function(MessageTechnicalData) updates) =>
+      super.copyWith((message) => updates(message as MessageTechnicalData))
+          as MessageTechnicalData;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  @$core.Deprecated(
+      'Use MessageTechnicalData() / MessageTechnicalData.new instead')
+  static MessageTechnicalData create() => MessageTechnicalData._();
+  static $pb.GeneratedMessage $_createMessage() => MessageTechnicalData._();
+  @$core.override
+  MessageTechnicalData createEmptyInstance() => MessageTechnicalData._();
+  @$core.pragma('dart2js:noInline')
+  static MessageTechnicalData getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<MessageTechnicalData>(
+          MessageTechnicalData.$_createMessage);
+  static MessageTechnicalData? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  MessageReference get message => $_getN(0);
+  @$pb.TagNumber(1)
+  set message(MessageReference value) => $_setField(1, value);
+  @$pb.TagNumber(1)
+  $core.bool hasMessage() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearMessage() => $_clearField(1);
+  @$pb.TagNumber(1)
+  MessageReference ensureMessage() => $_ensure(0);
+
+  @$pb.TagNumber(2)
+  $core.int get attributes => $_getIZ(1);
+  @$pb.TagNumber(2)
+  set attributes($core.int value) => $_setUnsignedInt32(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasAttributes() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearAttributes() => $_clearField(2);
+
+  @$pb.TagNumber(3)
+  $core.int get attributes2 => $_getIZ(2);
+  @$pb.TagNumber(3)
+  set attributes2($core.int value) => $_setUnsignedInt32(2, value);
+  @$pb.TagNumber(3)
+  $core.bool hasAttributes2() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearAttributes2() => $_clearField(3);
+
+  @$pb.TagNumber(4)
+  $pb.PbList<MessageTechnicalSubfield> get subfields => $_getList(3);
+
+  @$pb.TagNumber(5)
+  TechnicalEncodingStatus get encodingStatus => $_getN(4);
+  @$pb.TagNumber(5)
+  set encodingStatus(TechnicalEncodingStatus value) => $_setField(5, value);
+  @$pb.TagNumber(5)
+  $core.bool hasEncodingStatus() => $_has(4);
+  @$pb.TagNumber(5)
+  void clearEncodingStatus() => $_clearField(5);
+
+  @$pb.TagNumber(6)
+  $core.String get effectiveEncoding => $_getSZ(5);
+  @$pb.TagNumber(6)
+  set effectiveEncoding($core.String value) => $_setString(5, value);
+  @$pb.TagNumber(6)
+  $core.bool hasEffectiveEncoding() => $_has(5);
+  @$pb.TagNumber(6)
+  void clearEffectiveEncoding() => $_clearField(6);
+}
+
+class PersonalMessageFilter extends $pb.GeneratedMessage {
+  factory PersonalMessageFilter({
+    $core.String? ruleId,
+    $core.bool? enabled,
+    PersonalMessageFilterScope? scope,
+    $core.String? conferenceId,
+    $core.String? authorContains,
+    $core.String? addressEquals,
+    $core.String? subjectContains,
+  }) {
+    final result = PersonalMessageFilter._();
+    if (ruleId != null) result.ruleId = ruleId;
+    if (enabled != null) result.enabled = enabled;
+    if (scope != null) result.scope = scope;
+    if (conferenceId != null) result.conferenceId = conferenceId;
+    if (authorContains != null) result.authorContains = authorContains;
+    if (addressEquals != null) result.addressEquals = addressEquals;
+    if (subjectContains != null) result.subjectContains = subjectContains;
+    return result;
+  }
+
+  PersonalMessageFilter._();
+
+  factory PersonalMessageFilter.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      PersonalMessageFilter()..mergeFromBuffer(data, registry);
+  factory PersonalMessageFilter.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      PersonalMessageFilter()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'PersonalMessageFilter',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'ffido.v1'),
+      createEmptyInstance: PersonalMessageFilter.$_createMessage)
+    ..aOS(1, _omitFieldNames ? '' : 'ruleId')
+    ..aOB(2, _omitFieldNames ? '' : 'enabled')
+    ..aE<PersonalMessageFilterScope>(3, _omitFieldNames ? '' : 'scope',
+        enumValues: PersonalMessageFilterScope.values)
+    ..aOS(4, _omitFieldNames ? '' : 'conferenceId')
+    ..aOS(5, _omitFieldNames ? '' : 'authorContains')
+    ..aOS(6, _omitFieldNames ? '' : 'addressEquals')
+    ..aOS(7, _omitFieldNames ? '' : 'subjectContains')
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  PersonalMessageFilter clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  PersonalMessageFilter copyWith(
+          void Function(PersonalMessageFilter) updates) =>
+      super.copyWith((message) => updates(message as PersonalMessageFilter))
+          as PersonalMessageFilter;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  @$core.Deprecated(
+      'Use PersonalMessageFilter() / PersonalMessageFilter.new instead')
+  static PersonalMessageFilter create() => PersonalMessageFilter._();
+  static $pb.GeneratedMessage $_createMessage() => PersonalMessageFilter._();
+  @$core.override
+  PersonalMessageFilter createEmptyInstance() => PersonalMessageFilter._();
+  @$core.pragma('dart2js:noInline')
+  static PersonalMessageFilter getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<PersonalMessageFilter>(
+          PersonalMessageFilter.$_createMessage);
+  static PersonalMessageFilter? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $core.String get ruleId => $_getSZ(0);
+  @$pb.TagNumber(1)
+  set ruleId($core.String value) => $_setString(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasRuleId() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearRuleId() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  $core.bool get enabled => $_getBF(1);
+  @$pb.TagNumber(2)
+  set enabled($core.bool value) => $_setBool(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasEnabled() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearEnabled() => $_clearField(2);
+
+  @$pb.TagNumber(3)
+  PersonalMessageFilterScope get scope => $_getN(2);
+  @$pb.TagNumber(3)
+  set scope(PersonalMessageFilterScope value) => $_setField(3, value);
+  @$pb.TagNumber(3)
+  $core.bool hasScope() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearScope() => $_clearField(3);
+
+  @$pb.TagNumber(4)
+  $core.String get conferenceId => $_getSZ(3);
+  @$pb.TagNumber(4)
+  set conferenceId($core.String value) => $_setString(3, value);
+  @$pb.TagNumber(4)
+  $core.bool hasConferenceId() => $_has(3);
+  @$pb.TagNumber(4)
+  void clearConferenceId() => $_clearField(4);
+
+  @$pb.TagNumber(5)
+  $core.String get authorContains => $_getSZ(4);
+  @$pb.TagNumber(5)
+  set authorContains($core.String value) => $_setString(4, value);
+  @$pb.TagNumber(5)
+  $core.bool hasAuthorContains() => $_has(4);
+  @$pb.TagNumber(5)
+  void clearAuthorContains() => $_clearField(5);
+
+  @$pb.TagNumber(6)
+  $core.String get addressEquals => $_getSZ(5);
+  @$pb.TagNumber(6)
+  set addressEquals($core.String value) => $_setString(5, value);
+  @$pb.TagNumber(6)
+  $core.bool hasAddressEquals() => $_has(5);
+  @$pb.TagNumber(6)
+  void clearAddressEquals() => $_clearField(6);
+
+  @$pb.TagNumber(7)
+  $core.String get subjectContains => $_getSZ(6);
+  @$pb.TagNumber(7)
+  set subjectContains($core.String value) => $_setString(6, value);
+  @$pb.TagNumber(7)
+  $core.bool hasSubjectContains() => $_has(6);
+  @$pb.TagNumber(7)
+  void clearSubjectContains() => $_clearField(7);
+}
+
+class PersonalMessageFilterSet extends $pb.GeneratedMessage {
+  factory PersonalMessageFilterSet({
+    $fixnum.Int64? revision,
+    $core.Iterable<PersonalMessageFilter>? rules,
+  }) {
+    final result = PersonalMessageFilterSet._();
+    if (revision != null) result.revision = revision;
+    if (rules != null) result.rules.addAll(rules);
+    return result;
+  }
+
+  PersonalMessageFilterSet._();
+
+  factory PersonalMessageFilterSet.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      PersonalMessageFilterSet()..mergeFromBuffer(data, registry);
+  factory PersonalMessageFilterSet.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      PersonalMessageFilterSet()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'PersonalMessageFilterSet',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'ffido.v1'),
+      createEmptyInstance: PersonalMessageFilterSet.$_createMessage)
+    ..a<$fixnum.Int64>(
+        1, _omitFieldNames ? '' : 'revision', $pb.PbFieldType.OU6,
+        defaultOrMaker: $fixnum.Int64.ZERO)
+    ..pPM<PersonalMessageFilter>(2, _omitFieldNames ? '' : 'rules',
+        subBuilder: PersonalMessageFilter.$_createMessage)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  PersonalMessageFilterSet clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  PersonalMessageFilterSet copyWith(
+          void Function(PersonalMessageFilterSet) updates) =>
+      super.copyWith((message) => updates(message as PersonalMessageFilterSet))
+          as PersonalMessageFilterSet;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  @$core.Deprecated(
+      'Use PersonalMessageFilterSet() / PersonalMessageFilterSet.new instead')
+  static PersonalMessageFilterSet create() => PersonalMessageFilterSet._();
+  static $pb.GeneratedMessage $_createMessage() => PersonalMessageFilterSet._();
+  @$core.override
+  PersonalMessageFilterSet createEmptyInstance() =>
+      PersonalMessageFilterSet._();
+  @$core.pragma('dart2js:noInline')
+  static PersonalMessageFilterSet getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<PersonalMessageFilterSet>(
+          PersonalMessageFilterSet.$_createMessage);
+  static PersonalMessageFilterSet? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $fixnum.Int64 get revision => $_getI64(0);
+  @$pb.TagNumber(1)
+  set revision($fixnum.Int64 value) => $_setInt64(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasRevision() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearRevision() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  $pb.PbList<PersonalMessageFilter> get rules => $_getList(1);
+}
+
+class ReplacePersonalMessageFiltersRequest extends $pb.GeneratedMessage {
+  factory ReplacePersonalMessageFiltersRequest({
+    $fixnum.Int64? expectedRevision,
+    $core.String? operationId,
+    $core.Iterable<PersonalMessageFilter>? rules,
+  }) {
+    final result = ReplacePersonalMessageFiltersRequest._();
+    if (expectedRevision != null) result.expectedRevision = expectedRevision;
+    if (operationId != null) result.operationId = operationId;
+    if (rules != null) result.rules.addAll(rules);
+    return result;
+  }
+
+  ReplacePersonalMessageFiltersRequest._();
+
+  factory ReplacePersonalMessageFiltersRequest.fromBuffer(
+          $core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      ReplacePersonalMessageFiltersRequest()..mergeFromBuffer(data, registry);
+  factory ReplacePersonalMessageFiltersRequest.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      ReplacePersonalMessageFiltersRequest()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'ReplacePersonalMessageFiltersRequest',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'ffido.v1'),
+      createEmptyInstance: ReplacePersonalMessageFiltersRequest.$_createMessage)
+    ..a<$fixnum.Int64>(
+        1, _omitFieldNames ? '' : 'expectedRevision', $pb.PbFieldType.OU6,
+        defaultOrMaker: $fixnum.Int64.ZERO)
+    ..aOS(2, _omitFieldNames ? '' : 'operationId')
+    ..pPM<PersonalMessageFilter>(3, _omitFieldNames ? '' : 'rules',
+        subBuilder: PersonalMessageFilter.$_createMessage)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  ReplacePersonalMessageFiltersRequest clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  ReplacePersonalMessageFiltersRequest copyWith(
+          void Function(ReplacePersonalMessageFiltersRequest) updates) =>
+      super.copyWith((message) =>
+              updates(message as ReplacePersonalMessageFiltersRequest))
+          as ReplacePersonalMessageFiltersRequest;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  @$core.Deprecated(
+      'Use ReplacePersonalMessageFiltersRequest() / ReplacePersonalMessageFiltersRequest.new instead')
+  static ReplacePersonalMessageFiltersRequest create() =>
+      ReplacePersonalMessageFiltersRequest._();
+  static $pb.GeneratedMessage $_createMessage() =>
+      ReplacePersonalMessageFiltersRequest._();
+  @$core.override
+  ReplacePersonalMessageFiltersRequest createEmptyInstance() =>
+      ReplacePersonalMessageFiltersRequest._();
+  @$core.pragma('dart2js:noInline')
+  static ReplacePersonalMessageFiltersRequest getDefault() =>
+      _defaultInstance ??= $pb.GeneratedMessage.$_defaultFor<
+              ReplacePersonalMessageFiltersRequest>(
+          ReplacePersonalMessageFiltersRequest.$_createMessage);
+  static ReplacePersonalMessageFiltersRequest? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $fixnum.Int64 get expectedRevision => $_getI64(0);
+  @$pb.TagNumber(1)
+  set expectedRevision($fixnum.Int64 value) => $_setInt64(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasExpectedRevision() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearExpectedRevision() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  $core.String get operationId => $_getSZ(1);
+  @$pb.TagNumber(2)
+  set operationId($core.String value) => $_setString(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasOperationId() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearOperationId() => $_clearField(2);
+
+  @$pb.TagNumber(3)
+  $pb.PbList<PersonalMessageFilter> get rules => $_getList(2);
+}
+
+class ReplacePersonalMessageFiltersResponse extends $pb.GeneratedMessage {
+  factory ReplacePersonalMessageFiltersResponse({
+    $fixnum.Int64? revision,
+  }) {
+    final result = ReplacePersonalMessageFiltersResponse._();
+    if (revision != null) result.revision = revision;
+    return result;
+  }
+
+  ReplacePersonalMessageFiltersResponse._();
+
+  factory ReplacePersonalMessageFiltersResponse.fromBuffer(
+          $core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      ReplacePersonalMessageFiltersResponse()..mergeFromBuffer(data, registry);
+  factory ReplacePersonalMessageFiltersResponse.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      ReplacePersonalMessageFiltersResponse()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'ReplacePersonalMessageFiltersResponse',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'ffido.v1'),
+      createEmptyInstance:
+          ReplacePersonalMessageFiltersResponse.$_createMessage)
+    ..a<$fixnum.Int64>(
+        1, _omitFieldNames ? '' : 'revision', $pb.PbFieldType.OU6,
+        defaultOrMaker: $fixnum.Int64.ZERO)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  ReplacePersonalMessageFiltersResponse clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  ReplacePersonalMessageFiltersResponse copyWith(
+          void Function(ReplacePersonalMessageFiltersResponse) updates) =>
+      super.copyWith((message) =>
+              updates(message as ReplacePersonalMessageFiltersResponse))
+          as ReplacePersonalMessageFiltersResponse;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  @$core.Deprecated(
+      'Use ReplacePersonalMessageFiltersResponse() / ReplacePersonalMessageFiltersResponse.new instead')
+  static ReplacePersonalMessageFiltersResponse create() =>
+      ReplacePersonalMessageFiltersResponse._();
+  static $pb.GeneratedMessage $_createMessage() =>
+      ReplacePersonalMessageFiltersResponse._();
+  @$core.override
+  ReplacePersonalMessageFiltersResponse createEmptyInstance() =>
+      ReplacePersonalMessageFiltersResponse._();
+  @$core.pragma('dart2js:noInline')
+  static ReplacePersonalMessageFiltersResponse getDefault() =>
+      _defaultInstance ??= $pb.GeneratedMessage.$_defaultFor<
+              ReplacePersonalMessageFiltersResponse>(
+          ReplacePersonalMessageFiltersResponse.$_createMessage);
+  static ReplacePersonalMessageFiltersResponse? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $fixnum.Int64 get revision => $_getI64(0);
+  @$pb.TagNumber(1)
+  set revision($fixnum.Int64 value) => $_setInt64(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasRevision() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearRevision() => $_clearField(1);
+}
+
+class PersonalMessageCollapse extends $pb.GeneratedMessage {
+  factory PersonalMessageCollapse({
+    $fixnum.Int64? rulesRevision,
+    $core.Iterable<$core.String>? matchedRuleIds,
+  }) {
+    final result = PersonalMessageCollapse._();
+    if (rulesRevision != null) result.rulesRevision = rulesRevision;
+    if (matchedRuleIds != null) result.matchedRuleIds.addAll(matchedRuleIds);
+    return result;
+  }
+
+  PersonalMessageCollapse._();
+
+  factory PersonalMessageCollapse.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      PersonalMessageCollapse()..mergeFromBuffer(data, registry);
+  factory PersonalMessageCollapse.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      PersonalMessageCollapse()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'PersonalMessageCollapse',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'ffido.v1'),
+      createEmptyInstance: PersonalMessageCollapse.$_createMessage)
+    ..a<$fixnum.Int64>(
+        1, _omitFieldNames ? '' : 'rulesRevision', $pb.PbFieldType.OU6,
+        defaultOrMaker: $fixnum.Int64.ZERO)
+    ..pPS(2, _omitFieldNames ? '' : 'matchedRuleIds')
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  PersonalMessageCollapse clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  PersonalMessageCollapse copyWith(
+          void Function(PersonalMessageCollapse) updates) =>
+      super.copyWith((message) => updates(message as PersonalMessageCollapse))
+          as PersonalMessageCollapse;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  @$core.Deprecated(
+      'Use PersonalMessageCollapse() / PersonalMessageCollapse.new instead')
+  static PersonalMessageCollapse create() => PersonalMessageCollapse._();
+  static $pb.GeneratedMessage $_createMessage() => PersonalMessageCollapse._();
+  @$core.override
+  PersonalMessageCollapse createEmptyInstance() => PersonalMessageCollapse._();
+  @$core.pragma('dart2js:noInline')
+  static PersonalMessageCollapse getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<PersonalMessageCollapse>(
+          PersonalMessageCollapse.$_createMessage);
+  static PersonalMessageCollapse? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $fixnum.Int64 get rulesRevision => $_getI64(0);
+  @$pb.TagNumber(1)
+  set rulesRevision($fixnum.Int64 value) => $_setInt64(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasRulesRevision() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearRulesRevision() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  $pb.PbList<$core.String> get matchedRuleIds => $_getList(1);
+}
+
+class GetMessagePresentationRequest extends $pb.GeneratedMessage {
+  factory GetMessagePresentationRequest({
+    MessageReference? message,
+    $core.bool? reveal,
+    $core.String? searchQuery,
+    MessageSearchScope? searchScope,
+  }) {
+    final result = GetMessagePresentationRequest._();
+    if (message != null) result.message = message;
+    if (reveal != null) result.reveal = reveal;
+    if (searchQuery != null) result.searchQuery = searchQuery;
+    if (searchScope != null) result.searchScope = searchScope;
+    return result;
+  }
+
+  GetMessagePresentationRequest._();
+
+  factory GetMessagePresentationRequest.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      GetMessagePresentationRequest()..mergeFromBuffer(data, registry);
+  factory GetMessagePresentationRequest.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      GetMessagePresentationRequest()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'GetMessagePresentationRequest',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'ffido.v1'),
+      createEmptyInstance: GetMessagePresentationRequest.$_createMessage)
+    ..aOM<MessageReference>(1, _omitFieldNames ? '' : 'message',
+        subBuilder: MessageReference.$_createMessage)
+    ..aOB(2, _omitFieldNames ? '' : 'reveal')
+    ..aOS(3, _omitFieldNames ? '' : 'searchQuery')
+    ..aE<MessageSearchScope>(4, _omitFieldNames ? '' : 'searchScope',
+        enumValues: MessageSearchScope.values)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  GetMessagePresentationRequest clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  GetMessagePresentationRequest copyWith(
+          void Function(GetMessagePresentationRequest) updates) =>
+      super.copyWith(
+              (message) => updates(message as GetMessagePresentationRequest))
+          as GetMessagePresentationRequest;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  @$core.Deprecated(
+      'Use GetMessagePresentationRequest() / GetMessagePresentationRequest.new instead')
+  static GetMessagePresentationRequest create() =>
+      GetMessagePresentationRequest._();
+  static $pb.GeneratedMessage $_createMessage() =>
+      GetMessagePresentationRequest._();
+  @$core.override
+  GetMessagePresentationRequest createEmptyInstance() =>
+      GetMessagePresentationRequest._();
+  @$core.pragma('dart2js:noInline')
+  static GetMessagePresentationRequest getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<GetMessagePresentationRequest>(
+          GetMessagePresentationRequest.$_createMessage);
+  static GetMessagePresentationRequest? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  MessageReference get message => $_getN(0);
+  @$pb.TagNumber(1)
+  set message(MessageReference value) => $_setField(1, value);
+  @$pb.TagNumber(1)
+  $core.bool hasMessage() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearMessage() => $_clearField(1);
+  @$pb.TagNumber(1)
+  MessageReference ensureMessage() => $_ensure(0);
+
+  @$pb.TagNumber(2)
+  $core.bool get reveal => $_getBF(1);
+  @$pb.TagNumber(2)
+  set reveal($core.bool value) => $_setBool(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasReveal() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearReveal() => $_clearField(2);
+
+  @$pb.TagNumber(3)
+  $core.String get searchQuery => $_getSZ(2);
+  @$pb.TagNumber(3)
+  set searchQuery($core.String value) => $_setString(2, value);
+  @$pb.TagNumber(3)
+  $core.bool hasSearchQuery() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearSearchQuery() => $_clearField(3);
+
+  @$pb.TagNumber(4)
+  MessageSearchScope get searchScope => $_getN(3);
+  @$pb.TagNumber(4)
+  set searchScope(MessageSearchScope value) => $_setField(4, value);
+  @$pb.TagNumber(4)
+  $core.bool hasSearchScope() => $_has(3);
+  @$pb.TagNumber(4)
+  void clearSearchScope() => $_clearField(4);
+}
+
+class CollapsedMessageHeaders extends $pb.GeneratedMessage {
+  factory CollapsedMessageHeaders({
+    MessageReference? message,
+    $core.String? fromName,
+    $core.String? fromAddress,
+    $core.String? subject,
+    $2.Timestamp? date,
+    $core.bool? isRead,
+    $core.String? threadId,
+    $core.String? inReplyTo,
+  }) {
+    final result = CollapsedMessageHeaders._();
+    if (message != null) result.message = message;
+    if (fromName != null) result.fromName = fromName;
+    if (fromAddress != null) result.fromAddress = fromAddress;
+    if (subject != null) result.subject = subject;
+    if (date != null) result.date = date;
+    if (isRead != null) result.isRead = isRead;
+    if (threadId != null) result.threadId = threadId;
+    if (inReplyTo != null) result.inReplyTo = inReplyTo;
+    return result;
+  }
+
+  CollapsedMessageHeaders._();
+
+  factory CollapsedMessageHeaders.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      CollapsedMessageHeaders()..mergeFromBuffer(data, registry);
+  factory CollapsedMessageHeaders.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      CollapsedMessageHeaders()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'CollapsedMessageHeaders',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'ffido.v1'),
+      createEmptyInstance: CollapsedMessageHeaders.$_createMessage)
+    ..aOM<MessageReference>(1, _omitFieldNames ? '' : 'message',
+        subBuilder: MessageReference.$_createMessage)
+    ..aOS(2, _omitFieldNames ? '' : 'fromName')
+    ..aOS(3, _omitFieldNames ? '' : 'fromAddress')
+    ..aOS(4, _omitFieldNames ? '' : 'subject')
+    ..aOM<$2.Timestamp>(5, _omitFieldNames ? '' : 'date',
+        subBuilder: $2.Timestamp.$_createMessage)
+    ..aOB(6, _omitFieldNames ? '' : 'isRead')
+    ..aOS(7, _omitFieldNames ? '' : 'threadId')
+    ..aOS(8, _omitFieldNames ? '' : 'inReplyTo')
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  CollapsedMessageHeaders clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  CollapsedMessageHeaders copyWith(
+          void Function(CollapsedMessageHeaders) updates) =>
+      super.copyWith((message) => updates(message as CollapsedMessageHeaders))
+          as CollapsedMessageHeaders;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  @$core.Deprecated(
+      'Use CollapsedMessageHeaders() / CollapsedMessageHeaders.new instead')
+  static CollapsedMessageHeaders create() => CollapsedMessageHeaders._();
+  static $pb.GeneratedMessage $_createMessage() => CollapsedMessageHeaders._();
+  @$core.override
+  CollapsedMessageHeaders createEmptyInstance() => CollapsedMessageHeaders._();
+  @$core.pragma('dart2js:noInline')
+  static CollapsedMessageHeaders getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<CollapsedMessageHeaders>(
+          CollapsedMessageHeaders.$_createMessage);
+  static CollapsedMessageHeaders? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  MessageReference get message => $_getN(0);
+  @$pb.TagNumber(1)
+  set message(MessageReference value) => $_setField(1, value);
+  @$pb.TagNumber(1)
+  $core.bool hasMessage() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearMessage() => $_clearField(1);
+  @$pb.TagNumber(1)
+  MessageReference ensureMessage() => $_ensure(0);
+
+  @$pb.TagNumber(2)
+  $core.String get fromName => $_getSZ(1);
+  @$pb.TagNumber(2)
+  set fromName($core.String value) => $_setString(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasFromName() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearFromName() => $_clearField(2);
+
+  @$pb.TagNumber(3)
+  $core.String get fromAddress => $_getSZ(2);
+  @$pb.TagNumber(3)
+  set fromAddress($core.String value) => $_setString(2, value);
+  @$pb.TagNumber(3)
+  $core.bool hasFromAddress() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearFromAddress() => $_clearField(3);
+
+  @$pb.TagNumber(4)
+  $core.String get subject => $_getSZ(3);
+  @$pb.TagNumber(4)
+  set subject($core.String value) => $_setString(3, value);
+  @$pb.TagNumber(4)
+  $core.bool hasSubject() => $_has(3);
+  @$pb.TagNumber(4)
+  void clearSubject() => $_clearField(4);
+
+  @$pb.TagNumber(5)
+  $2.Timestamp get date => $_getN(4);
+  @$pb.TagNumber(5)
+  set date($2.Timestamp value) => $_setField(5, value);
+  @$pb.TagNumber(5)
+  $core.bool hasDate() => $_has(4);
+  @$pb.TagNumber(5)
+  void clearDate() => $_clearField(5);
+  @$pb.TagNumber(5)
+  $2.Timestamp ensureDate() => $_ensure(4);
+
+  @$pb.TagNumber(6)
+  $core.bool get isRead => $_getBF(5);
+  @$pb.TagNumber(6)
+  set isRead($core.bool value) => $_setBool(5, value);
+  @$pb.TagNumber(6)
+  $core.bool hasIsRead() => $_has(5);
+  @$pb.TagNumber(6)
+  void clearIsRead() => $_clearField(6);
+
+  @$pb.TagNumber(7)
+  $core.String get threadId => $_getSZ(6);
+  @$pb.TagNumber(7)
+  set threadId($core.String value) => $_setString(6, value);
+  @$pb.TagNumber(7)
+  $core.bool hasThreadId() => $_has(6);
+  @$pb.TagNumber(7)
+  void clearThreadId() => $_clearField(7);
+
+  @$pb.TagNumber(8)
+  $core.String get inReplyTo => $_getSZ(7);
+  @$pb.TagNumber(8)
+  set inReplyTo($core.String value) => $_setString(7, value);
+  @$pb.TagNumber(8)
+  $core.bool hasInReplyTo() => $_has(7);
+  @$pb.TagNumber(8)
+  void clearInReplyTo() => $_clearField(8);
+}
+
+enum MessagePresentation_Content { visible, collapsed, notSet }
+
+class MessagePresentation extends $pb.GeneratedMessage {
+  factory MessagePresentation({
+    $fixnum.Int64? rulesRevision,
+    $core.Iterable<$core.String>? matchedRuleIds,
+    Message? visible,
+    CollapsedMessageHeaders? collapsed,
+    $core.Iterable<SearchMatch>? matches,
+  }) {
+    final result = MessagePresentation._();
+    if (rulesRevision != null) result.rulesRevision = rulesRevision;
+    if (matchedRuleIds != null) result.matchedRuleIds.addAll(matchedRuleIds);
+    if (visible != null) result.visible = visible;
+    if (collapsed != null) result.collapsed = collapsed;
+    if (matches != null) result.matches.addAll(matches);
+    return result;
+  }
+
+  MessagePresentation._();
+
+  factory MessagePresentation.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      MessagePresentation()..mergeFromBuffer(data, registry);
+  factory MessagePresentation.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      MessagePresentation()..mergeFromJson(json, registry);
+
+  static const $core.Map<$core.int, MessagePresentation_Content>
+      _MessagePresentation_ContentByTag = {
+    3: MessagePresentation_Content.visible,
+    4: MessagePresentation_Content.collapsed,
+    0: MessagePresentation_Content.notSet
+  };
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'MessagePresentation',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'ffido.v1'),
+      createEmptyInstance: MessagePresentation.$_createMessage)
+    ..oo(0, [3, 4])
+    ..a<$fixnum.Int64>(
+        1, _omitFieldNames ? '' : 'rulesRevision', $pb.PbFieldType.OU6,
+        defaultOrMaker: $fixnum.Int64.ZERO)
+    ..pPS(2, _omitFieldNames ? '' : 'matchedRuleIds')
+    ..aOM<Message>(3, _omitFieldNames ? '' : 'visible',
+        subBuilder: Message.$_createMessage)
+    ..aOM<CollapsedMessageHeaders>(4, _omitFieldNames ? '' : 'collapsed',
+        subBuilder: CollapsedMessageHeaders.$_createMessage)
+    ..pPM<SearchMatch>(5, _omitFieldNames ? '' : 'matches',
+        subBuilder: SearchMatch.$_createMessage)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  MessagePresentation clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  MessagePresentation copyWith(void Function(MessagePresentation) updates) =>
+      super.copyWith((message) => updates(message as MessagePresentation))
+          as MessagePresentation;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  @$core
+      .Deprecated('Use MessagePresentation() / MessagePresentation.new instead')
+  static MessagePresentation create() => MessagePresentation._();
+  static $pb.GeneratedMessage $_createMessage() => MessagePresentation._();
+  @$core.override
+  MessagePresentation createEmptyInstance() => MessagePresentation._();
+  @$core.pragma('dart2js:noInline')
+  static MessagePresentation getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<MessagePresentation>(
+          MessagePresentation.$_createMessage);
+  static MessagePresentation? _defaultInstance;
+
+  @$pb.TagNumber(3)
+  @$pb.TagNumber(4)
+  MessagePresentation_Content whichContent() =>
+      _MessagePresentation_ContentByTag[$_whichOneof(0)]!;
+  @$pb.TagNumber(3)
+  @$pb.TagNumber(4)
+  void clearContent() => $_clearField($_whichOneof(0));
+
+  @$pb.TagNumber(1)
+  $fixnum.Int64 get rulesRevision => $_getI64(0);
+  @$pb.TagNumber(1)
+  set rulesRevision($fixnum.Int64 value) => $_setInt64(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasRulesRevision() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearRulesRevision() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  $pb.PbList<$core.String> get matchedRuleIds => $_getList(1);
+
+  @$pb.TagNumber(3)
+  Message get visible => $_getN(2);
+  @$pb.TagNumber(3)
+  set visible(Message value) => $_setField(3, value);
+  @$pb.TagNumber(3)
+  $core.bool hasVisible() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearVisible() => $_clearField(3);
+  @$pb.TagNumber(3)
+  Message ensureVisible() => $_ensure(2);
+
+  @$pb.TagNumber(4)
+  CollapsedMessageHeaders get collapsed => $_getN(3);
+  @$pb.TagNumber(4)
+  set collapsed(CollapsedMessageHeaders value) => $_setField(4, value);
+  @$pb.TagNumber(4)
+  $core.bool hasCollapsed() => $_has(3);
+  @$pb.TagNumber(4)
+  void clearCollapsed() => $_clearField(4);
+  @$pb.TagNumber(4)
+  CollapsedMessageHeaders ensureCollapsed() => $_ensure(3);
+
+  @$pb.TagNumber(5)
+  $pb.PbList<SearchMatch> get matches => $_getList(4);
 }
 
 const $core.bool _omitFieldNames =

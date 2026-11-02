@@ -182,6 +182,7 @@ class _PersonalConferencesState extends State<PersonalConferences>
             onAccessDenied: repository.onBookmarksChanged,
             canRead: entry.conference.canRead,
             canPost: entry.conference.canPost,
+            unsupportedFormat: entry.conference.unsupportedFormat,
             kind: entry.conference.kind,
             personalMailbox: entry.conference.personalMailbox,
             conferenceName: entry.conference.name,

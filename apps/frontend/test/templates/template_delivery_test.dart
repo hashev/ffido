@@ -15,6 +15,7 @@ import 'package:fido/repositories/message_repository.dart';
 import 'package:fido/templates/template_settings.dart';
 
 import '../support/fake_transport.dart';
+import '../support/cross_area_reply.dart';
 
 class FooterTransport extends FakeTransport implements MessageFooterSupport {
   @override
@@ -116,6 +117,31 @@ void main() {
       await t.pumpAndSettle();
     }
     return (api, conferences);
+  }
+
+  for (final net in [true, false]) {
+    testWidgets(
+      'cross-area text delivery target/footer net=$net has no foreign parent',
+      (t) async {
+        final api = FooterTransport();
+        addTearDown(api.dispose);
+        await openReplySource(t, api);
+        await replyTap(
+          t,
+          net ? 'Ответить лично' : 'Ответить в другую область…',
+        );
+        if (!net) await replyTap(t, 'OTHER');
+        await replyTap(t, 'Отправить');
+        final sent = api.calls.whereType<wire.CreateMessageRequest>().single;
+        expect(sent.conferenceId, net ? 'MAIL' : 'OTHER');
+        expect(sent.inReplyTo, isEmpty);
+        expect(sent.hasFooter(), !net);
+        if (!net) {
+          expect(sent.footer.tagline, 'My tagline');
+          expect(sent.footer.origin, 'My origin');
+        }
+      },
+    );
   }
 
   testWidgets(

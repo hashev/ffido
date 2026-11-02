@@ -259,7 +259,7 @@ TEST_F(SQLiteStoreTest, ReinitializationPreservesDataAndVersion) {
   ASSERT_TRUE(store_->Init());
   EXPECT_TRUE(store_->GetProfile("user"));
   RawDb other(db_path_);
-  EXPECT_EQ(other.Scalar("PRAGMA user_version"), 10);
+  EXPECT_EQ(other.Scalar("PRAGMA user_version"), 11);
   EXPECT_EQ(other.Scalar("SELECT COUNT(*) FROM users"), 1);
 }
 
@@ -378,7 +378,7 @@ TEST(SQLiteMigration, BacksUpEveryLegacyReadWithoutReassigningNumbers) {
             1);
   EXPECT_EQ(db.Scalar("SELECT COUNT(*) FROM read_status_legacy_backup WHERE user_id='missing-user'"), 1);
   EXPECT_EQ(db.Scalar("SELECT COUNT(*) FROM read_status"), 1);
-  EXPECT_EQ(db.Scalar("PRAGMA user_version"), 10);
+  EXPECT_EQ(db.Scalar("PRAGMA user_version"), 11);
 }
 
 TEST(SQLiteMigration, BackupCollisionRollsBackWholeMigration) {
@@ -732,7 +732,7 @@ TEST(SQLiteFaults, AllocationFailuresDuringInitializationAllowCleanRetry) {
     ASSERT_TRUE(store->Init());
     ASSERT_TRUE(store->SaveProfile("A", {}));
     RawDb db(path);
-    EXPECT_EQ(db.Scalar("PRAGMA user_version"), 10);
+    EXPECT_EQ(db.Scalar("PRAGMA user_version"), 11);
     EXPECT_EQ(db.Scalar("SELECT COUNT(*) FROM users"), 1);
     EXPECT_EQ(db.Scalar("SELECT COUNT(*) FROM read_status"), 0);
   }
@@ -750,7 +750,8 @@ TEST(SQLiteMigration, CanonicalAddressConflictRollsBackVersionFiveAndCanRetry) {
   }
   {
     RawDb db(path);
-    db.Exec("DROP TABLE crosspost_groups; DROP TABLE uue_uploads; DROP TABLE bulk_read_operations; DROP TABLE "
+    db.Exec("DROP TABLE personal_filter_mutations; DROP TABLE personal_filters; DROP TABLE crosspost_groups; DROP "
+            "TABLE uue_uploads; DROP TABLE bulk_read_operations; DROP TABLE "
             "mail_export_log; DROP TABLE "
             "reading_positions; DROP TABLE "
             "mail_pipeline; DROP TABLE "
@@ -906,10 +907,10 @@ TEST_F(SQLiteStoreTest, BulkReadMigratesSevenWithoutLosingExistingData) {
   sqlite3* db = nullptr;
   ASSERT_EQ(sqlite3_open(db_path_.c_str(), &db), SQLITE_OK);
   ASSERT_EQ(
-      sqlite3_exec(
-          db,
-          "DROP TABLE crosspost_groups; DROP TABLE uue_uploads; DROP TABLE bulk_read_operations; PRAGMA user_version=7",
-          nullptr, nullptr, nullptr),
+      sqlite3_exec(db,
+                   "DROP TABLE personal_filter_mutations; DROP TABLE personal_filters; DROP TABLE crosspost_groups; "
+                   "DROP TABLE uue_uploads; DROP TABLE bulk_read_operations; PRAGMA user_version=7",
+                   nullptr, nullptr, nullptr),
       SQLITE_OK);
   sqlite3_close(db);
   store_ = storage::CreateSQLiteStore(db_path_);
@@ -967,8 +968,10 @@ TEST_F(SQLiteStoreTest, UueMigrationFromEightPreservesReadingAndProfile) {
   store_.reset();
   sqlite3* db = nullptr;
   ASSERT_EQ(sqlite3_open(db_path_.c_str(), &db), SQLITE_OK);
-  ASSERT_EQ(sqlite3_exec(db, "DROP TABLE crosspost_groups; DROP TABLE uue_uploads; PRAGMA user_version=8", nullptr,
-                         nullptr, nullptr),
+  ASSERT_EQ(sqlite3_exec(db,
+                         "DROP TABLE personal_filter_mutations; DROP TABLE personal_filters; DROP TABLE "
+                         "crosspost_groups; DROP TABLE uue_uploads; PRAGMA user_version=8",
+                         nullptr, nullptr, nullptr),
             SQLITE_OK);
   sqlite3_close(db);
   store_ = storage::CreateSQLiteStore(db_path_);
@@ -1038,4 +1041,62 @@ TEST_F(SQLiteStoreTest, MarkUnreadFailureLeavesReadStateIntact) {
   raw.Exec("CREATE TRIGGER reject_unread BEFORE DELETE ON read_status BEGIN SELECT RAISE(ABORT, 'fixture'); END");
   EXPECT_FALSE(store_->MarkMessageUnread("A", {"echo", "g", "1"}));
   EXPECT_TRUE(*store_->IsMessageRead("A", {"echo", "g", "1"}));
+}
+
+TEST_F(SQLiteStoreTest, PersonalFiltersCasRetryRestartAndIsolation) {
+  ASSERT_TRUE(store_->SaveProfile("A", domain::Profile{"A", "2:1/1", "", ""}));
+  ASSERT_TRUE(store_->SaveProfile("B", domain::Profile{"B", "2:1/2", "", ""}));
+  auto initial = store_->GetPersonalFilters("A");
+  ASSERT_TRUE(initial);
+  EXPECT_EQ(initial->revision, 0);
+  EXPECT_TRUE(initial->rules.empty());
+  std::vector<domain::PersonalMessageFilter> rules{{"id", true, 1, "", "Автор", "", "Тема"}};
+  auto saved = store_->ReplacePersonalFilters("A", 0, "op", rules);
+  ASSERT_TRUE(saved);
+  EXPECT_EQ(*saved, 1);
+  EXPECT_EQ(*store_->ReplacePersonalFilters("A", 0, "op", rules), 1);
+  auto conflict = store_->ReplacePersonalFilters("A", 0, "other", rules);
+  ASSERT_FALSE(conflict);
+  EXPECT_EQ(conflict.error().code, domain::ErrorCode::kAborted);
+  auto changed = rules;
+  changed[0].author = "Other";
+  auto reused = store_->ReplacePersonalFilters("A", 0, "op", changed);
+  ASSERT_FALSE(reused);
+  EXPECT_EQ(reused.error().code, domain::ErrorCode::kConflict);
+  EXPECT_TRUE(store_->GetPersonalFilters("B")->rules.empty());
+  EXPECT_EQ(*store_->ReplacePersonalFilters("B", 0, "op", changed), 1);
+  auto cancelled = store_->ReplacePersonalFilters("A", 1, "cancel", changed, [] { return false; });
+  EXPECT_FALSE(cancelled);
+  EXPECT_EQ(store_->GetPersonalFilters("A")->rules, rules);
+  store_.reset();
+  store_ = storage::CreateSQLiteStore(db_path_);
+  ASSERT_TRUE(store_->Init());
+  EXPECT_EQ(store_->GetPersonalFilters("A")->revision, 1);
+  EXPECT_EQ(store_->GetPersonalFilters("A")->rules, rules);
+  auto second = storage::CreateSQLiteStore(db_path_);
+  ASSERT_TRUE(second->Init());
+  auto one = std::async(std::launch::async, [&] { return store_->ReplacePersonalFilters("A", 1, "one", {}); });
+  auto two = std::async(std::launch::async, [&] { return second->ReplacePersonalFilters("A", 1, "two", changed); });
+  const auto a = one.get(), b = two.get();
+  EXPECT_NE(a.has_value(), b.has_value());
+  EXPECT_EQ(store_->GetPersonalFilters("A")->revision, 2);
+}
+
+TEST_F(SQLiteStoreTest, PersonalFiltersUnsignedRevisionAndSqlFailure) {
+  ASSERT_TRUE(store_->SaveProfile("A", domain::Profile{"A", "2:1/1", "", ""}));
+  ASSERT_TRUE(store_->ReplacePersonalFilters("A", 0, "initial", {}));
+  RawDb other(db_path_);
+  other.Exec("UPDATE personal_filters SET revision='18446744073709551614' WHERE user_id='A'");
+  EXPECT_EQ(store_->GetPersonalFilters("A")->revision, UINT64_MAX - 1);
+  auto max = store_->ReplacePersonalFilters("A", UINT64_MAX - 1, "max", {});
+  ASSERT_TRUE(max);
+  EXPECT_EQ(*max, UINT64_MAX);
+  auto exhausted = store_->ReplacePersonalFilters("A", UINT64_MAX, "overflow", {});
+  ASSERT_FALSE(exhausted);
+  EXPECT_EQ(exhausted.error().code, domain::ErrorCode::kResource);
+  other.Exec("UPDATE personal_filters SET revision='1' WHERE user_id='A'; DROP TABLE personal_filter_mutations;");
+  EXPECT_FALSE(store_->ReplacePersonalFilters("A", 1, "failed", {}));
+  EXPECT_EQ(store_->GetPersonalFilters("A")->revision, 1);
+  other.Exec("UPDATE personal_filters SET rules='invalid JSON' WHERE user_id='A'");
+  EXPECT_FALSE(store_->GetPersonalFilters("A"));
 }

@@ -52,6 +52,29 @@ void main() {
     expect(api.calls.length, 2);
     expect((await repo.fetchConferences()).conferences.single.name, 'network');
   });
+  test(
+    'fresh full catalog refuses cache and includes netmail on later pages',
+    () async {
+      await repo.fetchConferences();
+      api.conferences = (_) async => throw const NetworkException();
+      await expectLater(
+        repo.fetchAllConferences(allowCacheFallback: false),
+        throwsA(isA<NetworkException>()),
+      );
+      api.conferences = (r) async => wire.ListConferencesResponse(
+        conferences: [
+          wire.Conference(
+            id: 'mail-${r.page.offset}',
+            kind: wire.AreaKind.AREA_KIND_NETMAIL,
+          ),
+        ],
+        hasMore: r.page.offset.toInt() == 0,
+      );
+      final result = await repo.fetchAllConferences(allowCacheFallback: false);
+      expect(result.conferences.map((c) => c.id), ['mail-0', 'mail-1']);
+      expect(result.hasMore, isFalse);
+    },
+  );
   test('full catalog empty result and first-page-only cache', () async {
     api.conferences = (_) async => wire.ListConferencesResponse();
     expect((await repo.fetchAllConferences()).conferences, isEmpty);
@@ -77,7 +100,7 @@ void main() {
         );
       };
       await expectLater(
-        repo.fetchAllConferences(),
+        repo.fetchAllConferences(allowCacheFallback: false),
         throwsA(isA<NetworkException>()),
       );
     },
@@ -112,7 +135,10 @@ void main() {
           );
         };
         await expectLater(
-          repo.fetchAllConferences(cancellation: cancellation),
+          repo.fetchAllConferences(
+            allowCacheFallback: false,
+            cancellation: cancellation,
+          ),
           throwsA(isA<CancelledException>()),
         );
         expect(api.calls.length, 1);

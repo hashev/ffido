@@ -130,6 +130,81 @@ protected:
   }
 };
 }  // namespace
+TEST_F(GrpcTest, TechnicalDataReturnsRawBytesWithoutReadingOrChangingStorage) {
+  wire::MessageReference reference;
+  {
+    auto lease =
+        storage::JamAccess::Open(*catalog, "RU.TEST", true, std::chrono::steady_clock::now() + std::chrono::seconds(2));
+    ASSERT_TRUE(lease);
+    msgapi::JamMessage raw;
+    raw.SetText("Unrelated body");
+    raw.SetMsgId("2:1/2@fidonet original");
+    raw.SetReplyId("2:9/9 absent-parent");
+    raw.SetAttribute(msgapi::JamMessageAttribute::kRead, true);
+    raw.set_attributes2(0x80000001u);
+    raw.AddRawSubField(msgapi::JamSubFieldType::kFtsKludge, std::string("X: \xff\0", 5));
+    raw.AddRawSubField(msgapi::JamSubFieldType::kFtsKludge, "", 7);
+    ASSERT_EQ((*lease)->messages().AddMessage(raw), msgapi::JamError::kSuccess);
+    reference.set_conference_id("RU.TEST");
+    reference.set_message_id((*lease)->generation() + "#42");
+  }
+  const auto before = test::ReadJamWireRecord(temp.path() / "file", 0);
+  const auto header = test::ReadFile(temp.path() / "file.jhr");
+  const auto body = test::ReadFile(temp.path() / "file.jdt");
+  const auto index = test::ReadFile(temp.path() / "file.jdx");
+  for (int i = 0; i < 2; ++i) {
+    wire::MessageTechnicalData result;
+    grpc::ClientContext context;
+    Auth(context, b);
+    ASSERT_TRUE(client->GetMessageTechnicalData(&context, reference, &result).ok());
+    EXPECT_EQ(result.message().message_id(), reference.message_id());
+    EXPECT_EQ(result.attributes2(), 0x80000001u);
+    EXPECT_EQ(result.attributes() & 8u, 8u);
+    std::multimap<uint16_t, std::string> returned;
+    bool empty_high = false;
+    for (const auto& field : result.subfields()) {
+      if (field.high_id() == 0)
+        returned.emplace(field.low_id(), field.value());
+      if (field.high_id() == 7)
+        empty_high = field.value().empty();
+    }
+    EXPECT_TRUE(empty_high);
+    EXPECT_EQ(returned, before.fields);
+    EXPECT_EQ(result.attributes(), test::Wire32(before.header, 52));
+    EXPECT_EQ(result.attributes2(), test::Wire32(before.header, 56));
+    EXPECT_EQ(returned.find(5)->second, "2:9/9 absent-parent");
+    EXPECT_TRUE(returned.contains(2000));
+    EXPECT_FALSE(*metadata->IsMessageRead(
+        "B", {"RU.TEST", reference.message_id().substr(0, reference.message_id().rfind('#')), "42"}));
+    EXPECT_TRUE(metadata->GetHistory("B")->empty());
+    EXPECT_EQ(metadata->LastOpened("B", "RU.TEST")->revision, 0);
+  }
+  EXPECT_EQ(test::ReadFile(temp.path() / "file.jhr"), header);
+  EXPECT_EQ(test::ReadFile(temp.path() / "file.jdt"), body);
+  EXPECT_EQ(test::ReadFile(temp.path() / "file.jdx"), index);
+  grpc::ClientContext expired;
+  Auth(expired, b);
+  expired.set_deadline(std::chrono::system_clock::now() - std::chrono::seconds(1));
+  wire::MessageTechnicalData ignored;
+  EXPECT_EQ(client->GetMessageTechnicalData(&expired, reference, &ignored).error_code(),
+            grpc::StatusCode::DEADLINE_EXCEEDED);
+  grpc::ClientContext cancelled;
+  Auth(cancelled, b);
+  cancelled.TryCancel();
+  EXPECT_EQ(client->GetMessageTechnicalData(&cancelled, reference, &ignored).error_code(), grpc::StatusCode::CANCELLED);
+  {
+    std::fstream file(temp.path() / "file.jhr", std::ios::in | std::ios::out | std::ios::binary);
+    const std::array<char, 4> oversized{1, 0, 1, 0};  // 65537, little endian.
+    file.seekp(test::Wire32(index, 4) + 8);
+    file.write(oversized.data(), oversized.size());
+  }
+  ignored.Clear();
+  grpc::ClientContext corrupt;
+  Auth(corrupt, b);
+  EXPECT_FALSE(client->GetMessageTechnicalData(&corrupt, reference, &ignored).ok());
+  EXPECT_EQ(ignored.subfields_size(), 0);
+}
+
 TEST_F(GrpcTest, AllRpcTlsUnicodeEmptyAndTwoUsers) {
   wire::ListConferencesRequest list;
   list.mutable_page()->set_limit(20);
@@ -299,6 +374,18 @@ TEST_F(GrpcTest, EveryRpcRequiresTokenBeforeValidationOrSideEffects) {
   wire::MessageReference reference;
   wire::Message message;
   UNAUTH(GetMessage, reference, message)
+  wire::MessageTechnicalData technical;
+  UNAUTH(GetMessageTechnicalData, reference, technical)
+  google::protobuf::Empty filter_empty;
+  wire::PersonalMessageFilterSet filter_set;
+  wire::ReplacePersonalMessageFiltersRequest filter_replace;
+  wire::ReplacePersonalMessageFiltersResponse filter_saved;
+  wire::GetMessagePresentationRequest filter_open;
+  wire::MessagePresentation filter_view;
+  UNAUTH(GetPersonalMessageFilters, filter_empty, filter_set)
+  UNAUTH(ReplacePersonalMessageFilters, filter_replace, filter_saved)
+  UNAUTH(GetMessagePresentation, filter_open, filter_view)
+
   auto create = Request();
   wire::CreateMessageResponse created;
   UNAUTH(CreateMessage, create, created)
@@ -1588,4 +1675,338 @@ TEST_F(ForcedKoi8GrpcTest, FindMessageHonorsOverrideDespiteStaleCp866Chrs) {
   ASSERT_TRUE(response.has_message());
   EXPECT_EQ(response.message().subject(), "Привет");
   EXPECT_EQ(test::ReadFile(temp.path() / "file.jhr"), header);
+}
+
+TEST_F(GrpcTest, TechnicalDataKeepsUnknownConflictingAndUndecodableMetadata) {
+  std::vector<std::string> references;
+  {
+    auto lease =
+        storage::JamAccess::Open(*catalog, "RU.TEST", true, std::chrono::steady_clock::now() + std::chrono::seconds(2));
+    ASSERT_TRUE(lease);
+    for (int i = 0; i < 4; ++i) {
+      msgapi::JamMessage raw;
+      raw.SetText("x");
+      raw.AddRawSubField(msgapi::JamSubFieldType::kFtsKludge, "CHRS: CP866 2");
+      if (i == 2)
+        raw.AddRawSubField(msgapi::JamSubFieldType::kFtsKludge, "XHRS: UTF-8 4");
+      ASSERT_EQ((*lease)->messages().AddMessage(raw), msgapi::JamError::kSuccess);
+      references.push_back((*lease)->generation() + "#" + std::to_string(42 + i));
+    }
+  }
+  // Mutate only this fixture on disk: emulate legacy/foreign malformed encodings.
+  auto bytes = test::ReadFile(temp.path() / "file.jhr");
+  size_t position = 0;
+  const std::vector<std::string> replacements = {"CHRS: XXXXX 2", "CHRS: UTF-8 4", "CHRS: CP866 2", "XHRS: CP866 2"};
+  for (const auto& replacement : replacements) {
+    position = bytes.find("CHRS: CP866 2", position);
+    ASSERT_NE(position, std::string::npos);
+    bytes.replace(position, 13, replacement);
+    position += 13;
+  }
+  position = bytes.find("XHRS: UTF-8 4");
+  ASSERT_NE(position, std::string::npos);
+  bytes[position] = 'C';
+  {
+    std::ofstream output(temp.path() / "file.jhr", std::ios::binary);
+    output.write(bytes.data(), bytes.size());
+    std::ofstream body(temp.path() / "file.jdt", std::ios::binary);
+    body.write("x\xffxx", 4);
+  }
+  for (int i = 0; i < 4; ++i) {
+    wire::MessageReference reference;
+    reference.set_conference_id("RU.TEST");
+    reference.set_message_id(references[i]);
+    grpc::ClientContext context;
+    Auth(context, a);
+    wire::MessageTechnicalData result;
+    ASSERT_TRUE(client->GetMessageTechnicalData(&context, reference, &result).ok());
+    EXPECT_GT(result.subfields_size(), 0);
+    EXPECT_EQ(result.encoding_status(),
+              i == 0 || i == 2 ? wire::TECHNICAL_ENCODING_STATUS_UNDETERMINED : wire::TECHNICAL_ENCODING_STATUS_KNOWN);
+    if (i == 1)
+      EXPECT_EQ(result.effective_encoding(), "UTF-8");
+    if (i == 3)
+      EXPECT_EQ(result.effective_encoding(), "cp866");
+  }
+}
+
+TEST_F(ForcedKoi8GrpcTest, TechnicalDataOverrideRetainsDeclaredChrs) {
+  wire::MessageReference reference;
+  {
+    auto lease =
+        storage::JamAccess::Open(*catalog, "RU.TEST", true, std::chrono::steady_clock::now() + std::chrono::seconds(2));
+    ASSERT_TRUE(lease);
+    msgapi::JamMessage raw;
+    raw.SetText("body");
+    ASSERT_EQ((*lease)->messages().AddMessage(raw), msgapi::JamError::kSuccess);
+    reference.set_conference_id("RU.TEST");
+    reference.set_message_id((*lease)->generation() + "#42");
+  }
+  auto bytes = test::ReadFile(temp.path() / "file.jhr");
+  const auto chrs = bytes.find("CHRS: KOI8-R 2");
+  ASSERT_NE(chrs, std::string::npos);
+  bytes.replace(chrs, 14, "CHRS: CP866 2 ");
+  {
+    std::ofstream output(temp.path() / "file.jhr", std::ios::binary);
+    output.write(bytes.data(), bytes.size());
+  }
+  grpc::ClientContext context;
+  Auth(context, a);
+  wire::MessageTechnicalData result;
+  ASSERT_TRUE(client->GetMessageTechnicalData(&context, reference, &result).ok());
+  EXPECT_EQ(result.effective_encoding(), "KOI8-R");
+  EXPECT_TRUE(std::ranges::any_of(result.subfields(), [](const auto& f) { return f.value() == "CHRS: CP866 2 "; }));
+}
+
+TEST_F(GrpcTest, PersonalFiltersCollapseRevealSearchAndLegacyIsolation) {
+  auto request = Request("filter-source");
+  wire::CreateMessageResponse created;
+  grpc::ClientContext create;
+  Auth(create, a);
+  ASSERT_TRUE(client->CreateMessage(&create, request, &created).ok());
+  const auto reference = created.message();
+  auto child = Request("filter-child");
+  child.set_subject("Normal");
+  child.set_in_reply_to(reference.message_id());
+  grpc::ClientContext reply;
+  Auth(reply, a);
+  wire::CreateMessageResponse replied;
+  ASSERT_TRUE(client->CreateMessage(&reply, child, &replied).ok());
+
+  wire::ReplacePersonalMessageFiltersRequest settings;
+  settings.set_operation_id("filter-save");
+  auto* rule = settings.add_rules();
+  rule->set_rule_id("00000000-0000-4000-8000-000000000001");
+  rule->set_enabled(true);
+  rule->set_scope(wire::PERSONAL_MESSAGE_FILTER_SCOPE_ALL_ECHOS);
+  rule->set_subject_contains("РУССКАЯ");
+  wire::ReplacePersonalMessageFiltersResponse saved;
+  grpc::ClientContext save;
+  Auth(save, b);
+  ASSERT_TRUE(client->ReplacePersonalMessageFilters(&save, settings, &saved).ok());
+  EXPECT_EQ(saved.revision(), 1);
+  grpc::ClientContext retry;
+  Auth(retry, b);
+  ASSERT_TRUE(client->ReplacePersonalMessageFilters(&retry, settings, &saved).ok());
+  settings.set_operation_id("stale");
+  grpc::ClientContext stale;
+  Auth(stale, b);
+  EXPECT_EQ(client->ReplacePersonalMessageFilters(&stale, settings, &saved).error_code(), grpc::StatusCode::ABORTED);
+  const auto header = test::ReadFile(temp.path() / "file.jhr"), body = test::ReadFile(temp.path() / "file.jdt"),
+             index = test::ReadFile(temp.path() / "file.jdx");
+  wire::GetMessagePresentationRequest open;
+  *open.mutable_message() = reference;
+  wire::MessagePresentation presentation;
+  grpc::ClientContext view;
+  Auth(view, b);
+  ASSERT_TRUE(client->GetMessagePresentation(&view, open, &presentation).ok());
+  ASSERT_TRUE(presentation.has_collapsed());
+  EXPECT_FALSE(presentation.collapsed().is_read());
+  EXPECT_EQ(presentation.matched_rule_ids_size(), 1);
+  EXPECT_EQ(metadata->LastOpened("B", "RU.TEST")->revision, 0);
+  EXPECT_TRUE(metadata->GetHistory("B")->empty());
+  wire::ListMessagesRequest list;
+  list.set_conference_id("RU.TEST");
+  list.mutable_page()->set_limit(10);
+  list.set_sort(wire::MESSAGE_SORT_DATE_ASCENDING);
+  list.set_respect_personal_filters(true);
+  wire::ListMessagesResponse listed;
+  grpc::ClientContext listing;
+  Auth(listing, b);
+  ASSERT_TRUE(client->ListMessages(&listing, list, &listed).ok());
+  ASSERT_EQ(listed.messages_size(), 2);
+  EXPECT_TRUE(listed.messages(0).body_preview().empty());
+  EXPECT_EQ(listed.messages(0).personal_collapse().matched_rule_ids_size(), 1);
+  wire::GetThreadRequest thread;
+  thread.set_conference_id("RU.TEST");
+  thread.set_thread_id(reference.message_id());
+  thread.mutable_page()->set_limit(10);
+  thread.set_respect_personal_filters(true);
+  grpc::ClientContext chain;
+  Auth(chain, b);
+  wire::ListMessagesResponse threaded;
+  ASSERT_TRUE(client->GetThread(&chain, thread, &threaded).ok());
+  ASSERT_EQ(threaded.messages_size(), 2);
+  EXPECT_TRUE(threaded.messages(0).body().empty());
+  EXPECT_FALSE(threaded.messages(1).body().empty());
+  EXPECT_FALSE(threaded.messages(0).is_read());
+  EXPECT_FALSE(threaded.messages(1).is_read());
+  wire::FindMessageRequest find;
+  find.set_conference_id("RU.TEST");
+  find.set_query("мир");
+  find.set_scope(wire::MESSAGE_SEARCH_HEADER_AND_BODY);
+  find.set_sort(wire::MESSAGE_SORT_DATE_ASCENDING);
+  find.set_include_start(true);
+  find.set_respect_personal_filters(true);
+  wire::FindMessageResponse found;
+  grpc::ClientContext search;
+  Auth(search, b);
+  ASSERT_TRUE(client->FindMessage(&search, find, &found).ok());
+  ASSERT_TRUE(found.has_message());
+  EXPECT_TRUE(found.message().body().empty());
+  EXPECT_EQ(found.matches_size(), 0);
+  EXPECT_FALSE(found.message().is_read());
+  EXPECT_TRUE(metadata->GetHistory("B")->empty());
+  open.set_reveal(true);
+  open.set_search_query("мир");
+  open.set_search_scope(wire::MESSAGE_SEARCH_HEADER_AND_BODY);
+  grpc::ClientContext reveal;
+  Auth(reveal, b);
+  ASSERT_TRUE(client->GetMessagePresentation(&reveal, open, &presentation).ok());
+  ASSERT_TRUE(presentation.has_visible());
+  EXPECT_TRUE(presentation.visible().is_read());
+  EXPECT_GT(presentation.matches_size(), 0);
+  EXPECT_FALSE(presentation.visible().body().empty());
+  EXPECT_EQ(metadata->GetHistory("B")->size(), 1);
+  grpc::ClientContext other;
+  Auth(other, a);
+  open.set_reveal(false);
+  open.clear_search_query();
+  open.clear_search_scope();
+  ASSERT_TRUE(client->GetMessagePresentation(&other, open, &presentation).ok());
+  EXPECT_TRUE(presentation.has_visible());
+  EXPECT_EQ(test::ReadFile(temp.path() / "file.jhr"), header);
+  EXPECT_EQ(test::ReadFile(temp.path() / "file.jdt"), body);
+  EXPECT_EQ(test::ReadFile(temp.path() / "file.jdx"), index);
+  find.set_respect_personal_filters(false);
+  grpc::ClientContext legacy;
+  Auth(legacy, b);
+  ASSERT_TRUE(client->FindMessage(&legacy, find, &found).ok());
+  EXPECT_FALSE(found.message().body().empty());
+  EXPECT_GT(found.matches_size(), 0);
+}
+
+TEST_F(GrpcTest, PersonalFiltersValidationAndBoundsAreAtomic) {
+  wire::ReplacePersonalMessageFiltersRequest request;
+  request.set_operation_id("validation");
+  auto* rule = request.add_rules();
+  rule->set_rule_id("00000000-0000-4000-8000-000000000001");
+  rule->set_enabled(true);
+  rule->set_scope(wire::PERSONAL_MESSAGE_FILTER_SCOPE_ALL_ECHOS);
+  auto invalid = [&] {
+    grpc::ClientContext context;
+    Auth(context, b);
+    wire::ReplacePersonalMessageFiltersResponse ignored;
+    return client->ReplacePersonalMessageFilters(&context, request, &ignored).error_code();
+  };
+  EXPECT_EQ(invalid(), grpc::StatusCode::INVALID_ARGUMENT);
+  rule->set_author_contains(std::string(257, 'x'));
+  EXPECT_EQ(invalid(), grpc::StatusCode::INVALID_ARGUMENT);
+  rule->set_author_contains("x");
+  rule->set_address_equals("2:1/20*");
+  EXPECT_EQ(invalid(), grpc::StatusCode::INVALID_ARGUMENT);
+  rule->clear_address_equals();
+  // Exercise an unknown enum exactly as it arrives on the protobuf wire.
+  auto unknown_scope = rule->SerializeAsString();
+  unknown_scope.append("\x18\xe7\x07", 3);  // field 3, varint 999
+  ASSERT_TRUE(rule->ParseFromString(unknown_scope));
+  EXPECT_EQ(invalid(), grpc::StatusCode::INVALID_ARGUMENT);
+  rule->set_scope(wire::PERSONAL_MESSAGE_FILTER_SCOPE_CONFERENCE);
+  rule->set_conference_id("missing");
+  EXPECT_EQ(invalid(), grpc::StatusCode::PERMISSION_DENIED);
+  rule->set_scope(wire::PERSONAL_MESSAGE_FILTER_SCOPE_ALL_ECHOS);
+  rule->clear_conference_id();
+  const auto copy = *rule;
+  *request.add_rules() = copy;
+  EXPECT_EQ(invalid(), grpc::StatusCode::INVALID_ARGUMENT);
+  request.clear_rules();
+  for (int i = 0; i < 201; ++i)
+    *request.add_rules() = copy;
+  EXPECT_EQ(invalid(), grpc::StatusCode::INVALID_ARGUMENT);
+  EXPECT_TRUE(metadata->GetPersonalFilters("B")->rules.empty());
+  EXPECT_EQ(metadata->GetPersonalFilters("B")->revision, 0);
+}
+
+TEST_F(GrpcTest, PersonalFiltersKeepPaginationAtMaximumRuleCount) {
+  std::string generation;
+  {
+    auto lease =
+        storage::JamAccess::Open(*catalog, "RU.TEST", true, std::chrono::steady_clock::now() + std::chrono::seconds(5));
+    ASSERT_TRUE(lease);
+    generation = (*lease)->generation();
+    for (int i = 0; i < 120; ++i) {
+      msgapi::JamMessage raw;
+      raw.SetSubject(i % 2 == 0 ? "Noise" : "Normal");
+      raw.SetText("body preview");
+      ASSERT_EQ((*lease)->messages().AddMessage(raw), msgapi::JamError::kSuccess);
+    }
+  }
+  std::vector<domain::PersonalMessageFilter> rules;
+  for (int i = 0; i < 200; ++i)
+    rules.push_back({"00000000-0000-4000-8000-" + std::to_string(100000000000LL + i), true, 1, "", "", "",
+                     i == 199 ? "Noise" : "absent-" + std::to_string(i)});
+  ASSERT_TRUE(metadata->ReplacePersonalFilters("B", 0, "max", rules));
+  wire::ListMessagesRequest request;
+  request.set_conference_id("RU.TEST");
+  request.set_sort(wire::MESSAGE_SORT_DATE_ASCENDING);
+  request.mutable_page()->set_offset(20);
+  request.mutable_page()->set_limit(20);
+  request.set_respect_personal_filters(true);
+  const auto start = std::chrono::steady_clock::now();
+  grpc::ClientContext context;
+  Auth(context, b);
+  wire::ListMessagesResponse page;
+  ASSERT_TRUE(client->ListMessages(&context, request, &page).ok());
+  const auto milliseconds =
+      std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
+  std::cout << "personal filters: 120 messages / 200 rules / page 20: " << milliseconds << " ms\n";
+  EXPECT_EQ(page.total(), 120);
+  EXPECT_TRUE(page.has_more());
+  EXPECT_EQ(page.actual_offset(), 20);
+  ASSERT_EQ(page.messages_size(), 20);
+  for (int i = 0; i < 20; ++i) {
+    EXPECT_EQ(page.messages(i).id(), generation + "#" + std::to_string(62 + i));
+    EXPECT_EQ(page.messages(i).personal_collapse().matched_rule_ids_size(), i % 2 == 0 ? 1 : 0);
+    EXPECT_EQ(page.messages(i).body_preview().empty(), i % 2 == 0);
+    EXPECT_FALSE(page.messages(i).is_read());
+  }
+  EXPECT_TRUE(metadata->GetHistory("B")->empty());
+  request.set_anchor_message_id(generation + "#142");
+  grpc::ClientContext anchor;
+  Auth(anchor, b);
+  ASSERT_TRUE(client->ListMessages(&anchor, request, &page).ok());
+  EXPECT_EQ(page.actual_offset(), 100);
+  EXPECT_FALSE(page.has_more());
+  wire::MarkConferenceReadRequest bulk;
+  bulk.set_conference_id("RU.TEST");
+  bulk.set_operation_id("all-including-collapsed");
+  wire::MarkConferenceReadResponse marked;
+  grpc::ClientContext mark;
+  Auth(mark, b);
+  ASSERT_TRUE(client->MarkConferenceRead(&mark, bulk, &marked).ok());
+  EXPECT_EQ(marked.marked_count(), 120);
+}
+
+TEST_F(GrpcTest, PersonalFiltersPresentationRejectsBadEncodingAndExpiredRequestsWithoutRead) {
+  auto request = Request("encoding-filter");
+  wire::CreateMessageResponse created;
+  grpc::ClientContext create;
+  Auth(create, a);
+  ASSERT_TRUE(client->CreateMessage(&create, request, &created).ok());
+  auto bytes = test::ReadFile(temp.path() / "file.jhr");
+  const auto at = bytes.find("CHRS: CP866 2");
+  ASSERT_NE(at, std::string::npos);
+  bytes.replace(at, 13, "CHRS: XXXXX 2");
+  {
+    std::ofstream output(temp.path() / "file.jhr", std::ios::binary);
+    output.write(bytes.data(), bytes.size());
+  }
+  wire::GetMessagePresentationRequest open;
+  *open.mutable_message() = created.message();
+  wire::MessagePresentation result;
+  grpc::ClientContext view;
+  Auth(view, b);
+  EXPECT_FALSE(client->GetMessagePresentation(&view, open, &result).ok());
+  EXPECT_FALSE(result.has_visible());
+  EXPECT_FALSE(result.has_collapsed());
+  grpc::ClientContext expired;
+  Auth(expired, b);
+  expired.set_deadline(std::chrono::system_clock::now() - std::chrono::seconds(1));
+  EXPECT_EQ(client->GetMessagePresentation(&expired, open, &result).error_code(), grpc::StatusCode::DEADLINE_EXCEEDED);
+  grpc::ClientContext cancelled;
+  Auth(cancelled, b);
+  cancelled.TryCancel();
+  EXPECT_EQ(client->GetMessagePresentation(&cancelled, open, &result).error_code(), grpc::StatusCode::CANCELLED);
+  EXPECT_TRUE(metadata->GetHistory("B")->empty());
+  EXPECT_EQ(metadata->LastOpened("B", "RU.TEST")->revision, 0);
 }

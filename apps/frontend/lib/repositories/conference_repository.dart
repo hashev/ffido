@@ -104,6 +104,7 @@ class ConferenceRepository {
   /// retains hasMore so callers can explicitly identify an incomplete catalog.
   Future<ConferenceListResponse> fetchAllConferences({
     String query = '',
+    bool allowCacheFallback = true,
     RpcCancellation? cancellation,
   }) async {
     final captured = epoch;
@@ -161,7 +162,10 @@ class ConferenceRepository {
       _check(captured, cancellation);
       if (error.isAccessDenied) await clearCache();
       _check(captured, cancellation);
-      if (firstPage == null && filter.isEmpty && error.allowsCacheFallback) {
+      if (allowCacheFallback &&
+          firstPage == null &&
+          filter.isEmpty &&
+          error.allowsCacheFallback) {
         final cached = _getCachedConferences(ApiConstants.defaultLimit);
         if (cached != null) return cached;
       }

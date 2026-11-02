@@ -120,6 +120,57 @@ class FakeTransport implements ApiTransport {
     return messages == null ? wire.ListMessagesResponse() : messages!(r);
   }
 
+  Future<wire.PersonalMessageFilterSet> Function()? filters;
+  Future<wire.ReplacePersonalMessageFiltersResponse> Function(
+    wire.ReplacePersonalMessageFiltersRequest,
+  )?
+  replaceFilters;
+  Future<wire.MessagePresentation> Function(wire.GetMessagePresentationRequest)?
+  presentation;
+  @override
+  Future<wire.PersonalMessageFilterSet> getPersonalMessageFilters({
+    RpcCancellation? cancellation,
+  }) async {
+    if (filters == null) {
+      throw const ApiException(statusCode: 12, message: 'unimplemented');
+    }
+    calls.add(Empty());
+    return filters!();
+  }
+
+  @override
+  Future<wire.ReplacePersonalMessageFiltersResponse>
+  replacePersonalMessageFilters(
+    wire.ReplacePersonalMessageFiltersRequest r, {
+    RpcCancellation? cancellation,
+  }) async {
+    calls.add(r);
+    if (replaceFilters != null) return replaceFilters!(r);
+    throw const ApiException(statusCode: 12, message: 'unimplemented');
+  }
+
+  @override
+  Future<wire.MessagePresentation> getMessagePresentation(
+    wire.GetMessagePresentationRequest r, {
+    RpcCancellation? cancellation,
+  }) async {
+    calls.add(r);
+    if (presentation != null) return presentation!(r);
+    throw const ApiException(statusCode: 12, message: 'unimplemented');
+  }
+
+  Future<wire.MessageTechnicalData> Function(wire.MessageReference)?
+  technicalData;
+  @override
+  Future<wire.MessageTechnicalData> getMessageTechnicalData(
+    wire.MessageReference r, {
+    RpcCancellation? cancellation,
+  }) async {
+    calls.add(r);
+    if (technicalData != null) return technicalData!(r);
+    throw const ApiException(message: 'Unsupported', statusCode: 12);
+  }
+
   @override
   Future<wire.Message> getMessage(
     wire.MessageReference r, {

@@ -1176,3 +1176,71 @@ TEST_F(JamWriteIntegrationTest, ForcedAppendDoesNotMistakeOtherKludgeTextForChrs
   EXPECT_EQ(read->text(), input.text());
   EXPECT_EQ(read->subject(), input.subject());
 }
+
+TEST_F(JamWriteIntegrationTest, RawMetadataPreservesBytesHighIdsAndUnknownEncoding) {
+  JamMessageBase base(test_dir_.string());
+  ASSERT_EQ(base.Open(), JamError::kSuccess);
+  JamMessage message;
+  message.SetText("Body");
+  message.SetMsgId("2:1/2 original");
+  message.SetReplyId("2:9/9 missing");
+  message.SetAttribute(JamMessageAttribute::kRead, true);
+  message.set_attributes2(0x80000001u);
+  message.AddRawSubField(JamSubFieldType::kFtsKludge, std::string("X:\0\xff", 4));
+  message.AddRawSubField(JamSubFieldType::kFtsKludge, "", 9);
+  message.AddRawSubField(JamSubFieldType::kFtsKludge, "X: duplicate");
+  message.AddRawSubField(JamSubFieldType::kFtsKludge, "X: duplicate");
+  ASSERT_EQ(base.AddMessage(message), JamError::kSuccess);
+  base.Close();
+  {
+    std::fstream file(test_dir_.string() + ".jhr", std::ios::in | std::ios::out | std::ios::binary);
+    std::string bytes((std::istreambuf_iterator<char>(file)), {});
+    const auto at = bytes.find("CHRS: CP866 2");
+    ASSERT_NE(at, std::string::npos);
+    bytes.replace(at, 13, "CHRS: XXXXX 2");
+    file.clear();
+    file.seekp(0);
+    file.write(bytes.data(), bytes.size());
+  }
+  ASSERT_EQ(base.Open(), JamError::kSuccess);
+  EXPECT_FALSE(base.ReadMessage(1));
+  auto raw = base.ReadRawMetadata(1);
+  ASSERT_TRUE(raw);
+  EXPECT_TRUE(raw->text().empty());
+  EXPECT_EQ(raw->attributes(), 8u);
+  EXPECT_EQ(raw->attributes2(), 0x80000001u);
+  EXPECT_EQ(raw->subfields()[2].ToString(), std::string("X:\0\xff", 4));
+  EXPECT_EQ(raw->subfields()[3].high_id(), 9);
+  EXPECT_TRUE(raw->subfields()[3].data().empty());
+  EXPECT_EQ(raw->subfields()[4].ToString(), raw->subfields()[5].ToString());
+  EXPECT_EQ(base.DeleteMessage(1), JamError::kSuccess);
+  EXPECT_FALSE(base.ReadRawMetadata(1));
+}
+
+TEST_F(JamWriteIntegrationTest, RawMetadataAcceptsExactSubfieldLimitAndRejectsOverflow) {
+  JamMessageBase base(test_dir_.string());
+  ASSERT_EQ(base.Open(), JamError::kSuccess);
+  JamMessage message;
+  message.AddRawSubField(JamSubFieldType::kFtsKludge, "CHRS: CP866 2");
+  message.AddRawSubField(JamSubFieldType::kFtsKludge, std::string(65536 - 16 - 13, 'X'));
+  ASSERT_EQ(base.AddMessage(message), JamError::kSuccess);
+  auto raw = base.ReadRawMetadata(1);
+  ASSERT_TRUE(raw);
+  size_t bytes = 0;
+  for (const auto& field : raw->subfields())
+    bytes += 8 + field.data().size();
+  EXPECT_EQ(bytes, 65536u);
+  message.AddRawSubField(JamSubFieldType::kFtsKludge, "");
+  EXPECT_NE(base.AddMessage(message), JamError::kSuccess);
+  base.Close();
+  // Corrupt the advertised length while leaving the file and index intact.
+  {
+    std::fstream file(test_dir_.string() + ".jhr", std::ios::in | std::ios::out | std::ios::binary);
+    std::array<uint8_t, 4> bytes{};
+    jam_wire::Put32(bytes.data(), 65537);
+    file.seekp(1024 + 8);
+    file.write(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+  }
+  ASSERT_EQ(base.Open(), JamError::kSuccess);
+  EXPECT_FALSE(base.ReadRawMetadata(1));
+}

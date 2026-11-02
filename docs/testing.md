@@ -2210,3 +2210,249 @@ UTF-8, точность диапазонов, переход от первого
 отмена — 6 мс. Это измерение тестового окружения, не гарантия времени на других
 базах. Реальные Android/Windows/Linux устройства и ручная визуальная приёмка
 настольного приложения в рамках этой проверки не запускались.
+
+## 2026-11-02: ответ в другую область
+
+Изменение `add-cross-area-replies` проверено локально на macOS с Flutter 3.47.7:
+
+- Из `apps/frontend`: `flutter pub get` — успешно, зависимости не обновлялись;
+  `flutter analyze --no-pub` — без замечаний; полный `flutter test --no-pub` —
+  522 passed, 2 штатных skipped. Команды запущены с `CI=true` и
+  `--no-version-check` для исключения сетевой проверки версии SDK.
+  После усиления проверки очистки заранее заполненного кеша повторены все
+  22 новых теста межобластного редактора — успешно, анализатор также чист.
+- Проверены полный свежий каталог (включая вторую страницу и отказ кеша),
+  0/1/несколько ящиков, write-only JAM, исключение служебных областей,
+  локальный поиск, отмена и смена сессии. Новый режим работает из read-only эхи;
+  старые ответы, пересылка, поиск, шаблоны и кросспостинг прошли общий прогон.
+- Проверены адрес автора исходного письма, Re:, Unicode/вложенные цитаты,
+  ручное исправление адресата, quoted/reply и net/echo в шаблоне, явный пустой
+  шаблон, однократное применение и сохранение текста/темы/адресата/файла.
+  Netmail → Echo требует подтверждения с именем эхи; отмена сохраняет Netmail.
+  Смена сессии закрывает и редактор, и открытое подтверждение аудитории.
+- Проверены отзыв прав, удаление/изменение типа назначения, ошибка сети,
+  серверные отказы AKA/кодировки, отсутствие автоматического переназначения,
+  неизменный operation_id/запрос при неопределённом результате и новый ключ
+  после допустимой смены назначения. UUE в Netmail и Echo проверен с пустым
+  родителем, адресной проверкой до upload и повтором без повторной загрузки.
+- Интерфейс редактора и доступность действий проверены widget-тестами при
+  ширине 390 и 1280 px; исправлено переполнение длинного действия на узком экране.
+  Ручная визуальная приёмка и реальные Android/Windows/Linux устройства не запускались.
+- Корневые `cmake -S . -B build/backend -DCMAKE_BUILD_TYPE=Debug`,
+  `cmake --build build/backend --parallel 4`, `ctest --test-dir build/backend
+  --output-on-failure` — успешно: 402 теста, 397 passed, 5 skipped. Пропущены
+  RealHptPackExportsNetmailAndEchoButNeverLocal, HptRoundTripAndConcurrentExportWithSharedWrapper,
+  HptRoutingFixtures, PointMailboxCycle, PointMailboxCycleMapped: требуемое
+  внешнее HPT-окружение не настроено, эти сценарии не считаются выполненными.
+  При полной пересборке виден прежний nodiscard warning в неизменённом
+  `test_process.cpp:244`; новый тест собирается без новых предупреждений.
+- `python3 scripts/check_cpp.py --format-check` — успешно; clang-tidy по
+  compile_commands для изменённого `test_private_areas.cpp` — успешно
+  (диагностика системных заголовков отфильтрована существующей конфигурацией).
+  Новый серверный тест подтверждает самостоятельные ответы в другой эхе и
+  своём ящике, профиль/адрес, Netmail-атрибуты, исходящую копию и outbox intent,
+  запрет чужого ящика, неизменность исходного JAM-заголовка/тела и сохранение
+  родителя/FTN REPLY для обычного ответа.
+
+Повторяемая сквозная проверка (с закреплённым Dart в PATH):
+
+```sh
+python3 scripts/check_cross_area_replies.py
+```
+
+PASS: настоящий Dart ApiClient → TLS backend на временных JAM/SQLite/ящиках
+поинтов. Проверены Echo → свой Netmail и Echo → другая Echo, автор/адресат,
+цитата, отсутствие Netmail у отдельного пользователя, самостоятельная цепочка,
+одинаковый результат и отсутствие дубликата после отброшенного первого
+подтверждения. Это моделирование потери подтверждения; NetworkException и
+блокировка редактирования проверяются отдельно widget-тестом. Независимый JAM
+oracle проверяет пустой локальный parent/FTN REPLY и количество записей;
+рабочие базы и внешняя доставка не используются.
+
+`openspec validate add-cross-area-replies --strict` и `git diff --check` — PASS.
+Итоговый diff проверен: протокол, bindings, зависимости и рабочие базы не менялись,
+секреты и сборочные файлы не добавлены. Архивация, коммит и публикация не выполнялись.
+
+## 2026-11-02: настольные горячие клавиши и справка
+
+Изменение `add-desktop-shortcuts-help`:
+
+- Flutter 3.47.7, из `apps/frontend/`: `flutter pub get` — PASS,
+  зависимости не обновлялись; `flutter analyze --no-pub` — без замечаний;
+  полный `flutter test --no-pub` после окончательного исправления —
+  569 passed, 2 штатных skipped; focused регрессионный прогон — 30 passed. Команды выполнялись
+  с `CI=true` и `--no-version-check`, чтобы SDK не проверял версию по сети.
+- Реестр протестирован для всех TargetPlatform и Web; widget-тесты проверяют
+  Windows/Linux/macOS через platform overrides, Android/iOS — отрицательно.
+  Русская раскладка проверена событиями с кириллическим logicalKey и физической
+  латинской позицией (для raw event simulator используется macOS wire map,
+  допускающий Unicode; выбранная UI-платформа остаётся Windows/Linux/macOS).
+- Отдельный запуск в настоящем Chrome — PASS:
+  `flutter test --no-pub --platform chrome test/widgets/web_shortcuts_test.dart`.
+  Новые команды в Web не активны, прежние Ctrl+F/F6 работают.
+- Проверены непрочитанные через страницы и следующую эху, исчерпание/ошибка,
+  запрет команды в Netmail/local/service/цепочках, обычный ответ с родителем,
+  входящий/исходящий Netmail, новый черновик, возврат к списку/personalMailbox,
+  read-only, busy и смена сессии. Общий прогон включает прежний поиск, UUE,
+  шаблоны, кросспостинг и межобластные ответы.
+- Проверены блокировка фонового читателя в редакторе, поиске, выборе назначения,
+  подтверждении публичности и настоящем ExternalImageViewer; удержание клавиши
+  не повторяет действие. Ручной UUE-файл и текст не меняются/не отправляются.
+- Справка проверена без сети, кнопкой/F1, с причинами недоступности и общей
+  таблицей сочетаний; Escape/закрытие возвращают фокус и прежнее выделение
+  поля без повторной генерации шаблона. Проверены 390/1280 px, text scale 1.7,
+  обе темы. Исправлено macOS select-all при восстановлении фокуса поля.
+- Для нативной приёмки собран и запущен изолированный macOS-стенд с FakeTransport,
+  синтетическими письмами и preferences только в памяти:
+  `flutter run -d macos -t test/support/desktop_shortcuts_smoke.dart`.
+  Проверены настоящие F1, F6 и Escape через интерфейс приложения: открываются
+  справка/поиск, закрываются диалоги. Сборка показывает прежнюю рекомендацию
+  Flutter о CocoaPods/SwiftPM; toolchain и Podfile не менялись.
+- Автоматизация macOS передаёт букву сочетания Cmd без Meta в HardwareKeyboard;
+  ручные нажатия пользователя зафиксированы логом: U/R/N/L/F приходят с
+  Meta=true и активным маршрутом. Пользователь предварительно подтвердил U/R/N;
+  неясный результат L/F проверен дополнительно на нативном стенде.
+- В стенд добавлены диагностика переходов экрана и повтор потока Flutter-событий
+  через PlatformDispatcher (только в тестовом fixture, без логирования в приложении):
+  `flutter run --no-pub -d macos -t test/support/desktop_shortcuts_smoke.dart
+  --dart-define=FFIDO_SHORTCUTS_REPLAY=true`. Это повтор уже полученных событий
+  внутри Flutter, а не автоматизация физической доставки Cmd со стороны ОС.
+  PASS без исключений: unread `message-list → message`, list `message → message-list`,
+  search `message-list → search-dialog`; цикл повторён с кириллическими logicalKey.
+  Открытый диалог поиска дополнительно подтверждён снимком нативного окна.
+- Найдена и исправлена блокировка команд после фокусировки выделяемого текста
+  письма: SelectableText использует read-only EditableText, который прежде
+  ошибочно считался полем ввода. Регрессионный widget-тест фокусирует настоящий
+  текст письма и проверяет поиск и возврат; нативный replay проверяет возврат
+  при том же фокусе. Редактируемые поля по-прежнему блокируют команды читателя.
+- Реальные Windows/Linux рабочие станции недоступны. Переключение системной
+  русской раскладки и F1/Fn на физической клавиатуре отдельно не подтверждены;
+  кириллические события проверены автоматически в widget-тестах и нативном replay.
+- `openspec validate add-desktop-shortcuts-help --strict` и `git diff --check`
+  — PASS. Проверен diff относительно сохранённого рабочего состояния:
+  предыдущие межобластные ответы сохранены, новый код не меняет backend,
+  протокол/bindings, зависимости или реальные пользовательские данные.
+  Коммит, публикация и архивация не выполнялись.
+
+## Технические данные письма — 2026-11-02
+
+Изменение `add-message-technical-data`: отдельный GetMessageTechnicalData и
+читающий raw metadata путь JAM; модель/отчёт/диалог Flutter, вход из строки
+списка без открытия тела и из меню открытого письма. Предыдущие незакоммиченные
+изменения межобластных ответов и горячих клавиш сохранены.
+
+Проверки:
+
+- Flutter 3.47.7: `flutter pub get`, `flutter analyze --no-pub` — без замечаний;
+  `flutter test --no-pub` — **593 PASS, 2 SKIP** (существующие browser-only тесты).
+  Включены поиск, непрочитанные, шаблоны, UUE, горячие клавиши, обычные и
+  межобластные ответы. После уточнения проверки длинного поля повторно проверен
+  отдельный набор виджетов диагностики.
+- Модель/API/repository: точный reference, обе uint32 маски, неизменяемые исходные
+  bytes, пустые/отсутствующие значения, статус кодировки, malformed response,
+  auth, bounded read retry, deadline, cancellation, epoch и UNIMPLEMENTED.
+- UI: все типы областей, read-only/запрет чтения/unsupported, непрочитанная строка
+  без GetMessage, исходный читатель после закрытия, блокировка фоновых команд и
+  Escape, loading/retry/access denied, очистка/поздний ответ при смене сессии,
+  копирование точного отчёта. Светлая/тёмная тема, 390/1280 px, text scale 1.5,
+  список 8192 пустых подполей (ровно 64 KiB), длинное бинарное поле 64000 bytes.
+- Корневые CMake configure/build — PASS. Полный CTest: **409 сценариев,
+  404 PASS, 5 SKIP**, без отказов. Пропуски требуют внешнего HPT:
+  RealHptPackExportsNetmailAndEchoButNeverLocal,
+  HptRoundTripAndConcurrentExportWithSharedWrapper, HptRoutingFixtures,
+  PointMailboxCycle, PointMailboxCycleMapped. Это не результаты PASS.
+- Focused CTest после добавления проверки oversized RPC: **16/16 PASS**;
+  raw metadata/контракт/права/кодировки/TLS gRPC. Старые поля protobuf не
+  перенумерованы; бинарный roundtrip сохраняет NUL/0xFF, high ID, повторы и пустые
+  поля. Независимый JAM wire oracle сверяет обе маски и bytes.
+- Scoped C++ format-check — PASS; clang-tidy — **101 файл / 52 translation units**,
+  без новых диагностик. Известные предупреждения сторонних заголовков подавлены
+  штатными фильтрами; прежний nodiscard в test_process.cpp:244 не менялся.
+  После дополнения test_grpc.cpp его clang-tidy повторён отдельно.
+- `tools/proto/generate.sh --check` — PASS. C++ bindings сгенерированы CMake;
+  Dart bindings совпадают со штатным генератором.
+- `PATH=/Users/yurik/development/flutter-3.47.7/bin:$PATH python3
+  scripts/check_message_technical_data.py` — PASS: настоящий Dart ApiClient и
+  MessageRepository → TLS gRPC backend; тот же RPC через TLS Envoy gRPC-Web
+  (локальный Docker image envoyproxy/envoy:v1.29.0, конфигурация штатного gateway,
+  Origin, Bearer, бинарные data/trailer frames). Семь независимых JAM fixtures:
+  внешний REPLY без родителя, CP866/UTF-8/default/unknown/conflicting CHRS и
+  KOI8-R override, недекодируемое UTF-8 тело, повторы, NUL/0xFF/CR/LF/TAB/ESC,
+  high-ID empty field, обе маски и чужой личный ящик. Повторные запросы не меняют
+  **ни одного JAM byte и полного SQLite iterdump** (включая историю, персональные
+  отметки, позиции и счётчики). Все TLS-ключи, пароли и базы временные; контейнер
+  и сервер удаляются после проверки. Нативный desktop GUI и браузерный GUI
+  вручную не проверялись; UI проверен widget-тестами, gRPC-Web — wire-проверкой.
+- `openspec validate add-message-technical-data --strict` и `git diff --check`
+  — PASS. Проверен итоговый diff; рабочие FTN/SQLite-базы, конфигурация сервера,
+  секреты и кеши не добавлялись. Коммита, релиза и архивации не выполнялось.
+
+## Персональные фильтры эх — 2026-11-02
+
+Изменение `add-personal-message-filters`: плановые проверки включают контракт,
+SQLite CAS/migration, matcher, представление без RecordView, клиентский редактор,
+навигацию/поиск и изолированные native TLS/gRPC-Web проверки.
+
+Промежуточный замер `GrpcTest.PersonalFiltersKeepPaginationAtMaximumRuleCount`:
+JAM с 120 письмами, 200 правил, страница 20 писем — 21 ms на локальном стенде.
+Проверены total=120, offset=20, has_more, точный порядок ID, anchor последней
+страницы и чередование свернутых/обычных строк без отметок чтения. Это наблюдение
+одного запуска, не обещание производительности для любых FTN-баз.
+
+Итоговые проверки реализации:
+
+- Flutter 3.47.7 из `apps/frontend/`: `flutter pub get` — PASS,
+  `flutter analyze --no-pub` — без замечаний; полный `flutter test --no-pub` —
+  **614 PASS, 2 SKIP** (прежние browser-only сценарии). После последней точечной
+  правки сохранения поискового контекста при изменении правил повторены фильтры,
+  API и поиск — **69/69 PASS**. Отдельно проверены дедлайны всех новых RPC;
+  тестовые зависшие обработчики освобождаются между запросами.
+- UI/repository: общий и локальный scope, предзаполнение ровно одного условия,
+  CRUD/enable, явное сохранение/отмена, потерянный ответ с прежним operation ID,
+  конфликт CAS и обновление при несохранённом черновике, две копии repository,
+  endpoint/epoch, unsigned uint64 revision, malformed ответы, late reveal.
+  Проверены остановка Next на свернутом письме, следующая эха, цепочка, поиск и
+  повтор после свернутого результата, явный reveal с диапазонами, удаление правила
+  без автоматического чтения, скрытие тела/preview, отключение ответа и сохранность
+  контекста; 390/1280 px, обе темы, масштаб текста 1.5.
+- Корневые CMake configure/build — PASS. Полный CTest после исправления
+  compatibility metadata — **419 сценариев: 414 PASS, 5 SKIP, 0 FAIL**.
+  HPT-пропуски прежние: RealHptPackExportsNetmailAndEchoButNeverLocal,
+  HptRoundTripAndConcurrentExportWithSharedWrapper, HptRoutingFixtures,
+  PointMailboxCycle, PointMailboxCycleMapped. Они требуют внешнего HPT и не
+  считаются PASS. После исправления проверки unknown enum по реальному protobuf
+  wire повторён набор PersonalFilters/ReleaseSchemaCompatibility — **11/11 PASS**.
+- SQLite-тесты: миграции прежних схем, атомарность/rollback при SQL/cancellation,
+  повтор операции, параллельный CAS, рестарт и изоляция, UINT64_MAX без потери
+  старшего бита и отказ при исчерпании revision, повреждённый JSON. Release metadata
+  теперь указывает state_schema_max=11; fixture v9 удаляет все добавленные таблицы
+  перед проверкой миграции. `build/update-venv/bin/python -m unittest discover
+  -s scripts/release -p 'test_*.py'` — **96 PASS**.
+- C++ scoped format-check — PASS. clang-tidy проверил 52 translation units;
+  исправленный test_grpc.cpp повторно прошёл отдельно. Проверка неизвестного
+  enum использует protobuf wire, не нативный out-of-range cast. Новых предупреждений
+  нет; сообщения сторонних заголовков скрыты прежними фильтрами. Прежний nodiscard
+  в test_process.cpp:244 не относится к изменению.
+- `tools/proto/generate.sh --check`, strict validation
+  `openspec validate add-personal-message-filters --strict` и `git diff --check`
+  — PASS. Старые номера полей/default false и legacy чтение/поиск сохранены.
+- `PATH=/Users/yurik/development/flutter-3.47.7/bin:$PATH python3
+  scripts/check_personal_message_filters.py` — **PASS** на изолированных JAM,
+  SQLite и TLS: два настоящих ApiClient одного профиля и другой профиль, CAS,
+  повтор с потерянным подтверждением, общие/локальные правила, CP866/UTF-8 и
+  KOI8-R override, collapsed search, UTF-16 после emoji, явный reveal, исключение
+  Netmail и запрет чужого ящика. Envoy gRPC-Web выдаёт byte-exact представление
+  и тот же набор правил. После перезапуска backend правила/revision и персональная
+  прочитанность сохраняются. JAM byte-for-byte неизменен; полный SQLite iterdump
+  до «Показать» не меняется, после раскрытия появляются обычные read/history effects.
+  Использован существующий Docker image envoyproxy/envoy:v1.29.0 и штатный generator
+  gateway config; сервер, контейнер, временные пароли/ключи/базы удалены по завершении.
+- Ручная проверка desktop/browser GUI не выполнялась; интерфейс проверен widget
+  тестами, native API — настоящим Dart-клиентом, gRPC-Web — TLS wire-проверкой.
+  Push/автономная очередь не входят в первую версию; другой клиент получает
+  актуальные правила при загрузке/возврате/обновлении. Старые клиенты не применяют
+  сворачивание, поскольку оно не является ограничением доступа.
+
+Итоговый diff проверен: прежние незакоммиченные изменения сохранены, рабочие базы,
+локальный config.json, секреты, кеши и новые runtime-зависимости не добавлены.
+Реализация не коммитилась, не публиковалась и пока не архивирована.

@@ -1,3 +1,5 @@
+import 'command_scope_test.dart' show chord;
+
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -10,6 +12,7 @@ import 'package:fido/pages/message_screen.dart';
 import 'package:fido/repositories/message_repository.dart';
 import 'package:fido/widgets/message_link_text.dart';
 import 'package:fido/widgets/search_highlight.dart';
+import 'package:fido/widgets/message_search_dialog.dart';
 
 import '../support/fake_transport.dart';
 
@@ -63,6 +66,46 @@ Future<void> search(
 }
 
 void main() {
+  for (final platform in [
+    TargetPlatform.windows,
+    TargetPlatform.linux,
+    TargetPlatform.macOS,
+  ]) {
+    testWidgets(
+      'platform search bindings use one dialog and preserve query $platform',
+      (tester) async {
+        final api = FakeTransport();
+        addTearDown(api.dispose);
+        await mount(tester, api);
+        await chord(
+          tester,
+          LogicalKeyboardKey.keyF,
+          mac: platform == TargetPlatform.macOS,
+        );
+        expect(find.byType(MessageSearchDialog), findsOneWidget);
+        await tester.enterText(find.byType(TextField), 'Правка');
+        await chord(
+          tester,
+          LogicalKeyboardKey.keyF,
+          mac: platform == TargetPlatform.macOS,
+        );
+        await tester.sendKeyEvent(LogicalKeyboardKey.f6);
+        await tester.pumpAndSettle();
+        expect(find.byType(MessageSearchDialog), findsOneWidget);
+        expect(
+          tester.widget<TextField>(find.byType(TextField)).controller!.text,
+          'Правка',
+        );
+        await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+        await tester.pumpAndSettle();
+        expect(api.calls.whereType<wire.FindMessageRequest>(), isEmpty);
+        await tester.sendKeyEvent(LogicalKeyboardKey.f6);
+        await tester.pumpAndSettle();
+        expect(find.byType(MessageSearchDialog), findsOneWidget);
+      },
+      variant: TargetPlatformVariant.only(platform),
+    );
+  }
   testWidgets(
     'find opens response without GetMessage, continues exclusively and stops at end',
     (tester) async {

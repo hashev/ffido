@@ -18,6 +18,7 @@ import 'package:fido/repositories/uue_repository.dart';
 import 'package:fido/widgets/uue_body.dart';
 
 import '../support/fake_transport.dart';
+import '../support/cross_area_reply.dart';
 import '../support/message_identity.dart';
 
 class Files extends UueFiles {
@@ -107,6 +108,90 @@ void main() {
     uueFiles = oldFiles;
     await api.dispose();
   });
+  for (final net in [true, false]) {
+    testWidgets(
+      'cross-area explicit UUE target, empty parent and frozen retry net=$net',
+      (tester) async {
+        api.getUueLimitsHandler = (_) async => limits();
+        await openReplySource(tester, api, authorAddress: net ? '' : '2:1/9.7');
+        await replyTap(
+          tester,
+          net ? 'Ответить лично' : 'Ответить в другую область…',
+        );
+        if (!net) await replyTap(tester, 'OTHER');
+        expect(api.calls.whereType<wire.UploadUueChunkRequest>(), isEmpty);
+        expect(find.text('new.bin'), findsNothing);
+        final recipientAddress = replyField(tester, 'FTN-адрес получателя');
+        files.selected = SelectedUueFile(
+          'new.bin',
+          Uint8List.fromList([0, 255, 1]),
+        );
+        var commits = 0;
+        api.getUueSendStatusHandler = (_) async {
+          if (commits == 0) throw const NotFoundException();
+          return wire.UueSendStatus(
+            state: 'partial',
+            filename: 'new.bin',
+            fileSize: Int64(3),
+            sha256: sha256.convert(files.selected!.bytes).toString(),
+          );
+        };
+        api.uploadUueChunkHandler = (r) async =>
+            wire.UueUploadStatus(receivedBytes: r.fileSize, complete: true);
+        api.commitUueHandler = (_) async => wire.UueSendStatus(
+          state: ++commits == 1 ? 'partial' : 'completed',
+          savedParts: commits,
+          totalParts: 2,
+        );
+        await replyTap(tester, 'Прикрепить файл UUE');
+        if (net) {
+          await replyTap(tester, 'Отправить');
+          expect(api.calls.whereType<wire.UploadUueChunkRequest>(), isEmpty);
+          await tester.scrollUntilVisible(
+            find.text('new.bin'),
+            200,
+            scrollable: find.byType(Scrollable).first,
+          );
+          expect(find.text('new.bin'), findsOneWidget);
+          recipientAddress.text = '2:1/9.7';
+        }
+        final text = replyField(tester, 'Текст').text;
+        await replyTap(tester, 'Отправить');
+        expect(
+          tester
+              .widget<TextField>(find.widgetWithText(TextField, 'Текст'))
+              .enabled,
+          isFalse,
+        );
+        await replyTap(tester, 'Повторить отправку');
+        final sent = api.calls.whereType<wire.CommitUueRequest>().toList();
+        expect(sent, hasLength(2));
+        expect(sent[0], sent[1]);
+        expect(sent[0].message.conferenceId, net ? 'MAIL' : 'OTHER');
+        expect(sent[0].message.inReplyTo, isEmpty);
+        expect(sent[0].message.body, text);
+        expect(api.calls.whereType<wire.UploadUueChunkRequest>(), hasLength(1));
+      },
+    );
+  }
+  testWidgets('changing target preserves manually attached file and text', (
+    tester,
+  ) async {
+    api.getUueLimitsHandler = (_) async => limits();
+    await openReplySource(tester, api);
+    await replyTap(tester, 'Ответить лично');
+    files.selected = SelectedUueFile('draft.bin', Uint8List.fromList([1]));
+    await replyTap(tester, 'Прикрепить файл UUE');
+    replyField(tester, 'Текст').text = 'Правка';
+    await replyTap(tester, 'Изменить область назначения');
+    await replyTap(tester, 'OTHER');
+    await replyTap(tester, 'Выбрать эху');
+    await tester.ensureVisible(find.text('draft.bin'));
+    await tester.pumpAndSettle();
+    expect(find.text('draft.bin'), findsOneWidget);
+    expect(replyField(tester, 'Текст').text, 'Правка');
+  });
+
   testWidgets(
     'valid file selection clears previous picker error without losing draft',
     (tester) async {

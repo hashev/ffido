@@ -1,3 +1,4 @@
+import '../shortcuts/command_scope.dart';
 import '../updates/update_ui.dart';
 import '../models/conference.dart';
 import '../api/api_exceptions.dart';
@@ -182,6 +183,7 @@ class _MainScreenState extends State<MainScreen>
           onAccessDenied: _repository.clearCache,
           canRead: conference.canRead,
           canPost: conference.canPost,
+          unsupportedFormat: conference.unsupportedFormat,
           kind: conference.kind,
           personalMailbox: conference.personalMailbox,
           conferenceName: conference.name,
@@ -219,6 +221,10 @@ class _MainScreenState extends State<MainScreen>
 
   @override
   Widget build(BuildContext context) {
+    return CommandScope(child: buildMain(context));
+  }
+
+  Widget buildMain(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
         title: const Text(
@@ -227,6 +233,7 @@ class _MainScreenState extends State<MainScreen>
         ),
         centerTitle: true,
         actions: [
+          const CommandHelpButton(),
           const UpdateButton(),
           IconButton(
             tooltip: 'Настройки',

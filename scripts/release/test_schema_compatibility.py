@@ -67,6 +67,8 @@ class SchemaCompatibilityTest(unittest.TestCase):
                 self.assertEqual(COMPATIBILITY['state_schema_max'], version,
                                  'Published metadata must cover the schema created by the backend')
                 # Reconstruct the supported v9 boundary from this empty fixture.
+                db.execute('DROP TABLE personal_filter_mutations')
+                db.execute('DROP TABLE personal_filters')
                 db.execute('DROP TABLE crosspost_groups')
                 db.execute('PRAGMA user_version=9')
             boot(True)

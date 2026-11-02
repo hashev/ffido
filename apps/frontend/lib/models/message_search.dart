@@ -11,7 +11,7 @@ class MessageSearchResult {
   final Message message;
   final Map<int, List<SearchRange>> matches;
   const MessageSearchResult(this.message, this.matches);
-  int get firstField => matches.keys.first;
+  int get firstField => matches.isEmpty ? 0 : matches.keys.first;
   static Map<int, List<SearchRange>> validate(
     wire.FindMessageResponse response,
   ) {

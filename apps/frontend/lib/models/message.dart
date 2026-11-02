@@ -17,6 +17,8 @@ class Message {
   final int positionRevision;
   final String? bodyPreview;
   final List<Attachment> attachments;
+  final List<String> matchedFilterIds;
+  bool get isCollapsed => matchedFilterIds.isNotEmpty;
 
   Message({
     required this.id,
@@ -34,6 +36,7 @@ class Message {
     this.positionRevision = 0,
     this.bodyPreview,
     this.attachments = const [],
+    this.matchedFilterIds = const [],
   });
 
   /// Создание из JSON (ответ API — полное сообщение)
@@ -156,6 +159,7 @@ class Message {
       positionRevision: positionRevision,
       bodyPreview: bodyPreview ?? this.bodyPreview,
       attachments: attachments ?? this.attachments,
+      matchedFilterIds: matchedFilterIds,
     );
   }
 

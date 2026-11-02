@@ -44,6 +44,12 @@ void Map(const domain::Conference& source, wire::Conference* result) {
 }
 template <class Message>
 void Map(const Message& source, std::string_view conference, wire::Message* result) {
+  if (source.personal_collapse) {
+    auto* collapse = result->mutable_personal_collapse();
+    collapse->set_rules_revision(source.personal_collapse->revision);
+    for (const auto& id : source.personal_collapse->rules)
+      collapse->add_matched_rule_ids(id);
+  }
   result->set_id(source.id);
   result->set_conference_id(std::string(conference));
   result->set_from_name(source.from_name);
@@ -81,6 +87,9 @@ grpc::Status Error(grpc::ServerContext* context, const domain::ApiError& error) 
       break;
     case domain::ErrorCode::kResource:
       code = grpc::StatusCode::RESOURCE_EXHAUSTED;
+      break;
+    case domain::ErrorCode::kAborted:
+      code = grpc::StatusCode::ABORTED;
       break;
     case domain::ErrorCode::kConflict:
       code = grpc::StatusCode::ALREADY_EXISTS;
@@ -254,8 +263,9 @@ grpc::Status GrpcService::ListMessages(grpc::ServerContext* context, const wire:
       default:
         return std::unexpected(domain::ApiError::Validation({domain::ErrorDetail{"sort", "Unknown message sort"}}));
     }
-    auto result = messages_.GetMessages(request->conference_id(), Page(request->page()), sort, user.id,
-                                        request->query(), request->anchor_message_id());
+    auto result =
+        messages_.GetMessages(request->conference_id(), Page(request->page()), sort, user.id, request->query(),
+                              request->anchor_message_id(), request->respect_personal_filters());
     if (!result)
       return std::unexpected(result.error());
     for (const auto& message : result->messages)
@@ -273,7 +283,8 @@ grpc::Status GrpcService::FindMessage(grpc::ServerContext* context, const wire::
       return std::unexpected(domain::ApiError::Validation("Unknown search sort"));
     auto result = messages_.FindMessage(request->conference_id(), request->query(), static_cast<int>(request->scope()),
                                         request->sort() == wire::MESSAGE_SORT_DATE_ASCENDING ? "oldest" : "newest",
-                                        request->start_message_id(), request->include_start(), user.id);
+                                        request->start_message_id(), request->include_start(), user.id,
+                                        request->respect_personal_filters());
     if (!result)
       return std::unexpected(result.error());
     if (result->message)
@@ -283,6 +294,101 @@ grpc::Status GrpcService::FindMessage(grpc::ServerContext* context, const wire::
       match->set_field(static_cast<wire::MessageSearchField>(range.field));
       match->set_start_utf16(range.start_utf16);
       match->set_length_utf16(range.length_utf16);
+    }
+    return {};
+  });
+}
+grpc::Status GrpcService::GetPersonalMessageFilters(grpc::ServerContext* context, const google::protobuf::Empty*,
+                                                    wire::PersonalMessageFilterSet* response) {
+  return Dispatch(context, [&](const auto& user) -> Result {
+    auto set = messages_.GetPersonalFilters(user.id);
+    if (!set)
+      return std::unexpected(set.error());
+    response->set_revision(set->revision);
+    for (const auto& r : set->rules) {
+      auto* rule = response->add_rules();
+      rule->set_rule_id(r.id);
+      rule->set_enabled(r.enabled);
+      rule->set_scope(static_cast<wire::PersonalMessageFilterScope>(r.scope));
+      rule->set_conference_id(r.conference);
+      rule->set_author_contains(r.author);
+      rule->set_address_equals(r.address);
+      rule->set_subject_contains(r.subject);
+    }
+    return {};
+  });
+}
+grpc::Status GrpcService::ReplacePersonalMessageFilters(grpc::ServerContext* context,
+                                                        const wire::ReplacePersonalMessageFiltersRequest* request,
+                                                        wire::ReplacePersonalMessageFiltersResponse* response) {
+  return Dispatch(context, [&](const auto& user) -> Result {
+    if (request->ByteSizeLong() > 256 * 1024)
+      return std::unexpected(domain::ApiError::Validation("Filter request too large"));
+    std::vector<domain::PersonalMessageFilter> rules;
+    for (const auto& r : request->rules())
+      rules.push_back({r.rule_id(), r.enabled(), static_cast<int>(r.scope()), r.conference_id(), r.author_contains(),
+                       r.address_equals(), r.subject_contains()});
+    auto revision = messages_.ReplacePersonalFilters(user.id, request->expected_revision(), request->operation_id(),
+                                                     std::move(rules));
+    if (!revision)
+      return std::unexpected(revision.error());
+    response->set_revision(*revision);
+    return {};
+  });
+}
+grpc::Status GrpcService::GetMessagePresentation(grpc::ServerContext* context,
+                                                 const wire::GetMessagePresentationRequest* request,
+                                                 wire::MessagePresentation* response) {
+  return Dispatch(context, [&](const auto& user) -> Result {
+    auto result = messages_.GetPresentation(request->message().conference_id(), request->message().message_id(),
+                                            user.id, request->reveal(), request->search_query(),
+                                            static_cast<int>(request->search_scope()));
+    if (!result)
+      return std::unexpected(result.error());
+    response->set_rules_revision(result->revision);
+    for (const auto& id : result->rules)
+      response->add_matched_rule_ids(id);
+    if (result->collapsed) {
+      const auto& m = result->message;
+      auto* h = response->mutable_collapsed();
+      h->mutable_message()->set_conference_id(request->message().conference_id());
+      h->mutable_message()->set_message_id(m.id);
+      h->set_from_name(m.from_name);
+      h->set_from_address(m.from_address);
+      h->set_subject(m.subject);
+      Timestamp(m.date, h->mutable_date());
+      h->set_is_read(m.is_read);
+      h->set_thread_id(m.thread_id);
+      h->set_in_reply_to(m.in_reply_to);
+    } else
+      Map(result->message, request->message().conference_id(), response->mutable_visible());
+    for (const auto& range : result->matches) {
+      auto* match = response->add_matches();
+      match->set_field(static_cast<wire::MessageSearchField>(range.field));
+      match->set_start_utf16(range.start_utf16);
+      match->set_length_utf16(range.length_utf16);
+    }
+    return {};
+  });
+}
+grpc::Status GrpcService::GetMessageTechnicalData(grpc::ServerContext* context, const wire::MessageReference* request,
+                                                  wire::MessageTechnicalData* response) {
+  return Dispatch(context, [&](const auto& user) -> Result {
+    auto result = messages_.GetMessageTechnicalData(request->conference_id(), request->message_id(), user.id);
+    if (!result)
+      return std::unexpected(result.error());
+    response->mutable_message()->set_conference_id(result->conference);
+    response->mutable_message()->set_message_id(result->id);
+    response->set_attributes(result->attributes);
+    response->set_attributes2(result->attributes2);
+    response->set_encoding_status(result->effective_encoding.empty() ? wire::TECHNICAL_ENCODING_STATUS_UNDETERMINED
+                                                                     : wire::TECHNICAL_ENCODING_STATUS_KNOWN);
+    response->set_effective_encoding(result->effective_encoding);
+    for (const auto& field : result->subfields) {
+      auto* output = response->add_subfields();
+      output->set_low_id(field.low_id);
+      output->set_high_id(field.high_id);
+      output->set_value(field.value);
     }
     return {};
   });
@@ -375,7 +481,8 @@ grpc::Status GrpcService::GetThread(grpc::ServerContext* context, const wire::Ge
     auto valid = ValidatePage(request->page());
     if (!valid)
       return valid;
-    auto result = messages_.GetThread(request->conference_id(), request->thread_id(), user.id, Page(request->page()));
+    auto result = messages_.GetThread(request->conference_id(), request->thread_id(), user.id, Page(request->page()),
+                                      request->respect_personal_filters());
     if (!result)
       return std::unexpected(result.error());
     for (const auto& message : result->messages)

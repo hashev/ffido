@@ -6,6 +6,8 @@
 #include <string>
 #include <vector>
 
+#include "domain/personal_filters.hpp"
+
 namespace fidoback::domain {
 
 /// @brief Краткое представление сообщения (для списка).
@@ -24,6 +26,7 @@ struct MessageSummary {
   uint32_t attributes = 0;
   int direction = 0;
   uint64_t position_revision = 0;
+  std::optional<PersonalMessageCollapse> personal_collapse;
 };
 
 /// @brief Полное представление сообщения.
@@ -41,10 +44,22 @@ struct MessageDetail {
   uint32_t attributes = 0;
   int direction = 0;
   uint64_t position_revision = 0;
+  std::optional<PersonalMessageCollapse> personal_collapse;
   std::string in_reply_to;
   bool is_read = false;
   std::vector<std::string> attachments;
   std::vector<std::string> ftn_kludges;
+};
+
+struct MessageTechnicalSubfield {
+  uint32_t low_id = 0, high_id = 0;
+  std::string value;
+};
+struct MessageTechnicalData {
+  std::string conference, id;
+  uint32_t attributes = 0, attributes2 = 0;
+  std::vector<MessageTechnicalSubfield> subfields;
+  std::string effective_encoding;
 };
 
 struct SearchMatch {
@@ -53,6 +68,14 @@ struct SearchMatch {
 };
 struct FindMessageResponse {
   std::optional<MessageDetail> message;
+  std::vector<SearchMatch> matches;
+};
+
+struct MessagePresentation {
+  MessageDetail message;
+  uint64_t revision = 0;
+  std::vector<std::string> rules;
+  bool collapsed = false;
   std::vector<SearchMatch> matches;
 };
 

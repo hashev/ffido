@@ -15,6 +15,10 @@ service Ffido {
   rpc ListMessages(ListMessagesRequest) returns (ListMessagesResponse);
   rpc FindMessage(FindMessageRequest) returns (FindMessageResponse);
   rpc GetMessage(MessageReference) returns (Message);
+  rpc GetPersonalMessageFilters(google.protobuf.Empty) returns (PersonalMessageFilterSet);
+  rpc ReplacePersonalMessageFilters(ReplacePersonalMessageFiltersRequest) returns (ReplacePersonalMessageFiltersResponse);
+  rpc GetMessagePresentation(GetMessagePresentationRequest) returns (MessagePresentation);
+  rpc GetMessageTechnicalData(MessageReference) returns (MessageTechnicalData);
   rpc CreateMessage(CreateMessageRequest) returns (CreateMessageResponse);
   rpc CreateCrosspost(CreateCrosspostRequest) returns (CreateCrosspostResponse);
   rpc MarkRead(MessageReference) returns (google.protobuf.Empty);
@@ -110,6 +114,7 @@ message ListMessagesRequest {
   string query = 3;
   MessageSort sort = 4;
   string anchor_message_id = 5;
+  bool respect_personal_filters = 6;
 }
 
 // message_id — непрозрачный локальный ID с generation, а не FTN MsgID.
@@ -143,6 +148,7 @@ message Message {
   uint32 attributes = 15;
   MailDirection direction = 16;
   uint64 position_revision = 17;
+  PersonalMessageCollapse personal_collapse = 18;
 }
 
 message ListMessagesResponse {
@@ -202,6 +208,7 @@ message GetThreadRequest {
   string conference_id = 1;
   string thread_id = 2;
   PageRequest page = 3;
+  bool respect_personal_filters = 4;
 }
 
 message Bookmark {
@@ -403,6 +410,7 @@ message FindMessageRequest {
   MessageSort sort = 4;
   string start_message_id = 5;
   bool include_start = 6;
+  bool respect_personal_filters = 7;
 }
 message SearchMatch {
   MessageSearchField field = 1;
@@ -413,4 +421,79 @@ message FindMessageResponse {
   // Отсутствие message означает конец поиска, а не ошибку.
   Message message = 1;
   repeated SearchMatch matches = 2;
+}
+
+// Сырые технические подполя: порядок, high_id и пустые значения значимы.
+message MessageTechnicalSubfield {
+  uint32 low_id = 1;
+  uint32 high_id = 2;
+  bytes value = 3;
+}
+enum TechnicalEncodingStatus {
+  TECHNICAL_ENCODING_STATUS_UNSPECIFIED = 0;
+  TECHNICAL_ENCODING_STATUS_KNOWN = 1;
+  TECHNICAL_ENCODING_STATUS_UNDETERMINED = 2;
+}
+message MessageTechnicalData {
+  MessageReference message = 1;
+  uint32 attributes = 2;
+  uint32 attributes2 = 3;
+  repeated MessageTechnicalSubfield subfields = 4;
+  TechnicalEncodingStatus encoding_status = 5;
+  string effective_encoding = 6;
+}
+
+// Персональное представление; не является ограничением доступа к FTN-письмам.
+enum PersonalMessageFilterScope {
+  PERSONAL_MESSAGE_FILTER_SCOPE_UNSPECIFIED = 0;
+  PERSONAL_MESSAGE_FILTER_SCOPE_ALL_ECHOS = 1;
+  PERSONAL_MESSAGE_FILTER_SCOPE_CONFERENCE = 2;
+}
+message PersonalMessageFilter {
+  string rule_id = 1;
+  bool enabled = 2;
+  PersonalMessageFilterScope scope = 3;
+  string conference_id = 4;
+  string author_contains = 5;
+  string address_equals = 6;
+  string subject_contains = 7;
+}
+message PersonalMessageFilterSet {
+  uint64 revision = 1;
+  repeated PersonalMessageFilter rules = 2;
+}
+message ReplacePersonalMessageFiltersRequest {
+  uint64 expected_revision = 1;
+  string operation_id = 2;
+  repeated PersonalMessageFilter rules = 3;
+}
+message ReplacePersonalMessageFiltersResponse { uint64 revision = 1; }
+message PersonalMessageCollapse {
+  uint64 rules_revision = 1;
+  repeated string matched_rule_ids = 2;
+}
+message GetMessagePresentationRequest {
+  MessageReference message = 1;
+  bool reveal = 2;
+  string search_query = 3;
+  MessageSearchScope search_scope = 4;
+}
+message CollapsedMessageHeaders {
+  MessageReference message = 1;
+  string from_name = 2;
+  string from_address = 3;
+  string subject = 4;
+  google.protobuf.Timestamp date = 5;
+  bool is_read = 6;
+  string thread_id = 7;
+  string in_reply_to = 8;
+}
+message MessagePresentation {
+  uint64 rules_revision = 1;
+  repeated string matched_rule_ids = 2;
+  oneof content {
+    Message visible = 3;
+    CollapsedMessageHeaders collapsed = 4;
+  }
+  repeated SearchMatch matches = 5;
 }

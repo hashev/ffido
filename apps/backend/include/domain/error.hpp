@@ -10,6 +10,7 @@ enum class ErrorCode : int {
   kUnauthorized = 401,
   kForbidden = 403,
   kConflict = 409,
+  kAborted = 410,
   kResource = 429,
   kUnavailable = 503,
   kDeadline = 504,

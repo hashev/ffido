@@ -609,6 +609,7 @@ public:
     return MessageEncoding(message, default_encoding_, force_encoding_);
   }
   [[nodiscard]] std::expected<JamMessage, JamError> ReadMessage(uint32_t msg_num, bool include_body = true) const;
+  [[nodiscard]] std::expected<JamMessage, JamError> ReadRawMetadata(uint32_t msg_num) const;
   std::expected<uint32_t, JamError> GetLastRead(std::string_view username);
   [[nodiscard]] JamError SetLastRead(std::string_view username, uint32_t msg_num);
 
@@ -846,6 +847,20 @@ inline std::expected<JamMessageHeader, JamError> JamMessageBase::ReadHeader(uint
   if ((msg_header.attribute & static_cast<uint32_t>(JamMessageAttribute::kDeleted)) != 0)
     return std::unexpected(JamError::kMessageDeleted);
   return msg_header;
+}
+
+// Metadata diagnostics must not depend on decoding the body, names or subject.
+inline std::expected<JamMessage, JamError> JamMessageBase::ReadRawMetadata(uint32_t number) const {
+  auto header = ReadHeader(number);
+  if (!header) return std::unexpected(header.error());
+  JamMessage result;
+  result.attributes_ = header->attribute;
+  result.set_attributes2(header->attribute2);
+  const auto& index = index_structure_[number - base_header_.base_msg_num];
+  auto fields = ReadSubFields(index.header_offset + 76, header->subfield_len);
+  if (!fields) return std::unexpected(fields.error());
+  result.subfields_ = std::move(*fields);
+  return result;
 }
 
 [[nodiscard]] inline std::expected<JamMessage, JamError> JamMessageBase::ReadMessage(uint32_t msg_num, bool include_body) const {
