@@ -373,6 +373,46 @@ class ApiClient implements ApiTransport, MessageFooterSupport {
     cancellation: cancellation,
   );
   @override
+  Future<wire.PersonalMessageFilterSet> getPersonalMessageFilters({
+    RpcCancellation? cancellation,
+  }) => _invoke(
+    'GetPersonalMessageFilters',
+    (c, o) => c.getPersonalMessageFilters(Empty(), options: o),
+    retry: true,
+    cancellation: cancellation,
+  );
+  @override
+  Future<wire.ReplacePersonalMessageFiltersResponse>
+  replacePersonalMessageFilters(
+    wire.ReplacePersonalMessageFiltersRequest r, {
+    RpcCancellation? cancellation,
+  }) => _invoke(
+    'ReplacePersonalMessageFilters',
+    (c, o) => c.replacePersonalMessageFilters(r, options: o),
+    retry: false,
+    cancellation: cancellation,
+  );
+  @override
+  Future<wire.MessagePresentation> getMessagePresentation(
+    wire.GetMessagePresentationRequest r, {
+    RpcCancellation? cancellation,
+  }) => _invoke(
+    'GetMessagePresentation',
+    (c, o) => c.getMessagePresentation(r, options: o),
+    retry: true,
+    cancellation: cancellation,
+  );
+  @override
+  Future<wire.MessageTechnicalData> getMessageTechnicalData(
+    wire.MessageReference r, {
+    RpcCancellation? cancellation,
+  }) => _invoke(
+    'GetMessageTechnicalData',
+    (c, o) => c.getMessageTechnicalData(r, options: o),
+    retry: true,
+    cancellation: cancellation,
+  );
+  @override
   Future<wire.Message> getMessage(
     wire.MessageReference r, {
     RpcCancellation? cancellation,

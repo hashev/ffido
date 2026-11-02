@@ -31,18 +31,26 @@ public:
         encoding_(std::move(encoding)),
         writer_(metadata_, std::move(io)) {
   }
-  std::expected<domain::MessageListResponse, domain::ApiError> GetMessages(std::string_view conference,
-                                                                           const domain::PaginationRequest& page,
-                                                                           std::string_view sort, std::string_view user,
-                                                                           std::string_view query = {},
-                                                                           std::string_view anchor_message_id = {});
+  std::expected<domain::MessageListResponse, domain::ApiError> GetMessages(
+      std::string_view conference, const domain::PaginationRequest& page, std::string_view sort, std::string_view user,
+      std::string_view query = {}, std::string_view anchor_message_id = {}, bool respect_filters = false);
   std::expected<domain::MessageDetail, domain::ApiError> GetMessage(std::string_view conference,
                                                                     std::string_view message, std::string_view user);
-  std::expected<domain::FindMessageResponse, domain::ApiError> FindMessage(std::string_view conference,
-                                                                           std::string_view query, int scope,
-                                                                           std::string_view sort,
-                                                                           std::string_view start, bool include_start,
-                                                                           std::string_view user);
+  std::expected<domain::MessageTechnicalData, domain::ApiError> GetMessageTechnicalData(std::string_view conference,
+                                                                                        std::string_view message,
+                                                                                        std::string_view user);
+  std::expected<domain::FindMessageResponse, domain::ApiError> FindMessage(
+      std::string_view conference, std::string_view query, int scope, std::string_view sort, std::string_view start,
+      bool include_start, std::string_view user, bool respect_filters = false);
+  std::expected<domain::PersonalMessageFilterSet, domain::ApiError> GetPersonalFilters(std::string_view user);
+  std::expected<uint64_t, domain::ApiError> ReplacePersonalFilters(std::string_view user, uint64_t expected,
+                                                                   std::string_view operation,
+                                                                   std::vector<domain::PersonalMessageFilter> rules);
+  std::expected<domain::MessagePresentation, domain::ApiError> GetPresentation(std::string_view conference,
+                                                                               std::string_view id,
+                                                                               std::string_view user, bool reveal,
+                                                                               std::string_view query = {},
+                                                                               int scope = 0);
   // Read without changing read status, history or reading position (attachment indexing).
   std::expected<domain::MessageDetail, domain::ApiError> PeekMessage(std::string_view conference,
                                                                      std::string_view message, std::string_view user);
@@ -62,11 +70,16 @@ public:
                                                      std::string_view user);
   std::expected<domain::ThreadListResponse, domain::ApiError> GetThread(std::string_view conference,
                                                                         std::string_view thread, std::string_view user,
-                                                                        const domain::PaginationRequest& page = {});
+                                                                        const domain::PaginationRequest& page = {},
+                                                                        bool respect_filters = false);
 
 private:
+  std::expected<domain::MessageDetail, domain::ApiError> FilteredDetail(
+      storage::JamAccess& access, std::string_view conference, uint32_t number, std::string_view user,
+      const domain::PersonalMessageFilterSet* filters);
   std::expected<domain::MessageDetail, domain::ApiError> Detail(storage::JamAccess& access, std::string_view conference,
-                                                                uint32_t number, std::string_view user);
+                                                                uint32_t number, std::string_view user,
+                                                                bool body = true);
   std::expected<void, domain::ApiError> RecordView(storage::JamAccess& access, std::string_view conference,
                                                    uint32_t number, std::string_view user,
                                                    domain::MessageDetail& detail);

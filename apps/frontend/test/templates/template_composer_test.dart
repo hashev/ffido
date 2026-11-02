@@ -16,6 +16,7 @@ import 'package:fido/repositories/conference_repository.dart';
 import 'package:fido/templates/template_settings.dart';
 
 import '../support/fake_transport.dart';
+import '../support/cross_area_reply.dart';
 
 Future<void> tap(WidgetTester tester, String text) async {
   await tester.ensureVisible(find.text(text));
@@ -104,6 +105,74 @@ void main() {
 
   Future<void> select(WidgetTester tester) async {
     await tap(tester, 'Тема');
+  }
+
+  for (final net in [true, false]) {
+    for (final quoted in [true, false]) {
+      testWidgets(
+        'cross-area template target net=$net quoted=$quoted and original context',
+        (tester) async {
+          final api = FakeTransport();
+          addTearDown(api.dispose);
+          await openReplySource(
+            tester,
+            api,
+            template: const TemplateBundle(
+              '@netNET\n@echoECHO\n@quotedQUOTE\n@replyREPLY\n@forwardFORWARD\n@newNEW\n@cecho|@oecho\n@quoted@quote',
+            ),
+          );
+          if (quoted) {
+            await replyTap(
+              tester,
+              net ? 'Ответить лично' : 'Ответить в другую область…',
+            );
+          } else {
+            await tester.ensureVisible(
+              find.byTooltip(
+                net ? 'Вид личного ответа' : 'Вид ответа в другую область',
+              ),
+            );
+            await tester.tap(
+              find.byTooltip(
+                net ? 'Вид личного ответа' : 'Вид ответа в другую область',
+              ),
+            );
+            await tester.pumpAndSettle();
+            await replyTap(tester, 'Без цитаты');
+          }
+          if (!net) await replyTap(tester, 'OTHER');
+          final text = field(tester, 'Текст');
+          expect(text, contains(net ? 'NET' : 'ECHO'));
+          expect(text, isNot(contains(net ? 'ECHO' : 'NET')));
+          expect(text, contains(quoted ? 'QUOTE' : 'REPLY'));
+          expect(text, contains('${net ? 'MAIL' : 'OTHER'}|SOURCE'));
+          expect(text, isNot(contains('FORWARD')));
+          expect(text, isNot(contains('NEW')));
+          expect(text.contains('ИП> Привет'), quoted);
+          replyField(tester, 'Текст').text = 'Ручная правка';
+          await tester.pump();
+          expect(field(tester, 'Текст'), 'Ручная правка');
+        },
+      );
+    }
+  }
+  for (final template in [null, const TemplateBundle('')]) {
+    testWidgets('cross-area default or empty template $template', (
+      tester,
+    ) async {
+      final api = FakeTransport();
+      addTearDown(api.dispose);
+      await openReplySource(tester, api, template: template);
+      await replyTap(tester, 'Ответить лично');
+      expect(
+        field(tester, 'Текст'),
+        template == null ? contains('ИП> Привет') : isEmpty,
+      );
+      expect(field(tester, 'Текст'), isNot(contains('Forwarded')));
+      if (template == null) {
+        expect(field(tester, 'Текст'), contains('Hello, Иван!'));
+      }
+    });
   }
 
   testWidgets('default applies to new drafts after update and reset', (

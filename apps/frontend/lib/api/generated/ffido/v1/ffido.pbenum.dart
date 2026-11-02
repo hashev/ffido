@@ -247,5 +247,58 @@ class MessageSearchField extends $pb.ProtobufEnum {
   const MessageSearchField._(super.value, super.name);
 }
 
+class TechnicalEncodingStatus extends $pb.ProtobufEnum {
+  static const TechnicalEncodingStatus TECHNICAL_ENCODING_STATUS_UNSPECIFIED =
+      TechnicalEncodingStatus._(
+          0, _omitEnumNames ? '' : 'TECHNICAL_ENCODING_STATUS_UNSPECIFIED');
+  static const TechnicalEncodingStatus TECHNICAL_ENCODING_STATUS_KNOWN =
+      TechnicalEncodingStatus._(
+          1, _omitEnumNames ? '' : 'TECHNICAL_ENCODING_STATUS_KNOWN');
+  static const TechnicalEncodingStatus TECHNICAL_ENCODING_STATUS_UNDETERMINED =
+      TechnicalEncodingStatus._(
+          2, _omitEnumNames ? '' : 'TECHNICAL_ENCODING_STATUS_UNDETERMINED');
+
+  static const $core.List<TechnicalEncodingStatus> values =
+      <TechnicalEncodingStatus>[
+    TECHNICAL_ENCODING_STATUS_UNSPECIFIED,
+    TECHNICAL_ENCODING_STATUS_KNOWN,
+    TECHNICAL_ENCODING_STATUS_UNDETERMINED,
+  ];
+
+  static final $core.List<TechnicalEncodingStatus?> _byValue =
+      $pb.ProtobufEnum.$_initByValueList(values, 2);
+  static TechnicalEncodingStatus? valueOf($core.int value) =>
+      value < 0 || value >= _byValue.length ? null : _byValue[value];
+
+  const TechnicalEncodingStatus._(super.value, super.name);
+}
+
+/// Персональное представление; не является ограничением доступа к FTN-письмам.
+class PersonalMessageFilterScope extends $pb.ProtobufEnum {
+  static const PersonalMessageFilterScope
+      PERSONAL_MESSAGE_FILTER_SCOPE_UNSPECIFIED = PersonalMessageFilterScope._(
+          0, _omitEnumNames ? '' : 'PERSONAL_MESSAGE_FILTER_SCOPE_UNSPECIFIED');
+  static const PersonalMessageFilterScope
+      PERSONAL_MESSAGE_FILTER_SCOPE_ALL_ECHOS = PersonalMessageFilterScope._(
+          1, _omitEnumNames ? '' : 'PERSONAL_MESSAGE_FILTER_SCOPE_ALL_ECHOS');
+  static const PersonalMessageFilterScope
+      PERSONAL_MESSAGE_FILTER_SCOPE_CONFERENCE = PersonalMessageFilterScope._(
+          2, _omitEnumNames ? '' : 'PERSONAL_MESSAGE_FILTER_SCOPE_CONFERENCE');
+
+  static const $core.List<PersonalMessageFilterScope> values =
+      <PersonalMessageFilterScope>[
+    PERSONAL_MESSAGE_FILTER_SCOPE_UNSPECIFIED,
+    PERSONAL_MESSAGE_FILTER_SCOPE_ALL_ECHOS,
+    PERSONAL_MESSAGE_FILTER_SCOPE_CONFERENCE,
+  ];
+
+  static final $core.List<PersonalMessageFilterScope?> _byValue =
+      $pb.ProtobufEnum.$_initByValueList(values, 2);
+  static PersonalMessageFilterScope? valueOf($core.int value) =>
+      value < 0 || value >= _byValue.length ? null : _byValue[value];
+
+  const PersonalMessageFilterScope._(super.value, super.name);
+}
+
 const $core.bool _omitEnumNames =
     $core.bool.fromEnvironment('protobuf.omit_enum_names');

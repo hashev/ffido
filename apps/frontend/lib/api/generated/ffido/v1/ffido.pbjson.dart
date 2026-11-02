@@ -165,6 +165,39 @@ final $typed_data.Uint8List messageSearchFieldDescriptor = $convert.base64Decode
     'hfVE9fQUREUkVTUxAEEhoKFk1FU1NBR0VfU0VBUkNIX1NVQkpFQ1QQBRIXChNNRVNTQUdFX1NF'
     'QVJDSF9CT0RZEAY=');
 
+@$core.Deprecated('Use technicalEncodingStatusDescriptor instead')
+const TechnicalEncodingStatus$json = {
+  '1': 'TechnicalEncodingStatus',
+  '2': [
+    {'1': 'TECHNICAL_ENCODING_STATUS_UNSPECIFIED', '2': 0},
+    {'1': 'TECHNICAL_ENCODING_STATUS_KNOWN', '2': 1},
+    {'1': 'TECHNICAL_ENCODING_STATUS_UNDETERMINED', '2': 2},
+  ],
+};
+
+/// Descriptor for `TechnicalEncodingStatus`. Decode as a `google.protobuf.EnumDescriptorProto`.
+final $typed_data.Uint8List technicalEncodingStatusDescriptor = $convert.base64Decode(
+    'ChdUZWNobmljYWxFbmNvZGluZ1N0YXR1cxIpCiVURUNITklDQUxfRU5DT0RJTkdfU1RBVFVTX1'
+    'VOU1BFQ0lGSUVEEAASIwofVEVDSE5JQ0FMX0VOQ09ESU5HX1NUQVRVU19LTk9XThABEioKJlRF'
+    'Q0hOSUNBTF9FTkNPRElOR19TVEFUVVNfVU5ERVRFUk1JTkVEEAI=');
+
+@$core.Deprecated('Use personalMessageFilterScopeDescriptor instead')
+const PersonalMessageFilterScope$json = {
+  '1': 'PersonalMessageFilterScope',
+  '2': [
+    {'1': 'PERSONAL_MESSAGE_FILTER_SCOPE_UNSPECIFIED', '2': 0},
+    {'1': 'PERSONAL_MESSAGE_FILTER_SCOPE_ALL_ECHOS', '2': 1},
+    {'1': 'PERSONAL_MESSAGE_FILTER_SCOPE_CONFERENCE', '2': 2},
+  ],
+};
+
+/// Descriptor for `PersonalMessageFilterScope`. Decode as a `google.protobuf.EnumDescriptorProto`.
+final $typed_data.Uint8List personalMessageFilterScopeDescriptor = $convert.base64Decode(
+    'ChpQZXJzb25hbE1lc3NhZ2VGaWx0ZXJTY29wZRItCilQRVJTT05BTF9NRVNTQUdFX0ZJTFRFUl'
+    '9TQ09QRV9VTlNQRUNJRklFRBAAEisKJ1BFUlNPTkFMX01FU1NBR0VfRklMVEVSX1NDT1BFX0FM'
+    'TF9FQ0hPUxABEiwKKFBFUlNPTkFMX01FU1NBR0VfRklMVEVSX1NDT1BFX0NPTkZFUkVOQ0UQAg'
+    '==');
+
 @$core.Deprecated('Use pageRequestDescriptor instead')
 const PageRequest$json = {
   '1': 'PageRequest',
@@ -350,6 +383,13 @@ const ListMessagesRequest$json = {
       '10': 'sort'
     },
     {'1': 'anchor_message_id', '3': 5, '4': 1, '5': 9, '10': 'anchorMessageId'},
+    {
+      '1': 'respect_personal_filters',
+      '3': 6,
+      '4': 1,
+      '5': 8,
+      '10': 'respectPersonalFilters'
+    },
   ],
 };
 
@@ -358,7 +398,8 @@ final $typed_data.Uint8List listMessagesRequestDescriptor = $convert.base64Decod
     'ChNMaXN0TWVzc2FnZXNSZXF1ZXN0EiMKDWNvbmZlcmVuY2VfaWQYASABKAlSDGNvbmZlcmVuY2'
     'VJZBIpCgRwYWdlGAIgASgLMhUuZmZpZG8udjEuUGFnZVJlcXVlc3RSBHBhZ2USFAoFcXVlcnkY'
     'AyABKAlSBXF1ZXJ5EikKBHNvcnQYBCABKA4yFS5mZmlkby52MS5NZXNzYWdlU29ydFIEc29ydB'
-    'IqChFhbmNob3JfbWVzc2FnZV9pZBgFIAEoCVIPYW5jaG9yTWVzc2FnZUlk');
+    'IqChFhbmNob3JfbWVzc2FnZV9pZBgFIAEoCVIPYW5jaG9yTWVzc2FnZUlkEjgKGHJlc3BlY3Rf'
+    'cGVyc29uYWxfZmlsdGVycxgGIAEoCFIWcmVzcGVjdFBlcnNvbmFsRmlsdGVycw==');
 
 @$core.Deprecated('Use messageReferenceDescriptor instead')
 const MessageReference$json = {
@@ -415,6 +456,14 @@ const Message$json = {
       '5': 4,
       '10': 'positionRevision'
     },
+    {
+      '1': 'personal_collapse',
+      '3': 18,
+      '4': 1,
+      '5': 11,
+      '6': '.ffido.v1.PersonalMessageCollapse',
+      '10': 'personalCollapse'
+    },
   ],
 };
 
@@ -430,7 +479,8 @@ final $typed_data.Uint8List messageDescriptor = $convert.base64Decode(
     'luUmVwbHlUbxIkCg5mdG5fbWVzc2FnZV9pZBgOIAEoCVIMZnRuTWVzc2FnZUlkEh4KCmF0dHJp'
     'YnV0ZXMYDyABKA1SCmF0dHJpYnV0ZXMSNQoJZGlyZWN0aW9uGBAgASgOMhcuZmZpZG8udjEuTW'
     'FpbERpcmVjdGlvblIJZGlyZWN0aW9uEisKEXBvc2l0aW9uX3JldmlzaW9uGBEgASgEUhBwb3Np'
-    'dGlvblJldmlzaW9u');
+    'dGlvblJldmlzaW9uEk4KEXBlcnNvbmFsX2NvbGxhcHNlGBIgASgLMiEuZmZpZG8udjEuUGVyc2'
+    '9uYWxNZXNzYWdlQ29sbGFwc2VSEHBlcnNvbmFsQ29sbGFwc2U=');
 
 @$core.Deprecated('Use listMessagesResponseDescriptor instead')
 const ListMessagesResponse$json = {
@@ -630,6 +680,13 @@ const GetThreadRequest$json = {
       '6': '.ffido.v1.PageRequest',
       '10': 'page'
     },
+    {
+      '1': 'respect_personal_filters',
+      '3': 4,
+      '4': 1,
+      '5': 8,
+      '10': 'respectPersonalFilters'
+    },
   ],
 };
 
@@ -637,7 +694,8 @@ const GetThreadRequest$json = {
 final $typed_data.Uint8List getThreadRequestDescriptor = $convert.base64Decode(
     'ChBHZXRUaHJlYWRSZXF1ZXN0EiMKDWNvbmZlcmVuY2VfaWQYASABKAlSDGNvbmZlcmVuY2VJZB'
     'IbCgl0aHJlYWRfaWQYAiABKAlSCHRocmVhZElkEikKBHBhZ2UYAyABKAsyFS5mZmlkby52MS5Q'
-    'YWdlUmVxdWVzdFIEcGFnZQ==');
+    'YWdlUmVxdWVzdFIEcGFnZRI4ChhyZXNwZWN0X3BlcnNvbmFsX2ZpbHRlcnMYBCABKAhSFnJlc3'
+    'BlY3RQZXJzb25hbEZpbHRlcnM=');
 
 @$core.Deprecated('Use bookmarkDescriptor instead')
 const Bookmark$json = {
@@ -1266,6 +1324,13 @@ const FindMessageRequest$json = {
     },
     {'1': 'start_message_id', '3': 5, '4': 1, '5': 9, '10': 'startMessageId'},
     {'1': 'include_start', '3': 6, '4': 1, '5': 8, '10': 'includeStart'},
+    {
+      '1': 'respect_personal_filters',
+      '3': 7,
+      '4': 1,
+      '5': 8,
+      '10': 'respectPersonalFilters'
+    },
   ],
 };
 
@@ -1275,7 +1340,8 @@ final $typed_data.Uint8List findMessageRequestDescriptor = $convert.base64Decode
     'lkEhQKBXF1ZXJ5GAIgASgJUgVxdWVyeRIyCgVzY29wZRgDIAEoDjIcLmZmaWRvLnYxLk1lc3Nh'
     'Z2VTZWFyY2hTY29wZVIFc2NvcGUSKQoEc29ydBgEIAEoDjIVLmZmaWRvLnYxLk1lc3NhZ2VTb3'
     'J0UgRzb3J0EigKEHN0YXJ0X21lc3NhZ2VfaWQYBSABKAlSDnN0YXJ0TWVzc2FnZUlkEiMKDWlu'
-    'Y2x1ZGVfc3RhcnQYBiABKAhSDGluY2x1ZGVTdGFydA==');
+    'Y2x1ZGVfc3RhcnQYBiABKAhSDGluY2x1ZGVTdGFydBI4ChhyZXNwZWN0X3BlcnNvbmFsX2ZpbH'
+    'RlcnMYByABKAhSFnJlc3BlY3RQZXJzb25hbEZpbHRlcnM=');
 
 @$core.Deprecated('Use searchMatchDescriptor instead')
 const SearchMatch$json = {
@@ -1328,3 +1394,294 @@ final $typed_data.Uint8List findMessageResponseDescriptor = $convert.base64Decod
     'ChNGaW5kTWVzc2FnZVJlc3BvbnNlEisKB21lc3NhZ2UYASABKAsyES5mZmlkby52MS5NZXNzYW'
     'dlUgdtZXNzYWdlEi8KB21hdGNoZXMYAiADKAsyFS5mZmlkby52MS5TZWFyY2hNYXRjaFIHbWF0'
     'Y2hlcw==');
+
+@$core.Deprecated('Use messageTechnicalSubfieldDescriptor instead')
+const MessageTechnicalSubfield$json = {
+  '1': 'MessageTechnicalSubfield',
+  '2': [
+    {'1': 'low_id', '3': 1, '4': 1, '5': 13, '10': 'lowId'},
+    {'1': 'high_id', '3': 2, '4': 1, '5': 13, '10': 'highId'},
+    {'1': 'value', '3': 3, '4': 1, '5': 12, '10': 'value'},
+  ],
+};
+
+/// Descriptor for `MessageTechnicalSubfield`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List messageTechnicalSubfieldDescriptor =
+    $convert.base64Decode(
+        'ChhNZXNzYWdlVGVjaG5pY2FsU3ViZmllbGQSFQoGbG93X2lkGAEgASgNUgVsb3dJZBIXCgdoaW'
+        'doX2lkGAIgASgNUgZoaWdoSWQSFAoFdmFsdWUYAyABKAxSBXZhbHVl');
+
+@$core.Deprecated('Use messageTechnicalDataDescriptor instead')
+const MessageTechnicalData$json = {
+  '1': 'MessageTechnicalData',
+  '2': [
+    {
+      '1': 'message',
+      '3': 1,
+      '4': 1,
+      '5': 11,
+      '6': '.ffido.v1.MessageReference',
+      '10': 'message'
+    },
+    {'1': 'attributes', '3': 2, '4': 1, '5': 13, '10': 'attributes'},
+    {'1': 'attributes2', '3': 3, '4': 1, '5': 13, '10': 'attributes2'},
+    {
+      '1': 'subfields',
+      '3': 4,
+      '4': 3,
+      '5': 11,
+      '6': '.ffido.v1.MessageTechnicalSubfield',
+      '10': 'subfields'
+    },
+    {
+      '1': 'encoding_status',
+      '3': 5,
+      '4': 1,
+      '5': 14,
+      '6': '.ffido.v1.TechnicalEncodingStatus',
+      '10': 'encodingStatus'
+    },
+    {
+      '1': 'effective_encoding',
+      '3': 6,
+      '4': 1,
+      '5': 9,
+      '10': 'effectiveEncoding'
+    },
+  ],
+};
+
+/// Descriptor for `MessageTechnicalData`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List messageTechnicalDataDescriptor = $convert.base64Decode(
+    'ChRNZXNzYWdlVGVjaG5pY2FsRGF0YRI0CgdtZXNzYWdlGAEgASgLMhouZmZpZG8udjEuTWVzc2'
+    'FnZVJlZmVyZW5jZVIHbWVzc2FnZRIeCgphdHRyaWJ1dGVzGAIgASgNUgphdHRyaWJ1dGVzEiAK'
+    'C2F0dHJpYnV0ZXMyGAMgASgNUgthdHRyaWJ1dGVzMhJACglzdWJmaWVsZHMYBCADKAsyIi5mZm'
+    'lkby52MS5NZXNzYWdlVGVjaG5pY2FsU3ViZmllbGRSCXN1YmZpZWxkcxJKCg9lbmNvZGluZ19z'
+    'dGF0dXMYBSABKA4yIS5mZmlkby52MS5UZWNobmljYWxFbmNvZGluZ1N0YXR1c1IOZW5jb2Rpbm'
+    'dTdGF0dXMSLQoSZWZmZWN0aXZlX2VuY29kaW5nGAYgASgJUhFlZmZlY3RpdmVFbmNvZGluZw==');
+
+@$core.Deprecated('Use personalMessageFilterDescriptor instead')
+const PersonalMessageFilter$json = {
+  '1': 'PersonalMessageFilter',
+  '2': [
+    {'1': 'rule_id', '3': 1, '4': 1, '5': 9, '10': 'ruleId'},
+    {'1': 'enabled', '3': 2, '4': 1, '5': 8, '10': 'enabled'},
+    {
+      '1': 'scope',
+      '3': 3,
+      '4': 1,
+      '5': 14,
+      '6': '.ffido.v1.PersonalMessageFilterScope',
+      '10': 'scope'
+    },
+    {'1': 'conference_id', '3': 4, '4': 1, '5': 9, '10': 'conferenceId'},
+    {'1': 'author_contains', '3': 5, '4': 1, '5': 9, '10': 'authorContains'},
+    {'1': 'address_equals', '3': 6, '4': 1, '5': 9, '10': 'addressEquals'},
+    {'1': 'subject_contains', '3': 7, '4': 1, '5': 9, '10': 'subjectContains'},
+  ],
+};
+
+/// Descriptor for `PersonalMessageFilter`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List personalMessageFilterDescriptor = $convert.base64Decode(
+    'ChVQZXJzb25hbE1lc3NhZ2VGaWx0ZXISFwoHcnVsZV9pZBgBIAEoCVIGcnVsZUlkEhgKB2VuYW'
+    'JsZWQYAiABKAhSB2VuYWJsZWQSOgoFc2NvcGUYAyABKA4yJC5mZmlkby52MS5QZXJzb25hbE1l'
+    'c3NhZ2VGaWx0ZXJTY29wZVIFc2NvcGUSIwoNY29uZmVyZW5jZV9pZBgEIAEoCVIMY29uZmVyZW'
+    '5jZUlkEicKD2F1dGhvcl9jb250YWlucxgFIAEoCVIOYXV0aG9yQ29udGFpbnMSJQoOYWRkcmVz'
+    'c19lcXVhbHMYBiABKAlSDWFkZHJlc3NFcXVhbHMSKQoQc3ViamVjdF9jb250YWlucxgHIAEoCV'
+    'IPc3ViamVjdENvbnRhaW5z');
+
+@$core.Deprecated('Use personalMessageFilterSetDescriptor instead')
+const PersonalMessageFilterSet$json = {
+  '1': 'PersonalMessageFilterSet',
+  '2': [
+    {'1': 'revision', '3': 1, '4': 1, '5': 4, '10': 'revision'},
+    {
+      '1': 'rules',
+      '3': 2,
+      '4': 3,
+      '5': 11,
+      '6': '.ffido.v1.PersonalMessageFilter',
+      '10': 'rules'
+    },
+  ],
+};
+
+/// Descriptor for `PersonalMessageFilterSet`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List personalMessageFilterSetDescriptor = $convert.base64Decode(
+    'ChhQZXJzb25hbE1lc3NhZ2VGaWx0ZXJTZXQSGgoIcmV2aXNpb24YASABKARSCHJldmlzaW9uEj'
+    'UKBXJ1bGVzGAIgAygLMh8uZmZpZG8udjEuUGVyc29uYWxNZXNzYWdlRmlsdGVyUgVydWxlcw==');
+
+@$core.Deprecated('Use replacePersonalMessageFiltersRequestDescriptor instead')
+const ReplacePersonalMessageFiltersRequest$json = {
+  '1': 'ReplacePersonalMessageFiltersRequest',
+  '2': [
+    {
+      '1': 'expected_revision',
+      '3': 1,
+      '4': 1,
+      '5': 4,
+      '10': 'expectedRevision'
+    },
+    {'1': 'operation_id', '3': 2, '4': 1, '5': 9, '10': 'operationId'},
+    {
+      '1': 'rules',
+      '3': 3,
+      '4': 3,
+      '5': 11,
+      '6': '.ffido.v1.PersonalMessageFilter',
+      '10': 'rules'
+    },
+  ],
+};
+
+/// Descriptor for `ReplacePersonalMessageFiltersRequest`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List replacePersonalMessageFiltersRequestDescriptor =
+    $convert.base64Decode(
+        'CiRSZXBsYWNlUGVyc29uYWxNZXNzYWdlRmlsdGVyc1JlcXVlc3QSKwoRZXhwZWN0ZWRfcmV2aX'
+        'Npb24YASABKARSEGV4cGVjdGVkUmV2aXNpb24SIQoMb3BlcmF0aW9uX2lkGAIgASgJUgtvcGVy'
+        'YXRpb25JZBI1CgVydWxlcxgDIAMoCzIfLmZmaWRvLnYxLlBlcnNvbmFsTWVzc2FnZUZpbHRlcl'
+        'IFcnVsZXM=');
+
+@$core.Deprecated('Use replacePersonalMessageFiltersResponseDescriptor instead')
+const ReplacePersonalMessageFiltersResponse$json = {
+  '1': 'ReplacePersonalMessageFiltersResponse',
+  '2': [
+    {'1': 'revision', '3': 1, '4': 1, '5': 4, '10': 'revision'},
+  ],
+};
+
+/// Descriptor for `ReplacePersonalMessageFiltersResponse`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List replacePersonalMessageFiltersResponseDescriptor =
+    $convert.base64Decode(
+        'CiVSZXBsYWNlUGVyc29uYWxNZXNzYWdlRmlsdGVyc1Jlc3BvbnNlEhoKCHJldmlzaW9uGAEgAS'
+        'gEUghyZXZpc2lvbg==');
+
+@$core.Deprecated('Use personalMessageCollapseDescriptor instead')
+const PersonalMessageCollapse$json = {
+  '1': 'PersonalMessageCollapse',
+  '2': [
+    {'1': 'rules_revision', '3': 1, '4': 1, '5': 4, '10': 'rulesRevision'},
+    {'1': 'matched_rule_ids', '3': 2, '4': 3, '5': 9, '10': 'matchedRuleIds'},
+  ],
+};
+
+/// Descriptor for `PersonalMessageCollapse`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List personalMessageCollapseDescriptor = $convert.base64Decode(
+    'ChdQZXJzb25hbE1lc3NhZ2VDb2xsYXBzZRIlCg5ydWxlc19yZXZpc2lvbhgBIAEoBFINcnVsZX'
+    'NSZXZpc2lvbhIoChBtYXRjaGVkX3J1bGVfaWRzGAIgAygJUg5tYXRjaGVkUnVsZUlkcw==');
+
+@$core.Deprecated('Use getMessagePresentationRequestDescriptor instead')
+const GetMessagePresentationRequest$json = {
+  '1': 'GetMessagePresentationRequest',
+  '2': [
+    {
+      '1': 'message',
+      '3': 1,
+      '4': 1,
+      '5': 11,
+      '6': '.ffido.v1.MessageReference',
+      '10': 'message'
+    },
+    {'1': 'reveal', '3': 2, '4': 1, '5': 8, '10': 'reveal'},
+    {'1': 'search_query', '3': 3, '4': 1, '5': 9, '10': 'searchQuery'},
+    {
+      '1': 'search_scope',
+      '3': 4,
+      '4': 1,
+      '5': 14,
+      '6': '.ffido.v1.MessageSearchScope',
+      '10': 'searchScope'
+    },
+  ],
+};
+
+/// Descriptor for `GetMessagePresentationRequest`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List getMessagePresentationRequestDescriptor = $convert.base64Decode(
+    'Ch1HZXRNZXNzYWdlUHJlc2VudGF0aW9uUmVxdWVzdBI0CgdtZXNzYWdlGAEgASgLMhouZmZpZG'
+    '8udjEuTWVzc2FnZVJlZmVyZW5jZVIHbWVzc2FnZRIWCgZyZXZlYWwYAiABKAhSBnJldmVhbBIh'
+    'CgxzZWFyY2hfcXVlcnkYAyABKAlSC3NlYXJjaFF1ZXJ5Ej8KDHNlYXJjaF9zY29wZRgEIAEoDj'
+    'IcLmZmaWRvLnYxLk1lc3NhZ2VTZWFyY2hTY29wZVILc2VhcmNoU2NvcGU=');
+
+@$core.Deprecated('Use collapsedMessageHeadersDescriptor instead')
+const CollapsedMessageHeaders$json = {
+  '1': 'CollapsedMessageHeaders',
+  '2': [
+    {
+      '1': 'message',
+      '3': 1,
+      '4': 1,
+      '5': 11,
+      '6': '.ffido.v1.MessageReference',
+      '10': 'message'
+    },
+    {'1': 'from_name', '3': 2, '4': 1, '5': 9, '10': 'fromName'},
+    {'1': 'from_address', '3': 3, '4': 1, '5': 9, '10': 'fromAddress'},
+    {'1': 'subject', '3': 4, '4': 1, '5': 9, '10': 'subject'},
+    {
+      '1': 'date',
+      '3': 5,
+      '4': 1,
+      '5': 11,
+      '6': '.google.protobuf.Timestamp',
+      '10': 'date'
+    },
+    {'1': 'is_read', '3': 6, '4': 1, '5': 8, '10': 'isRead'},
+    {'1': 'thread_id', '3': 7, '4': 1, '5': 9, '10': 'threadId'},
+    {'1': 'in_reply_to', '3': 8, '4': 1, '5': 9, '10': 'inReplyTo'},
+  ],
+};
+
+/// Descriptor for `CollapsedMessageHeaders`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List collapsedMessageHeadersDescriptor = $convert.base64Decode(
+    'ChdDb2xsYXBzZWRNZXNzYWdlSGVhZGVycxI0CgdtZXNzYWdlGAEgASgLMhouZmZpZG8udjEuTW'
+    'Vzc2FnZVJlZmVyZW5jZVIHbWVzc2FnZRIbCglmcm9tX25hbWUYAiABKAlSCGZyb21OYW1lEiEK'
+    'DGZyb21fYWRkcmVzcxgDIAEoCVILZnJvbUFkZHJlc3MSGAoHc3ViamVjdBgEIAEoCVIHc3Viam'
+    'VjdBIuCgRkYXRlGAUgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcFIEZGF0ZRIXCgdp'
+    'c19yZWFkGAYgASgIUgZpc1JlYWQSGwoJdGhyZWFkX2lkGAcgASgJUgh0aHJlYWRJZBIeCgtpbl'
+    '9yZXBseV90bxgIIAEoCVIJaW5SZXBseVRv');
+
+@$core.Deprecated('Use messagePresentationDescriptor instead')
+const MessagePresentation$json = {
+  '1': 'MessagePresentation',
+  '2': [
+    {'1': 'rules_revision', '3': 1, '4': 1, '5': 4, '10': 'rulesRevision'},
+    {'1': 'matched_rule_ids', '3': 2, '4': 3, '5': 9, '10': 'matchedRuleIds'},
+    {
+      '1': 'visible',
+      '3': 3,
+      '4': 1,
+      '5': 11,
+      '6': '.ffido.v1.Message',
+      '9': 0,
+      '10': 'visible'
+    },
+    {
+      '1': 'collapsed',
+      '3': 4,
+      '4': 1,
+      '5': 11,
+      '6': '.ffido.v1.CollapsedMessageHeaders',
+      '9': 0,
+      '10': 'collapsed'
+    },
+    {
+      '1': 'matches',
+      '3': 5,
+      '4': 3,
+      '5': 11,
+      '6': '.ffido.v1.SearchMatch',
+      '10': 'matches'
+    },
+  ],
+  '8': [
+    {'1': 'content'},
+  ],
+};
+
+/// Descriptor for `MessagePresentation`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List messagePresentationDescriptor = $convert.base64Decode(
+    'ChNNZXNzYWdlUHJlc2VudGF0aW9uEiUKDnJ1bGVzX3JldmlzaW9uGAEgASgEUg1ydWxlc1Jldm'
+    'lzaW9uEigKEG1hdGNoZWRfcnVsZV9pZHMYAiADKAlSDm1hdGNoZWRSdWxlSWRzEi0KB3Zpc2li'
+    'bGUYAyABKAsyES5mZmlkby52MS5NZXNzYWdlSABSB3Zpc2libGUSQQoJY29sbGFwc2VkGAQgAS'
+    'gLMiEuZmZpZG8udjEuQ29sbGFwc2VkTWVzc2FnZUhlYWRlcnNIAFIJY29sbGFwc2VkEi8KB21h'
+    'dGNoZXMYBSADKAsyFS5mZmlkby52MS5TZWFyY2hNYXRjaFIHbWF0Y2hlc0IJCgdjb250ZW50');

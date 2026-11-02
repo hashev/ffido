@@ -54,3 +54,31 @@ TEST(MessageSearch, EffectiveEncodingUsesFallbackAliasesChrsAndOverride) {
   msgapi::JamMessageBase utf8("unused", "UTF-8", true);
   EXPECT_EQ(*utf8.EffectiveEncoding(message), "UTF-8");
 }
+
+#include "service/personal_filters.hpp"
+TEST(PersonalFilters, LiteralConjunctionScopeAndNumericAddress) {
+  domain::PersonalMessageFilterSet set;
+  set.rules = {{"one", true, 1, "", "ИВАН", "2:1/2", ".*[ТЕМА]"},
+               {"two", true, 2, "B", "ЁЖ", "", ""},
+               {"off", false, 1, "", "", "", ""}};
+  auto match = service::MatchPersonalFilters(set, "A", true, "Иван", "2:1/2.0", "Re: .*[тема]");
+  ASSERT_TRUE(match);
+  EXPECT_EQ(*match, (std::vector<std::string>{"one"}));
+  EXPECT_TRUE(service::MatchPersonalFilters(set, "A", true, "Иван", "2:1/20", ".*[ТЕМА]")->empty());
+  EXPECT_TRUE(service::MatchPersonalFilters(set, "A", true, "Иван", "", ".*[ТЕМА]")->empty());
+  EXPECT_TRUE(service::MatchPersonalFilters(set, "A", true, "ёж", "", "x")->empty());
+  EXPECT_EQ(*service::MatchPersonalFilters(set, "B", true, "ёж", "", "x"), (std::vector<std::string>{"two"}));
+  EXPECT_TRUE(service::MatchPersonalFilters(set, "B", false, "ёж", "", "x")->empty());
+  set.rules = {{"mixed", true, 1, "", "Новый", "", ""}};
+  EXPECT_TRUE(service::MatchPersonalFilters(set, "A", true, "Hовый", "", "")->empty());
+}
+TEST(PersonalFilters, UnicodeWhitespaceAndInvalidUtf8) {
+  std::string value = "\xc2\xa0Иван\xe3\x80\x80";
+  ASSERT_TRUE(service::TrimPersonalFilterText(value));
+  EXPECT_EQ(value, "Иван");
+  value = "\xc2\xa0\t ";
+  ASSERT_TRUE(service::TrimPersonalFilterText(value));
+  EXPECT_TRUE(value.empty());
+  value = std::string("\xff", 1);
+  EXPECT_FALSE(service::TrimPersonalFilterText(value));
+}

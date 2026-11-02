@@ -1,3 +1,5 @@
+import 'personal_message_filters_screen.dart';
+import '../repositories/personal_message_filters_repository.dart';
 import '../utils/refresh_on_resume.dart';
 
 import 'dart:async';
@@ -75,6 +77,20 @@ class _ProfileScreenState extends State<ProfileScreen>
     appBar: AppBar(
       title: const Text('Профиль'),
       actions: [
+        IconButton(
+          tooltip: 'Персональные фильтры',
+          icon: const Icon(Icons.filter_alt_outlined),
+          onPressed: () => Navigator.push(
+            context,
+            MaterialPageRoute<void>(
+              builder: (_) => PersonalMessageFiltersScreen(
+                repository: PersonalMessageFiltersRepository(
+                  _repository.transport,
+                ),
+              ),
+            ),
+          ),
+        ),
         IconButton(
           onPressed: _load,
           icon: const Icon(Icons.refresh),

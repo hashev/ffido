@@ -1,3 +1,5 @@
+import 'package:flutter/services.dart';
+
 import 'dart:async';
 
 import 'package:fixnum/fixnum.dart';
@@ -55,6 +57,29 @@ Future<void> close(WidgetTester tester) async {
 }
 
 void main() {
+  testWidgets(
+    'catalog help works offline and shows reader scope without extra calls',
+    (tester) async {
+      final pending = await start(tester);
+      pending.single.fail();
+      await tester.pumpAndSettle();
+      await tester.sendKeyEvent(LogicalKeyboardKey.f1);
+      await tester.pumpAndSettle();
+      expect(find.text('Горячие клавиши'), findsOneWidget);
+      expect(find.text('Доступно в экране чтения'), findsNWidgets(5));
+      expect(find.text('Новое письмо — Ctrl+N'), findsOneWidget);
+      expect(pending, hasLength(1));
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('Горячие клавиши (F1)'));
+      await tester.pumpAndSettle();
+      expect(find.byType(AlertDialog), findsOneWidget);
+      await tester.tap(find.text('Закрыть'));
+      await tester.pumpAndSettle();
+      await close(tester);
+    },
+    variant: TargetPlatformVariant.only(TargetPlatform.windows),
+  );
   testWidgets(
     'cached first page is explicitly incomplete and can retry full catalog',
     (tester) async {

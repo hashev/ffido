@@ -24,6 +24,37 @@ TEST(Contract, UnicodeAndTimestampRoundTrip) {
   EXPECT_EQ(decoded.date().nanos(), 123456789);
 }
 
+TEST(Contract, TechnicalDataPreservesRawFieldsAndHasNoIdentityOverride) {
+  using namespace ffido::v1;
+  MessageTechnicalData value;
+  value.mutable_message()->set_conference_id("ECHO");
+  value.mutable_message()->set_message_id("generation#1");
+  value.set_attributes(0x80000008u);
+  value.set_attributes2(0xffffffffu);
+  for (const auto& bytes : {std::string{}, std::string("A\0\xff", 3), std::string("A\0\xff", 3)}) {
+    auto* field = value.add_subfields();
+    field->set_low_id(2000);
+    field->set_high_id(3);
+    field->set_value(bytes);
+  }
+  MessageTechnicalData decoded;
+  ASSERT_TRUE(decoded.ParseFromString(value.SerializeAsString()));
+  EXPECT_EQ(decoded.SerializeAsString(), value.SerializeAsString());
+  EXPECT_EQ(decoded.attributes(), 0x80000008u);
+  EXPECT_EQ(decoded.attributes2(), 0xffffffffu);
+  ASSERT_EQ(decoded.subfields_size(), 3);
+  EXPECT_TRUE(decoded.subfields(0).value().empty());
+  EXPECT_EQ(decoded.subfields(1).value(), std::string("A\0\xff", 3));
+  const auto* service =
+      google::protobuf::DescriptorPool::generated_pool()->FindServiceByName("ffido.v1.Ffido");
+  ASSERT_NE(service->FindMethodByName("GetMessageTechnicalData"), nullptr);
+  EXPECT_EQ(service->FindMethodByName("GetMessageTechnicalData")->input_type(),
+            MessageReference::descriptor());
+  EXPECT_EQ(MessageReference::descriptor()->field_count(), 2);
+  EXPECT_EQ(Message::descriptor()->FindFieldByName("attributes")->number(), 15);
+  EXPECT_EQ(Message::descriptor()->FindFieldByName("ftn_message_id")->number(), 14);
+}
+
 TEST(Contract, EmptyOperationResponseHasNoPayload) {
   google::protobuf::Empty response;
   EXPECT_TRUE(response.SerializeAsString().empty());
@@ -63,16 +94,20 @@ TEST(Contract, RpcSurfaceAndTrustedIdentity) {
   const auto* service =
       google::protobuf::DescriptorPool::generated_pool()->FindServiceByName("ffido.v1.Ffido");
   ASSERT_NE(service, nullptr);
-  EXPECT_EQ(service->method_count(), 27);
+  EXPECT_EQ(service->method_count(), 31);
   ASSERT_NE(service->FindMethodByName("FindMessage"), nullptr);
-  EXPECT_EQ(service->FindMethodByName("FindMessage")->input_type(), ffido::v1::FindMessageRequest::descriptor());
-  EXPECT_EQ(service->FindMethodByName("FindMessage")->output_type(), ffido::v1::FindMessageResponse::descriptor());
+  EXPECT_EQ(service->FindMethodByName("FindMessage")->input_type(),
+            ffido::v1::FindMessageRequest::descriptor());
+  EXPECT_EQ(service->FindMethodByName("FindMessage")->output_type(),
+            ffido::v1::FindMessageResponse::descriptor());
   EXPECT_EQ(ffido::v1::FindMessageRequest::descriptor()->FindFieldByName("user_id"), nullptr);
   EXPECT_EQ(service->FindMethodByName("MarkRead")->output_type()->full_name(),
             "google.protobuf.Empty");
   ASSERT_NE(service->FindMethodByName("MarkUnread"), nullptr);
-  EXPECT_EQ(service->FindMethodByName("MarkUnread")->input_type(), ffido::v1::MessageReference::descriptor());
-  EXPECT_EQ(service->FindMethodByName("MarkUnread")->output_type()->full_name(), "google.protobuf.Empty");
+  EXPECT_EQ(service->FindMethodByName("MarkUnread")->input_type(),
+            ffido::v1::MessageReference::descriptor());
+  EXPECT_EQ(service->FindMethodByName("MarkUnread")->output_type()->full_name(),
+            "google.protobuf.Empty");
   const auto* request = ffido::v1::CreateMessageRequest::descriptor();
   EXPECT_NE(request->FindFieldByName("operation_id"), nullptr);
   EXPECT_EQ(request->FindFieldByName("user_id"), nullptr);
@@ -151,3 +186,31 @@ TEST(Contract, UueExtensionHasNoIdentityOrFilesystemOverride) {
 }
 
 }  // namespace
+
+TEST(Contract, PersonalFiltersAreAdditiveAndPresentationIsExplicit) {
+  using namespace ffido::v1;
+  EXPECT_FALSE(ListMessagesRequest{}.respect_personal_filters());
+  EXPECT_FALSE(GetThreadRequest{}.respect_personal_filters());
+  EXPECT_FALSE(FindMessageRequest{}.respect_personal_filters());
+  EXPECT_FALSE(GetMessagePresentationRequest{}.reveal());
+  ReplacePersonalMessageFiltersRequest request;
+  request.set_expected_revision(UINT64_MAX);
+  request.set_operation_id("operation");
+  request.add_rules()->set_rule_id("rule");
+  ReplacePersonalMessageFiltersRequest decoded;
+  ASSERT_TRUE(decoded.ParseFromString(request.SerializeAsString()));
+  EXPECT_EQ(decoded.expected_revision(), UINT64_MAX);
+  EXPECT_EQ(MessageReference::descriptor()->field_count(), 2);
+  EXPECT_EQ(Message::descriptor()->FindFieldByName("position_revision")->number(), 17);
+  MessagePresentation presentation;
+  EXPECT_EQ(presentation.content_case(), MessagePresentation::CONTENT_NOT_SET);
+  presentation.mutable_visible()->set_body("text");
+  presentation.mutable_collapsed()->mutable_message()->set_message_id("g#1");
+  EXPECT_FALSE(presentation.has_visible());
+  EXPECT_TRUE(presentation.has_collapsed());
+  for (const auto* descriptor : {ReplacePersonalMessageFiltersRequest::descriptor(),
+                                 GetMessagePresentationRequest::descriptor()}) {
+    EXPECT_EQ(descriptor->FindFieldByName("user_id"), nullptr);
+    EXPECT_EQ(descriptor->FindFieldByName("profile"), nullptr);
+  }
+}

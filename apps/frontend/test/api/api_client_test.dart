@@ -1,3 +1,5 @@
+import 'package:fixnum/fixnum.dart';
+
 import 'dart:async';
 import 'dart:convert';
 
@@ -11,6 +13,56 @@ import 'package:fido/api/api_exceptions.dart';
 import 'package:fido/api/generated/ffido/v1/ffido.pbgrpc.dart' as wire;
 
 class TestService extends wire.FfidoServiceBase {
+  @override
+  Future<wire.PersonalMessageFilterSet> getPersonalMessageFilters(
+    grpc.ServiceCall c,
+    Empty r,
+  ) async {
+    await before(c);
+    return wire.PersonalMessageFilterSet();
+  }
+
+  @override
+  Future<wire.ReplacePersonalMessageFiltersResponse>
+  replacePersonalMessageFilters(
+    grpc.ServiceCall c,
+    wire.ReplacePersonalMessageFiltersRequest r,
+  ) async {
+    await before(c);
+    return wire.ReplacePersonalMessageFiltersResponse(
+      revision: r.expectedRevision + Int64.ONE,
+    );
+  }
+
+  @override
+  Future<wire.MessagePresentation> getMessagePresentation(
+    grpc.ServiceCall c,
+    wire.GetMessagePresentationRequest r,
+  ) async {
+    await before(c);
+    return wire.MessagePresentation();
+  }
+
+  final technicalFailures = <grpc.GrpcError>[];
+  @override
+  Future<wire.MessageTechnicalData> getMessageTechnicalData(
+    grpc.ServiceCall c,
+    wire.MessageReference r,
+  ) async {
+    await before(c);
+    if (technicalFailures.isNotEmpty) throw technicalFailures.removeAt(0);
+    return wire.MessageTechnicalData(
+      message: r,
+      attributes: 0x80000008,
+      attributes2: 0xffffffff,
+      subfields: [
+        wire.MessageTechnicalSubfield(lowId: 2000, highId: 9, value: [0, 255]),
+      ],
+      encodingStatus:
+          wire.TechnicalEncodingStatus.TECHNICAL_ENCODING_STATUS_UNDETERMINED,
+    );
+  }
+
   @override
   Future<wire.FindMessageResponse> findMessage(
     grpc.ServiceCall c,
@@ -294,6 +346,69 @@ void main() {
     await client.dispose();
     await server.shutdown();
   });
+  test(
+    'personal filters authenticate read and CAS mutation does not retry',
+    () async {
+      await client.getPersonalMessageFilters();
+      expect(service.authorization, 'Bearer $token');
+      final before = service.calls;
+      service.failure = const grpc.GrpcError.unavailable();
+      await expectLater(
+        client.replacePersonalMessageFilters(
+          wire.ReplacePersonalMessageFiltersRequest(operationId: 'same'),
+        ),
+        throwsA(isA<NetworkException>()),
+      );
+      expect(service.calls, before + 1);
+    },
+  );
+  test('technical RPC is authenticated, binary-safe and retries reads only within limit', () async {
+    service.technicalFailures.add(const grpc.GrpcError.unavailable());
+    final result = await client.getMessageTechnicalData(
+      wire.MessageReference(conferenceId: 'ECHO', messageId: 'g#1'),
+    );
+    expect(service.calls, 2);
+    expect(service.authorization, 'Bearer $token');
+    expect(result.message.messageId, 'g#1');
+    expect(result.attributes2, 0xffffffff);
+    expect(result.subfields.single.value, [0, 255]);
+    service.calls = 0;
+    service.technicalFailures.addAll(
+      List.filled(3, const grpc.GrpcError.unavailable()),
+    );
+    await expectLater(
+      client.getMessageTechnicalData(wire.MessageReference()),
+      throwsA(isA<NetworkException>()),
+    );
+    expect(service.calls, 2);
+  });
+  test(
+    'technical RPC reports unimplemented with method and does not retry',
+    () async {
+      service.technicalFailures.add(const grpc.GrpcError.unimplemented());
+      await expectLater(
+        client.getMessageTechnicalData(wire.MessageReference()),
+        throwsA(
+          isA<ApiException>()
+              .having((e) => e.statusCode, 'status', 12)
+              .having((e) => e.rpcName, 'method', 'GetMessageTechnicalData'),
+        ),
+      );
+      expect(service.calls, 1);
+    },
+  );
+  test('technical RPC cancellation rejects pending response', () async {
+    service.barrier = Completer<void>();
+    final cancellation = RpcCancellation();
+    final future = client.getMessageTechnicalData(
+      wire.MessageReference(),
+      cancellation: cancellation,
+    );
+    final checked = expectLater(future, throwsA(isA<CancelledException>()));
+    await Future<void>.delayed(const Duration(milliseconds: 30));
+    await cancellation.cancel();
+    await checked;
+  });
   test('crosspost RPC maps complete copy references without single-message fallback', () async {
     final result = await client.createCrosspost(
       wire.CreateCrosspostRequest(
@@ -411,8 +526,30 @@ void main() {
       ),
     );
     await client.setAuthToken(token);
-    service.barrier = Completer<void>();
-    await expectLater(client.getProfile(), throwsA(isA<DeadlineException>()));
+    // Release each stalled handler before checking another method.
+    Future<void> deadline(Future<Object> Function() invoke) async {
+      service.barrier = Completer<void>();
+      await expectLater(invoke(), throwsA(isA<DeadlineException>()));
+      service.barrier!.complete();
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+    }
+
+    await deadline(() => client.getProfile());
+    await deadline(
+      () => client.getMessageTechnicalData(
+        wire.MessageReference(conferenceId: 'E', messageId: 'g#1'),
+      ),
+    );
+    await deadline(() => client.getPersonalMessageFilters());
+    await deadline(
+      () => client.getMessagePresentation(wire.GetMessagePresentationRequest()),
+    );
+    await deadline(
+      () => client.replacePersonalMessageFilters(
+        wire.ReplacePersonalMessageFiltersRequest(operationId: 'deadline'),
+      ),
+    );
+    service.barrier = null;
     await client.dispose();
     await client.dispose();
     expect(client.hasToken, isFalse);

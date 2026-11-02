@@ -1,3 +1,5 @@
+import '../models/message_technical_data.dart';
+import 'personal_message_filters_repository.dart';
 import '../api/message_footer_snapshot.dart';
 
 import 'dart:math';
@@ -19,10 +21,12 @@ import 'package:fido/models/api_response.dart';
 
 class MessageRepository {
   final ApiTransport _apiClient;
+  final PersonalMessageFiltersRepository filters;
   final UueRepository uue;
   final MessageFooterSnapshots _footers;
   MessageRepository(ApiTransport apiClient)
     : _apiClient = apiClient,
+      filters = PersonalMessageFiltersRepository(apiClient),
       uue = UueRepository(apiClient),
       _footers = MessageFooterSnapshots(apiClient);
   int _positionEpoch = -1;
@@ -34,6 +38,41 @@ class MessageRepository {
       _positionEpoch = current;
     }
     return current;
+  }
+
+  Future<MessageTechnicalData> getTechnicalData(
+    String conferenceId,
+    String messageId, {
+    RpcCancellation? cancellation,
+  }) async {
+    final captured = epoch;
+    _check(captured, cancellation);
+    final result = await _apiClient.getMessageTechnicalData(
+      wire.MessageReference(conferenceId: conferenceId, messageId: messageId),
+      cancellation: cancellation,
+    );
+    _check(captured, cancellation);
+    final status = result.encodingStatus;
+    if (result.message.conferenceId != conferenceId ||
+        result.message.messageId != messageId ||
+        !(status ==
+                    wire
+                        .TechnicalEncodingStatus
+                        .TECHNICAL_ENCODING_STATUS_KNOWN &&
+                result.effectiveEncoding.isNotEmpty ||
+            status ==
+                    wire
+                        .TechnicalEncodingStatus
+                        .TECHNICAL_ENCODING_STATUS_UNDETERMINED &&
+                result.effectiveEncoding.isEmpty) ||
+        result.subfields.any(
+          (f) => !const {4, 5, 2000}.contains(f.lowId) || f.highId > 65535,
+        ) ||
+        result.subfields.fold(0, (sum, f) => sum + 8 + f.value.length) >
+            65536) {
+      throw const ServerException(message: 'Некорректные технические данные');
+    }
+    return MessageTechnicalData.fromWire(result);
   }
 
   Future<Conference> getMailboxState(
@@ -92,8 +131,11 @@ class MessageRepository {
       throw const ValidationException(message: 'Неизвестная сортировка');
     }
     final captured = epoch;
+    final respect = await filters.ensure(cancellation: cancellation);
+    _check(captured, cancellation);
     final response = await _apiClient.listMessages(
       wire.ListMessagesRequest(
+        respectPersonalFilters: respect,
         conferenceId: conferenceId,
         anchorMessageId: anchorMessageId,
         query: query,
@@ -105,7 +147,53 @@ class MessageRepository {
       cancellation: cancellation,
     );
     _check(captured, cancellation);
-    return mapMessages(response);
+    return _mapPersonalMessages(response, respect, cancellation);
+  }
+
+  Future<void> _observeFilters(
+    Int64 revision,
+    RpcCancellation? cancellation,
+  ) async {
+    final captured = epoch;
+    filters.observe(revision);
+    if (filters.snapshot?.revision != revision) {
+      await filters.refresh(cancellation: cancellation);
+      _check(captured, cancellation);
+      if (filters.snapshot?.revision != revision) {
+        throw const CancelledException();
+      }
+    }
+  }
+
+  Future<MessageListResponse> _mapPersonalMessages(
+    wire.ListMessagesResponse value,
+    bool respect,
+    RpcCancellation? cancellation,
+  ) async {
+    final captured = epoch;
+    if (respect) {
+      Int64? revision;
+      for (final message in value.messages) {
+        if (!message.hasPersonalCollapse() ||
+            message.id.isEmpty ||
+            (message.personalCollapse.matchedRuleIds.isNotEmpty &&
+                (message.body.isNotEmpty || message.bodyPreview.isNotEmpty))) {
+          throw const ServerException(
+            message: 'Некорректное представление списка',
+          );
+        }
+        if (revision != null &&
+            revision != message.personalCollapse.rulesRevision) {
+          throw const ServerException(message: 'Смешанные версии фильтров');
+        }
+        revision = message.personalCollapse.rulesRevision;
+      }
+      if (revision != null) {
+        await _observeFilters(revision, cancellation);
+      }
+    }
+    _check(captured, cancellation);
+    return mapMessages(value);
   }
 
   Future<MessageSearchResult?> findMessage({
@@ -126,9 +214,12 @@ class MessageRepository {
       );
     }
     final captured = epoch;
+    final respect = await filters.ensure(cancellation: cancellation);
+    _check(captured, cancellation);
     _check(captured, cancellation);
     final response = await _apiClient.findMessage(
       wire.FindMessageRequest(
+        respectPersonalFilters: respect,
         conferenceId: conferenceId,
         query: query,
         scope: headersOnly
@@ -149,13 +240,104 @@ class MessageRepository {
       }
       return null;
     }
-    final ranges = MessageSearchResult.validate(response);
+    final collapsed =
+        response.message.personalCollapse.matchedRuleIds.isNotEmpty;
+    if (collapsed &&
+        (response.message.body.isNotEmpty ||
+            response.message.bodyPreview.isNotEmpty ||
+            response.matches.isNotEmpty)) {
+      throw const ServerException(message: 'Некорректное свернутое письмо');
+    }
+    if (respect && response.message.hasPersonalCollapse()) {
+      await _observeFilters(
+        response.message.personalCollapse.rulesRevision,
+        cancellation,
+      );
+      _check(captured, cancellation);
+    }
+    final ranges = collapsed
+        ? <int, List<SearchRange>>{}
+        : MessageSearchResult.validate(response);
     final message = mapMessage(response.message);
     _latestRevision[conferenceId] = max(
       _latestRevision[conferenceId] ?? 0,
       message.positionRevision,
     );
     return MessageSearchResult(message, ranges);
+  }
+
+  Future<MessageSearchResult> getPresentation({
+    required String conferenceId,
+    required String messageId,
+    bool reveal = false,
+    String query = '',
+    bool headersOnly = false,
+    RpcCancellation? cancellation,
+  }) async {
+    final captured = epoch;
+    _check(captured, cancellation);
+    final value = await _apiClient.getMessagePresentation(
+      wire.GetMessagePresentationRequest(
+        message: wire.MessageReference(
+          conferenceId: conferenceId,
+          messageId: messageId,
+        ),
+        reveal: reveal,
+        searchQuery: query,
+        searchScope: query.isEmpty
+            ? wire.MessageSearchScope.MESSAGE_SEARCH_SCOPE_UNSPECIFIED
+            : headersOnly
+            ? wire.MessageSearchScope.MESSAGE_SEARCH_HEADER_ONLY
+            : wire.MessageSearchScope.MESSAGE_SEARCH_HEADER_AND_BODY,
+      ),
+      cancellation: cancellation,
+    );
+    _check(captured, cancellation);
+    wire.Message message;
+    if (value.hasCollapsed()) {
+      final h = value.collapsed;
+      if (reveal ||
+          value.matchedRuleIds.isEmpty ||
+          value.matches.isNotEmpty ||
+          h.message.conferenceId != conferenceId ||
+          h.message.messageId != messageId) {
+        throw const ServerException(message: 'Некорректное свернутое письмо');
+      }
+      message = wire.Message(
+        id: messageId,
+        conferenceId: conferenceId,
+        fromName: h.fromName,
+        fromAddress: h.fromAddress,
+        subject: h.subject,
+        date: h.hasDate() ? h.date : null,
+        isRead: h.isRead,
+        threadId: h.threadId,
+        inReplyTo: h.inReplyTo,
+        personalCollapse: wire.PersonalMessageCollapse(
+          rulesRevision: value.rulesRevision,
+          matchedRuleIds: value.matchedRuleIds,
+        ),
+      );
+    } else if (value.hasVisible()) {
+      message = value.visible;
+      if (message.id != messageId ||
+          message.conferenceId != conferenceId ||
+          message.personalCollapse.matchedRuleIds.isNotEmpty) {
+        throw const ServerException(message: 'Некорректное письмо');
+      }
+    } else {
+      throw const ServerException(
+        message: 'Сервер не вернул представление письма',
+      );
+    }
+    await _observeFilters(value.rulesRevision, cancellation);
+    _check(captured, cancellation);
+    final matches = value.matches.isEmpty
+        ? <int, List<SearchRange>>{}
+        : MessageSearchResult.validate(
+            wire.FindMessageResponse(message: message, matches: value.matches),
+          );
+    return MessageSearchResult(mapMessage(message), matches);
   }
 
   /// Получение одного сообщения
@@ -168,6 +350,15 @@ class MessageRepository {
     RpcCancellation? cancellation,
   }) async {
     final captured = epoch;
+    final support = await filters.ensure(cancellation: cancellation);
+    _check(captured, cancellation);
+    if (support) {
+      return (await getPresentation(
+        conferenceId: conferenceId,
+        messageId: messageId,
+        cancellation: cancellation,
+      )).message;
+    }
     final response = await _apiClient.getMessage(
       wire.MessageReference(conferenceId: conferenceId, messageId: messageId),
       cancellation: cancellation,
@@ -455,8 +646,11 @@ class MessageRepository {
     RpcCancellation? cancellation,
   }) async {
     final captured = epoch;
+    final respect = await filters.ensure(cancellation: cancellation);
+    _check(captured, cancellation);
     final response = await _apiClient.getThread(
       wire.GetThreadRequest(
+        respectPersonalFilters: respect,
         conferenceId: conferenceId,
         threadId: threadId,
         page: wire.PageRequest(offset: Int64(offset), limit: limit),
@@ -464,7 +658,7 @@ class MessageRepository {
       cancellation: cancellation,
     );
     _check(captured, cancellation);
-    return mapMessages(response);
+    return _mapPersonalMessages(response, respect, cancellation);
   }
 
   Future<List<Message>> getThread({

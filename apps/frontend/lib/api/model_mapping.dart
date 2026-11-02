@@ -35,6 +35,7 @@ ConferenceListResponse mapConferences(wire.ListConferencesResponse value) =>
     );
 Message mapMessage(wire.Message value) => Message(
   id: value.id,
+  matchedFilterIds: List.unmodifiable(value.personalCollapse.matchedRuleIds),
   fromName: value.fromName,
   fromAddress: value.fromAddress,
   toName: value.toName,

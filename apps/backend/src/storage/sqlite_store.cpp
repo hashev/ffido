@@ -1,4 +1,9 @@
+#include <openssl/evp.h>
+
+#include <array>
+#include <charconv>
 #include <limits>
+#include <nlohmann/json.hpp>
 
 #include "domain/ftn_address.hpp"
 #include "storage/metadata_store.hpp"
@@ -189,7 +194,7 @@ public:
       if (!mode.get() || sqlite3_step(mode.get()) != SQLITE_ROW || ColumnText(mode.get(), 0) != "wal")
         return fail();
     }
-    if (schema_version > 10 || schema_version < 0)
+    if (schema_version > 11 || schema_version < 0)
       return fail();
     if (schema_version == 0) {
       if (sqlite3_exec(db_.get(), "BEGIN IMMEDIATE", nullptr, nullptr, nullptr) != SQLITE_OK)
@@ -401,7 +406,95 @@ public:
         return fail();
       }
     }
+    if (schema_version < 11) {
+      if (sqlite3_exec(db_.get(), R"(
+        BEGIN IMMEDIATE;
+        CREATE TABLE personal_filters(user_id TEXT PRIMARY KEY REFERENCES users(user_id), revision TEXT NOT NULL, rules TEXT NOT NULL);
+        CREATE TABLE personal_filter_mutations(user_id TEXT NOT NULL REFERENCES users(user_id), operation_id TEXT NOT NULL,
+          expected_revision TEXT NOT NULL, payload_hash TEXT NOT NULL, revision TEXT NOT NULL, PRIMARY KEY(user_id,operation_id));
+        PRAGMA user_version=11;
+        COMMIT;
+      )",
+                       nullptr, nullptr, nullptr) != SQLITE_OK) {
+        sqlite3_exec(db_.get(), "ROLLBACK", nullptr, nullptr, nullptr);
+        return fail();
+      }
+    }
     return {};
+  }
+
+  std::expected<domain::PersonalMessageFilterSet, domain::ApiError> GetPersonalFilters(std::string_view user) override {
+    std::lock_guard lock(mutex_);
+    return ReadPersonalFilters(user);
+  }
+  std::expected<uint64_t, domain::ApiError> ReplacePersonalFilters(
+      std::string_view user, uint64_t expected, std::string_view operation,
+      const std::vector<domain::PersonalMessageFilter>& rules, const std::function<bool()>& active) override {
+    std::lock_guard lock(mutex_);
+    nlohmann::json encoded = nlohmann::json::array();
+    for (const auto& r : rules)
+      encoded.push_back({r.id, r.enabled, r.scope, r.conference, r.author, r.address, r.subject});
+    const auto payload = encoded.dump(), base = std::to_string(expected);
+    std::array<unsigned char, EVP_MAX_MD_SIZE> digest{};
+    unsigned int digest_size = 0;
+    if (EVP_Digest(payload.data(), payload.size(), digest.data(), &digest_size, EVP_sha256(), nullptr) != 1)
+      return std::unexpected(domain::ApiError::Server("Cannot hash filter operation"));
+    std::string hash;
+    constexpr std::string_view hex = "0123456789abcdef";
+    for (unsigned int i = 0; i < digest_size; ++i) {
+      hash.push_back(hex[digest[i] >> 4]);
+      hash.push_back(hex[digest[i] & 15]);
+    }
+
+    auto failure = [&]() { return std::unexpected(SqliteError(db_.get(), "personal filters")); };
+    if (payload.size() > 256 * 1024 || rules.size() > 200 || operation.empty() || operation.size() > 128)
+      return std::unexpected(domain::ApiError::Validation("Invalid filter mutation"));
+    if (sqlite3_exec(db_.get(), "BEGIN IMMEDIATE", nullptr, nullptr, nullptr) != SQLITE_OK)
+      return failure();
+    struct Transaction {
+      sqlite3* db;
+      bool done = false;
+      ~Transaction() {
+        if (!done)
+          sqlite3_exec(db, "ROLLBACK", nullptr, nullptr, nullptr);
+      }
+    } tx{db_.get()};
+    StatementGuard previous(prepare("SELECT expected_revision,payload_hash,revision FROM personal_filter_mutations "
+                                    "WHERE user_id=? AND operation_id=?"));
+    if (!previous.get() || !previous.Bind(1, user) || !previous.Bind(2, operation))
+      return failure();
+    auto status = sqlite3_step(previous.get());
+    if (status == SQLITE_ROW) {
+      if (ColumnText(previous.get(), 0) != base || ColumnText(previous.get(), 1) != hash)
+        return std::unexpected(domain::ApiError{domain::ErrorCode::kConflict, "Filter operation already exists", {}});
+      return ParseFilterRevision(ColumnText(previous.get(), 2));
+    }
+    if (status != SQLITE_DONE)
+      return failure();
+    auto current = ReadPersonalFilters(user);
+    if (!current)
+      return std::unexpected(current.error());
+    if (current->revision != expected)
+      return std::unexpected(domain::ApiError{domain::ErrorCode::kAborted, "Personal filters changed", {}});
+    if (expected == UINT64_MAX)
+      return std::unexpected(domain::ApiError{domain::ErrorCode::kResource, "Revision exhausted", {}});
+    const auto revision = std::to_string(expected + 1);
+    StatementGuard update(prepare("INSERT INTO personal_filters(user_id,revision,rules) VALUES(?,?,?) ON "
+                                  "CONFLICT(user_id) DO UPDATE SET revision=excluded.revision,rules=excluded.rules"));
+    StatementGuard save(
+        prepare("INSERT INTO personal_filter_mutations(user_id,operation_id,expected_revision,payload_hash,revision) "
+                "VALUES(?,?,?,?,?)"));
+    if (!update.get() || !update.Bind(1, user) || !update.Bind(2, revision) || !update.Bind(3, payload) ||
+        sqlite3_step(update.get()) != SQLITE_DONE || !save.get() || !save.Bind(1, user) || !save.Bind(2, operation) ||
+        !save.Bind(3, base) || !save.Bind(4, hash) || !save.Bind(5, revision) ||
+        sqlite3_step(save.get()) != SQLITE_DONE)
+      return failure();
+    if (active && !active())
+      return std::unexpected(domain::ApiError{domain::ErrorCode::kCancelled, "Request interrupted", {}});
+    if (sqlite3_exec(db_.get(), "COMMIT", nullptr, nullptr, nullptr) != SQLITE_OK)
+      return failure();
+    tx.done = true;
+    return expected + 1;
   }
 
   std::expected<std::optional<std::string>, domain::ApiError> GetCrosspost(std::string_view user,
@@ -1534,6 +1627,39 @@ public:
   }
 
 private:
+  static std::expected<uint64_t, domain::ApiError> ParseFilterRevision(std::string_view text) {
+    uint64_t result = 0;
+    const auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), result);
+    if (error != std::errc{} || end != text.data() + text.size())
+      return std::unexpected(domain::ApiError::Server("Invalid filter revision"));
+    return result;
+  }
+  std::expected<domain::PersonalMessageFilterSet, domain::ApiError> ReadPersonalFilters(std::string_view user) {
+    StatementGuard q(prepare("SELECT revision,rules FROM personal_filters WHERE user_id=?"));
+    if (!q.get() || !q.Bind(1, user))
+      return std::unexpected(SqliteError(db_.get(), "personal filters"));
+    const auto status = sqlite3_step(q.get());
+    domain::PersonalMessageFilterSet result;
+    if (status == SQLITE_DONE)
+      return result;
+    if (status != SQLITE_ROW)
+      return std::unexpected(SqliteError(db_.get(), "personal filters"));
+    auto revision = ParseFilterRevision(ColumnText(q.get(), 0));
+    if (!revision)
+      return std::unexpected(revision.error());
+    result.revision = *revision;
+    try {
+      for (const auto& r : nlohmann::json::parse(ColumnText(q.get(), 1))) {
+        result.rules.push_back({r.at(0).get<std::string>(), r.at(1).get<bool>(), r.at(2).get<int>(),
+                                r.at(3).get<std::string>(), r.at(4).get<std::string>(), r.at(5).get<std::string>(),
+                                r.at(6).get<std::string>()});
+      }
+    } catch (const nlohmann::json::exception&) {
+      return std::unexpected(domain::ApiError::Server("Invalid personal filters"));
+    }
+    return result;
+  }
+
   std::expected<Operation, domain::ApiError> DecodeOperation(sqlite3_stmt* statement) {
     auto corrupt = [] { return std::unexpected(domain::ApiError::Server("Invalid operation journal")); };
     Operation operation;

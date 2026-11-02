@@ -6,6 +6,7 @@
 #include <compare>
 #include <mutex>
 #include <nlohmann/json.hpp>
+#include <regex>
 #include <set>
 
 #include "domain/ftn_address.hpp"
@@ -14,6 +15,7 @@
 #include "service/crypto.hpp"
 #include "service/jam_mapping.hpp"
 #include "service/message_search.hpp"
+#include "service/personal_filters.hpp"
 #include "service/request_context.hpp"
 
 namespace fidoback::service {
@@ -94,8 +96,9 @@ std::string DisplayText(std::string_view text) {
 
 std::expected<domain::MessageDetail, domain::ApiError> MessageService::Detail(storage::JamAccess& access,
                                                                               std::string_view conference,
-                                                                              uint32_t number, std::string_view user) {
-  auto message = access.messages().ReadMessage(number);
+                                                                              uint32_t number, std::string_view user,
+                                                                              bool body) {
+  auto message = access.messages().ReadMessage(number, body);
   if (!message) {
     if (message.error() == msgapi::JamError::kInvalidMessageNumber ||
         message.error() == msgapi::JamError::kMessageDeleted)
@@ -139,9 +142,177 @@ std::expected<domain::MessageDetail, domain::ApiError> MessageService::Detail(st
   result.thread_id = message->reply_to() ? MessageId(access, message->reply_to()) : result.id;
   return result;
 }
+std::expected<domain::MessageTechnicalData, domain::ApiError> MessageService::GetMessageTechnicalData(
+    std::string_view conference, std::string_view id, std::string_view user) {
+  auto permission = access_->Permissions(*metadata_, user, conference);
+  if (!permission)
+    return std::unexpected(permission.error());
+  if (!permission->read)
+    return std::unexpected(EchoAccess::Denied());
+  auto access =
+      storage::JamAccess::Open(*catalog_, conference, false, RequestDeadline(), RequestCancellation(), encoding_);
+  if (!access)
+    return std::unexpected(JamError(access.error()));
+  auto number = MessageNumber(**access, id);
+  if (!number)
+    return std::unexpected(number.error());
+  auto raw = (*access)->messages().ReadRawMetadata(*number);
+  if (!raw)
+    return std::unexpected(JamError(raw.error()));
+  domain::MessageTechnicalData result;
+  result.conference = conference;
+  result.id = MessageId(**access, *number);
+  result.attributes = raw->attributes();
+  result.attributes2 = raw->attributes2();
+  for (const auto& field : raw->subfields()) {
+    const auto low = static_cast<uint32_t>(field.type());
+    if (low == 4 || low == 5 || low == 2000)
+      result.subfields.push_back({low, field.high_id(), field.ToString()});
+  }
+  auto encoding = (*access)->messages().EffectiveEncoding(*raw);
+  if (encoding && storage::ConvertText("", *encoding, "UTF-8"))
+    result.effective_encoding = *encoding;
+  if (!RequestActive())
+    return std::unexpected(domain::ApiError{
+        RequestCancellation().stop_requested() ? domain::ErrorCode::kCancelled : domain::ErrorCode::kDeadline,
+        "Request interrupted",
+        {}});
+  return result;
+}
+
+std::expected<domain::PersonalMessageFilterSet, domain::ApiError> MessageService::GetPersonalFilters(
+    std::string_view user) {
+  return metadata_->GetPersonalFilters(user);
+}
+std::expected<uint64_t, domain::ApiError> MessageService::ReplacePersonalFilters(
+    std::string_view user, uint64_t expected, std::string_view operation,
+    std::vector<domain::PersonalMessageFilter> rules) {
+  if (rules.size() > 200 || operation.empty() || operation.size() > 128)
+    return std::unexpected(domain::ApiError::Validation("Invalid personal filters"));
+  auto previous = metadata_->GetPersonalFilters(user);
+  if (!previous)
+    return std::unexpected(previous.error());
+  std::set<std::string> ids;
+  static const std::regex uuid("[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}");
+  for (auto& r : rules) {
+    if (!RequestActive())
+      return std::unexpected(SearchInterrupted());
+    for (auto* value : {&r.author, &r.address, &r.subject}) {
+      auto trimmed = TrimPersonalFilterText(*value);
+      if (!trimmed)
+        return std::unexpected(trimmed.error());
+    }
+    for (auto& c : r.id)
+      if (c >= 'A' && c <= 'F')
+        c += 'a' - 'A';
+    if (!std::regex_match(r.id, uuid) || !ids.insert(r.id).second || (r.scope != 1 && r.scope != 2) ||
+        (r.scope == 1 && !r.conference.empty()) || r.conference.size() > 1024 || r.author.size() > 256 ||
+        r.subject.size() > 256 || r.address.size() > 64 ||
+        (r.author.empty() && r.address.empty() && r.subject.empty()) ||
+        !storage::ConvertText(r.author, "UTF-8", "UTF-8") || !storage::ConvertText(r.subject, "UTF-8", "UTF-8"))
+      return std::unexpected(domain::ApiError::Validation("Invalid personal filter rule"));
+    if (!r.address.empty()) {
+      auto address = domain::CanonicalFtnAddress(r.address);
+      if (!address)
+        return std::unexpected(address.error());
+      r.address = *address;
+    }
+    if (r.scope == 2) {
+      auto permission = access_->Permissions(*metadata_, user, r.conference);
+      auto area = catalog_->areas().find(r.conference);
+      const bool readable = permission && permission->read && area != catalog_->areas().end() &&
+                            area->second.config.kind == AreaKind::kEcho && area->second.config.msgbase_type == "JAM";
+      const bool existing = std::ranges::any_of(previous->rules, [&](const auto& old) {
+        return old.id == r.id && old.scope == r.scope && old.conference == r.conference && (!r.enabled || old == r);
+      });
+      if (!readable && !existing)
+        return std::unexpected(EchoAccess::Denied());
+    }
+  }
+  return metadata_->ReplacePersonalFilters(user, expected, operation, rules, RequestActive);
+}
+std::expected<domain::MessageDetail, domain::ApiError> MessageService::FilteredDetail(
+    storage::JamAccess& access, std::string_view conference, uint32_t number, std::string_view user,
+    const domain::PersonalMessageFilterSet* filters) {
+  auto result = Detail(access, conference, number, user, filters == nullptr);
+  if (!result || !filters)
+    return result;
+  const bool echo = catalog_->areas().find(conference)->second.config.kind == AreaKind::kEcho;
+  auto matched =
+      MatchPersonalFilters(*filters, conference, echo, result->from_name, result->from_address, result->subject);
+  if (!matched)
+    return std::unexpected(matched.error());
+  if (matched->empty()) {
+    result = Detail(access, conference, number, user);
+    if (!result)
+      return result;
+  }
+  result->personal_collapse = domain::PersonalMessageCollapse{filters->revision, *matched};
+  return result;
+}
+std::expected<domain::MessagePresentation, domain::ApiError> MessageService::GetPresentation(
+    std::string_view conference, std::string_view id, std::string_view user, bool reveal, std::string_view query,
+    int scope) {
+  if ((!query.empty() &&
+       (query.size() > 256 || !storage::ConvertText(query, "UTF-8", "UTF-8") || (scope != 1 && scope != 2))) ||
+      (query.empty() && scope != 0))
+    return std::unexpected(domain::ApiError::Validation("Invalid search context"));
+  auto permission = access_->Permissions(*metadata_, user, conference);
+  if (!permission)
+    return std::unexpected(permission.error());
+  if (!permission->read)
+    return std::unexpected(EchoAccess::Denied());
+  auto filters = metadata_->GetPersonalFilters(user);
+  if (!filters)
+    return std::unexpected(filters.error());
+  auto access =
+      storage::JamAccess::Open(*catalog_, conference, false, RequestDeadline(), RequestCancellation(), encoding_);
+  if (!access)
+    return std::unexpected(JamError(access.error()));
+  auto number = MessageNumber(**access, id);
+  if (!number)
+    return std::unexpected(number.error());
+  auto detail = FilteredDetail(**access, conference, *number, user, &*filters);
+  if (!detail)
+    return std::unexpected(detail.error());
+  domain::MessagePresentation result;
+  result.revision = filters->revision;
+  result.rules = detail->personal_collapse->rules;
+  result.collapsed = !reveal && !result.rules.empty();
+  if (!result.collapsed) {
+    if (reveal && !result.rules.empty())
+      detail = Detail(**access, conference, *number, user);
+    if (!detail)
+      return std::unexpected(detail.error());
+    if (!query.empty()) {
+      auto raw = (*access)->messages().ReadMessage(*number, false);
+      if (!raw)
+        return std::unexpected(JamError(raw.error()));
+      auto encoding = (*access)->messages().EffectiveEncoding(*raw);
+      if (!encoding)
+        return std::unexpected(domain::ApiError::Server("Invalid message encoding"));
+      const std::array<std::string_view, 6> values{detail->from_name,  detail->from_address, detail->to_name,
+                                                   detail->to_address, detail->subject,      detail->body};
+      for (int f = 0; f < (scope == 1 ? 5 : 6); ++f) {
+        auto ranges = SearchRanges(values[f], query, SearchCp866(*encoding), f + 1);
+        if (!ranges)
+          return std::unexpected(ranges.error());
+        result.matches.insert(result.matches.end(), ranges->begin(), ranges->end());
+      }
+    }
+    if (!RequestActive())
+      return std::unexpected(SearchInterrupted());
+    auto marked = RecordView(**access, conference, *number, user, *detail);
+    if (!marked)
+      return std::unexpected(marked.error());
+  }
+  result.message = std::move(*detail);
+  return result;
+}
+
 std::expected<domain::MessageListResponse, domain::ApiError> MessageService::GetMessages(
     std::string_view conference, const domain::PaginationRequest& page, std::string_view sort, std::string_view user,
-    std::string_view query, std::string_view anchor_message_id) {
+    std::string_view query, std::string_view anchor_message_id, bool respect_filters) {
   auto permission = access_->Permissions(*metadata_, user, conference);
   if (!permission)
     return std::unexpected(permission.error());
@@ -149,6 +320,12 @@ std::expected<domain::MessageListResponse, domain::ApiError> MessageService::Get
     return std::unexpected(EchoAccess::Denied());
   if (!ValidPage(page) || (sort != "newest" && sort != "oldest"))
     return std::unexpected(domain::ApiError::Validation("Invalid page or sort"));
+  auto filters =
+      respect_filters
+          ? metadata_->GetPersonalFilters(user)
+          : std::expected<domain::PersonalMessageFilterSet, domain::ApiError>{domain::PersonalMessageFilterSet{}};
+  if (!filters)
+    return std::unexpected(filters.error());
   auto access =
       storage::JamAccess::Open(*catalog_, conference, false, RequestDeadline(), RequestCancellation(), encoding_);
   if (!access)
@@ -195,13 +372,14 @@ std::expected<domain::MessageListResponse, domain::ApiError> MessageService::Get
   result.actual_offset = static_cast<int64_t>(start);
   const auto end = std::min<uint64_t>(start + page.limit, numbers->size());
   for (auto i = start; i < end; ++i) {
-    auto detail = Detail(**access, conference, numbers->at(i), user);
+    auto detail = FilteredDetail(**access, conference, numbers->at(i), user, respect_filters ? &*filters : nullptr);
     if (!detail)
       return std::unexpected(detail.error());
     auto preview = storage::Utf8Preview(detail->body, 200);
     if (!preview)
       return std::unexpected(domain::ApiError::Server("Invalid message text"));
     domain::MessageSummary summary;
+    summary.personal_collapse = detail->personal_collapse;
     summary.id = detail->id;
     summary.from_name = detail->from_name;
     summary.to_name = detail->to_name;
@@ -256,7 +434,7 @@ std::expected<void, domain::ApiError> MessageService::RecordView(storage::JamAcc
 }
 std::expected<domain::FindMessageResponse, domain::ApiError> MessageService::FindMessage(
     std::string_view conference, std::string_view query, int scope, std::string_view sort, std::string_view start,
-    bool include_start, std::string_view user) {
+    bool include_start, std::string_view user, bool respect_filters) {
   // Trim the same whitespace as the client; the query itself remains literal.
   auto folded = FoldSearch(query, false);
   if (!folded)
@@ -289,6 +467,12 @@ std::expected<domain::FindMessageResponse, domain::ApiError> MessageService::Fin
     return std::unexpected(permission.error());
   if (!permission->read)
     return std::unexpected(EchoAccess::Denied());
+  auto filters =
+      respect_filters
+          ? metadata_->GetPersonalFilters(user)
+          : std::expected<domain::PersonalMessageFilterSet, domain::ApiError>{domain::PersonalMessageFilterSet{}};
+  if (!filters)
+    return std::unexpected(filters.error());
   auto access =
       storage::JamAccess::Open(*catalog_, conference, false, RequestDeadline(), RequestCancellation(), encoding_);
   if (!access)
@@ -350,6 +534,22 @@ std::expected<domain::FindMessageResponse, domain::ApiError> MessageService::Fin
       continue;
     if (!RequestActive())
       return std::unexpected(SearchInterrupted());
+    if (respect_filters) {
+      const bool echo = catalog_->areas().find(conference)->second.config.kind == AreaKind::kEcho;
+      auto matched =
+          MatchPersonalFilters(*filters, conference, echo, detail->from_name, detail->from_address, detail->subject);
+      if (!matched)
+        return std::unexpected(matched.error());
+      detail->personal_collapse = domain::PersonalMessageCollapse{filters->revision, *matched};
+      if (!matched->empty()) {
+        detail->body.clear();
+        detail->attachments.clear();
+        detail->ftn_kludges.clear();
+        result.matches.clear();
+        result.message = std::move(*detail);
+        return result;
+      }
+    }
     auto marked = RecordView(**access, conference, number, user, *detail);
     if (!marked)
       return std::unexpected(marked.error());
@@ -910,7 +1110,8 @@ std::expected<domain::CreateCrosspostResponse, domain::ApiError> MessageService:
 }
 
 std::expected<domain::ThreadListResponse, domain::ApiError> MessageService::GetThread(
-    std::string_view conference, std::string_view id, std::string_view user, const domain::PaginationRequest& page) {
+    std::string_view conference, std::string_view id, std::string_view user, const domain::PaginationRequest& page,
+    bool respect_filters) {
   auto permission = access_->Permissions(*metadata_, user, conference);
   if (!permission)
     return std::unexpected(permission.error());
@@ -918,6 +1119,12 @@ std::expected<domain::ThreadListResponse, domain::ApiError> MessageService::GetT
     return std::unexpected(EchoAccess::Denied());
   if (!ValidPage(page))
     return std::unexpected(domain::ApiError::Validation("Invalid page"));
+  auto filters =
+      respect_filters
+          ? metadata_->GetPersonalFilters(user)
+          : std::expected<domain::PersonalMessageFilterSet, domain::ApiError>{domain::PersonalMessageFilterSet{}};
+  if (!filters)
+    return std::unexpected(filters.error());
   auto access =
       storage::JamAccess::Open(*catalog_, conference, false, RequestDeadline(), RequestCancellation(), encoding_);
   if (!access)
@@ -991,7 +1198,7 @@ std::expected<domain::ThreadListResponse, domain::ApiError> MessageService::GetT
              end = std::min<uint64_t>(start + page.limit, pending.size());
   size_t response_bytes = 0;
   for (auto i = start; i < end; ++i) {
-    auto detail = Detail(**access, conference, pending[i], user);
+    auto detail = FilteredDetail(**access, conference, pending[i], user, respect_filters ? &*filters : nullptr);
     if (!detail)
       return std::unexpected(detail.error());
     response_bytes +=

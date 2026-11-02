@@ -90,6 +90,39 @@ class FfidoClient extends $grpc.Client {
     return $createUnaryCall(_$getMessage, request, options: options);
   }
 
+  $grpc.ResponseFuture<$0.PersonalMessageFilterSet> getPersonalMessageFilters(
+    $1.Empty request, {
+    $grpc.CallOptions? options,
+  }) {
+    return $createUnaryCall(_$getPersonalMessageFilters, request,
+        options: options);
+  }
+
+  $grpc.ResponseFuture<$0.ReplacePersonalMessageFiltersResponse>
+      replacePersonalMessageFilters(
+    $0.ReplacePersonalMessageFiltersRequest request, {
+    $grpc.CallOptions? options,
+  }) {
+    return $createUnaryCall(_$replacePersonalMessageFilters, request,
+        options: options);
+  }
+
+  $grpc.ResponseFuture<$0.MessagePresentation> getMessagePresentation(
+    $0.GetMessagePresentationRequest request, {
+    $grpc.CallOptions? options,
+  }) {
+    return $createUnaryCall(_$getMessagePresentation, request,
+        options: options);
+  }
+
+  $grpc.ResponseFuture<$0.MessageTechnicalData> getMessageTechnicalData(
+    $0.MessageReference request, {
+    $grpc.CallOptions? options,
+  }) {
+    return $createUnaryCall(_$getMessageTechnicalData, request,
+        options: options);
+  }
+
   $grpc.ResponseFuture<$0.CreateMessageResponse> createMessage(
     $0.CreateMessageRequest request, {
     $grpc.CallOptions? options,
@@ -262,6 +295,27 @@ class FfidoClient extends $grpc.Client {
           '/ffido.v1.Ffido/GetMessage',
           ($0.MessageReference value) => value.writeToBuffer(),
           $0.Message.fromBuffer);
+  static final _$getPersonalMessageFilters =
+      $grpc.ClientMethod<$1.Empty, $0.PersonalMessageFilterSet>(
+          '/ffido.v1.Ffido/GetPersonalMessageFilters',
+          ($1.Empty value) => value.writeToBuffer(),
+          $0.PersonalMessageFilterSet.fromBuffer);
+  static final _$replacePersonalMessageFilters = $grpc.ClientMethod<
+          $0.ReplacePersonalMessageFiltersRequest,
+          $0.ReplacePersonalMessageFiltersResponse>(
+      '/ffido.v1.Ffido/ReplacePersonalMessageFilters',
+      ($0.ReplacePersonalMessageFiltersRequest value) => value.writeToBuffer(),
+      $0.ReplacePersonalMessageFiltersResponse.fromBuffer);
+  static final _$getMessagePresentation = $grpc.ClientMethod<
+          $0.GetMessagePresentationRequest, $0.MessagePresentation>(
+      '/ffido.v1.Ffido/GetMessagePresentation',
+      ($0.GetMessagePresentationRequest value) => value.writeToBuffer(),
+      $0.MessagePresentation.fromBuffer);
+  static final _$getMessageTechnicalData =
+      $grpc.ClientMethod<$0.MessageReference, $0.MessageTechnicalData>(
+          '/ffido.v1.Ffido/GetMessageTechnicalData',
+          ($0.MessageReference value) => value.writeToBuffer(),
+          $0.MessageTechnicalData.fromBuffer);
   static final _$createMessage =
       $grpc.ClientMethod<$0.CreateMessageRequest, $0.CreateMessageResponse>(
           '/ffido.v1.Ffido/CreateMessage',
@@ -422,6 +476,41 @@ abstract class FfidoServiceBase extends $grpc.Service {
         false,
         ($core.List<$core.int> value) => $0.MessageReference.fromBuffer(value),
         ($0.Message value) => value.writeToBuffer()));
+    $addMethod($grpc.ServiceMethod<$1.Empty, $0.PersonalMessageFilterSet>(
+        'GetPersonalMessageFilters',
+        getPersonalMessageFilters_Pre,
+        false,
+        false,
+        ($core.List<$core.int> value) => $1.Empty.fromBuffer(value),
+        ($0.PersonalMessageFilterSet value) => value.writeToBuffer()));
+    $addMethod($grpc.ServiceMethod<$0.ReplacePersonalMessageFiltersRequest,
+            $0.ReplacePersonalMessageFiltersResponse>(
+        'ReplacePersonalMessageFilters',
+        replacePersonalMessageFilters_Pre,
+        false,
+        false,
+        ($core.List<$core.int> value) =>
+            $0.ReplacePersonalMessageFiltersRequest.fromBuffer(value),
+        ($0.ReplacePersonalMessageFiltersResponse value) =>
+            value.writeToBuffer()));
+    $addMethod($grpc.ServiceMethod<$0.GetMessagePresentationRequest,
+            $0.MessagePresentation>(
+        'GetMessagePresentation',
+        getMessagePresentation_Pre,
+        false,
+        false,
+        ($core.List<$core.int> value) =>
+            $0.GetMessagePresentationRequest.fromBuffer(value),
+        ($0.MessagePresentation value) => value.writeToBuffer()));
+    $addMethod(
+        $grpc.ServiceMethod<$0.MessageReference, $0.MessageTechnicalData>(
+            'GetMessageTechnicalData',
+            getMessageTechnicalData_Pre,
+            false,
+            false,
+            ($core.List<$core.int> value) =>
+                $0.MessageReference.fromBuffer(value),
+            ($0.MessageTechnicalData value) => value.writeToBuffer()));
     $addMethod(
         $grpc.ServiceMethod<$0.CreateMessageRequest, $0.CreateMessageResponse>(
             'CreateMessage',
@@ -637,6 +726,44 @@ abstract class FfidoServiceBase extends $grpc.Service {
   }
 
   $async.Future<$0.Message> getMessage(
+      $grpc.ServiceCall call, $0.MessageReference request);
+
+  $async.Future<$0.PersonalMessageFilterSet> getPersonalMessageFilters_Pre(
+      $grpc.ServiceCall $call, $async.Future<$1.Empty> $request) async {
+    return getPersonalMessageFilters($call, await $request);
+  }
+
+  $async.Future<$0.PersonalMessageFilterSet> getPersonalMessageFilters(
+      $grpc.ServiceCall call, $1.Empty request);
+
+  $async.Future<$0.ReplacePersonalMessageFiltersResponse>
+      replacePersonalMessageFilters_Pre(
+          $grpc.ServiceCall $call,
+          $async.Future<$0.ReplacePersonalMessageFiltersRequest>
+              $request) async {
+    return replacePersonalMessageFilters($call, await $request);
+  }
+
+  $async.Future<$0.ReplacePersonalMessageFiltersResponse>
+      replacePersonalMessageFilters($grpc.ServiceCall call,
+          $0.ReplacePersonalMessageFiltersRequest request);
+
+  $async.Future<$0.MessagePresentation> getMessagePresentation_Pre(
+      $grpc.ServiceCall $call,
+      $async.Future<$0.GetMessagePresentationRequest> $request) async {
+    return getMessagePresentation($call, await $request);
+  }
+
+  $async.Future<$0.MessagePresentation> getMessagePresentation(
+      $grpc.ServiceCall call, $0.GetMessagePresentationRequest request);
+
+  $async.Future<$0.MessageTechnicalData> getMessageTechnicalData_Pre(
+      $grpc.ServiceCall $call,
+      $async.Future<$0.MessageReference> $request) async {
+    return getMessageTechnicalData($call, await $request);
+  }
+
+  $async.Future<$0.MessageTechnicalData> getMessageTechnicalData(
       $grpc.ServiceCall call, $0.MessageReference request);
 
   $async.Future<$0.CreateMessageResponse> createMessage_Pre(

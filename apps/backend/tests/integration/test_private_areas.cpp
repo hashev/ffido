@@ -149,6 +149,77 @@ protected:
   }
 };
 }  // namespace
+TEST_F(PrivateAreasTest, CrossAreaReplyIsStandaloneInEchoAndOwnMailboxWithRetry) {
+  // Keep local message number 1 in all three JAM bases to catch foreign parents.
+  for (auto extension : {".jhr", ".jdt", ".jdx"})
+    std::filesystem::copy_file(temp.path() / (std::string("ECHO") + extension),
+                               temp.path() / (std::string("OTHER") + extension));
+  std::vector<EchoAreaConfig> areas;
+  for (const auto& [id, area] : catalog->areas())
+    areas.push_back(area.config);
+  auto other = catalog->areas().at("ECHO").config;
+  other.name = "OTHER";
+  other.filename = "OTHER";
+  areas.push_back(other);
+  auto opened = storage::JamCatalog::Build(temp.path(), areas);
+  ASSERT_TRUE(opened);
+  catalog = std::shared_ptr<storage::JamCatalog>(std::move(*opened));
+  auto other_policy = hpt.echoes.front();
+  other_policy.name = "OTHER";
+  other_policy.filename = temp.path() / "OTHER";
+  hpt.echoes.push_back(other_policy);
+  Mailboxes();
+  const auto mailbox = storage::MailboxId("2:1/2.2");
+  auto original = messages->CreateMessage("ECHO", Request("source"), "point2");
+  ASSERT_TRUE(original);
+  ASSERT_TRUE(messages->CreateMessage("OTHER", Request("echo-seed"), "point1"));
+  ASSERT_TRUE(messages->CreateMessage(mailbox, Request("mail-seed"), "point1"));
+  const auto source_wire = test::ReadJamWireRecord(temp.path() / "ECHO", 0);
+  for (const auto& target : {mailbox, std::string("OTHER")}) {
+    auto request = Request(target == mailbox ? "cross-mail" : "cross-echo");
+    request.to_name = "Нина";
+    request.to_address = "2:1/2.3";
+    request.subject = "Re: Н тест";
+    request.body = "IP> Original\nAnswer\n";
+    ASSERT_TRUE(request.in_reply_to.empty());
+    auto sent = messages->CreateMessage(target, request, "point1");
+    ASSERT_TRUE(sent) << sent.error().message;
+    auto retry = messages->CreateMessage(target, request, "point1");
+    ASSERT_TRUE(retry);
+    EXPECT_EQ(retry->id, sent->id);
+    auto detail = messages->PeekMessage(target, sent->id, "point1");
+    ASSERT_TRUE(detail);
+    EXPECT_EQ(detail->from_address, "2:1/2.2");
+    EXPECT_EQ(detail->to_address, "2:1/2.3");
+    EXPECT_EQ(detail->body, request.body + (target == mailbox ? "" : "--- FFIDO\n * Origin: FFIDO (2:1/2.2)\n"));
+    const auto raw = test::ReadJamWireRecord(temp.path() / (target == mailbox ? "points/p1" : "OTHER"), 1);
+    EXPECT_EQ(raw.reply_to, 0u);
+    EXPECT_TRUE(raw.Field(5).empty());
+    EXPECT_NE(raw.Field(4), original->ftn_message_id);
+    if (target == mailbox) {
+      EXPECT_EQ(test::Wire32(raw.header, 52) & 0x03800004, 0x02000004u);
+      EXPECT_EQ(detail->direction, 2);
+      for (auto word : {"AREA:", "SEEN-BY:", "PATH:", "Origin:"})
+        EXPECT_EQ(raw.body.find(word), std::string::npos);
+    }
+  }
+  auto denied = messages->CreateMessage(storage::MailboxId("2:1/2.3"), Request("foreign"), "point1");
+  ASSERT_FALSE(denied);
+  EXPECT_EQ(denied.error().code, domain::ErrorCode::kForbidden);
+  auto intents = metadata->PendingOutbox();
+  ASSERT_TRUE(intents);
+  EXPECT_EQ(intents->size(), 2u);  // Seed and reply each retain an outgoing transport intent.
+  const auto unchanged = test::ReadJamWireRecord(temp.path() / "ECHO", 0);
+  EXPECT_EQ(unchanged.header, source_wire.header);
+  EXPECT_EQ(unchanged.body, source_wire.body);
+  auto ordinary = Request("ordinary-reply");
+  ordinary.in_reply_to = original->id;
+  ASSERT_TRUE(messages->CreateMessage("ECHO", ordinary, "point1"));
+  const auto linked = test::ReadJamWireRecord(temp.path() / "ECHO", 1);
+  EXPECT_EQ(linked.reply_to, 1u);
+  EXPECT_EQ(linked.Field(5), original->ftn_message_id);
+}
+
 TEST_F(PrivateAreasTest, ExplicitOwnerAndPrivateMetadataBoundary) {
   EXPECT_FALSE(service::EchoAccess::Build(hpt, *catalog, {"2:1/9"}));
   EXPECT_FALSE(service::EchoAccess::Build(hpt, *catalog, {"2:1/2.1", "02:001/002.1"}));
@@ -1290,4 +1361,122 @@ TEST_F(PrivateAreasTest, FindMessageRespectsMailboxOwnerReadOnlyAndUnsupportedAr
   ASSERT_TRUE(policy);
   service::MessageService denied(catalog, metadata, *policy);
   EXPECT_FALSE(denied.FindMessage("ECHO", "FIXTURE", 1, "oldest", {}, true, "point1"));
+}
+
+TEST_F(PrivateAreasTest, TechnicalDataRequiresReadAndExactAreaGeneration) {
+  Mailboxes();
+  std::map<std::string, std::string> references;
+  for (const auto& [id, area] : catalog->areas()) {
+    if (area.config.msgbase_type != "JAM") {
+      EXPECT_FALSE(messages->GetMessageTechnicalData(id, "g#1", "owner"));
+      continue;
+    }
+    {
+      auto view =
+          storage::JamAccess::Open(*catalog, id, true, std::chrono::steady_clock::now() + std::chrono::seconds(2));
+      ASSERT_TRUE(view);
+      msgapi::JamMessage raw;
+      raw.SetMsgId("original " + id);
+      raw.SetReplyId("external missing-parent " + id);
+      raw.SetText("body");
+      ASSERT_EQ((*view)->messages().AddMessage(raw), msgapi::JamError::kSuccess);
+      references[id] = (*view)->generation() + "#1";
+    }
+    const std::string user =
+        area.files->personal_mailbox ? (id == storage::MailboxId("2:1/2.2") ? "point1" : "point2") : "owner";
+    auto result = messages->GetMessageTechnicalData(id, references[id], user);
+    ASSERT_TRUE(result) << id;
+    EXPECT_EQ(result->conference, id);
+    EXPECT_EQ(result->id, references[id]);
+    EXPECT_TRUE(std::ranges::any_of(
+        result->subfields, [&](const auto& f) { return f.low_id == 5 && f.value == "external missing-parent " + id; }));
+    EXPECT_FALSE(messages->GetMessageTechnicalData(id, "stale#1", user));
+    if (area.files->personal_mailbox) {
+      auto denied = messages->GetMessageTechnicalData(id, references[id], user == "point1" ? "point2" : "owner");
+      ASSERT_FALSE(denied);
+      EXPECT_EQ(denied.error().code, domain::ErrorCode::kForbidden);
+    }
+  }
+  for (auto& [address, permission] : hpt.echoes.front().links)
+    permission.post = false;
+  auto policy = service::EchoAccess::Build(hpt, *catalog, {"2:1/2.1"});
+  ASSERT_TRUE(policy);
+  service::MessageService read_only(catalog, metadata, *policy);
+  EXPECT_TRUE(read_only.GetMessageTechnicalData("ECHO", references["ECHO"], "point1"));
+  hpt.echoes.front().links["2:1/2.2"] = {false, true};
+  policy = service::EchoAccess::Build(hpt, *catalog, {"2:1/2.1"});
+  ASSERT_TRUE(policy);
+  service::MessageService write_only(catalog, metadata, *policy);
+  auto denied = write_only.GetMessageTechnicalData("ECHO", references["ECHO"], "point1");
+  ASSERT_FALSE(denied);
+  EXPECT_EQ(denied.error().code, domain::ErrorCode::kForbidden);
+  {
+    auto view =
+        storage::JamAccess::Open(*catalog, "ECHO", true, std::chrono::steady_clock::now() + std::chrono::seconds(2));
+    ASSERT_TRUE(view);
+    ASSERT_EQ((*view)->messages().DeleteMessage(1), msgapi::JamError::kSuccess);
+  }
+  EXPECT_FALSE(messages->GetMessageTechnicalData("ECHO", references["ECHO"], "owner"));
+}
+
+TEST_F(PrivateAreasTest, PersonalFiltersRespectAreaKindsReadAccessAndStableReferences) {
+  Mailboxes();
+  const std::string uuid = "00000000-0000-4000-8000-000000000001";
+  for (const auto& user : {"owner", "point1", "point2"}) {
+    ASSERT_TRUE(messages->ReplacePersonalFilters(user, 0, "initial", {{uuid, true, 1, "", "", "", "fixture"}}));
+  }
+  for (const auto& [id, area] : catalog->areas()) {
+    if (area.config.msgbase_type != "JAM")
+      continue;
+    std::string reference;
+    {
+      auto lease =
+          storage::JamAccess::Open(*catalog, id, true, std::chrono::steady_clock::now() + std::chrono::seconds(2));
+      ASSERT_TRUE(lease);
+      msgapi::JamMessage raw;
+      raw.SetSubject("fixture");
+      raw.SetText("fixture body");
+      ASSERT_EQ((*lease)->messages().AddMessage(raw), msgapi::JamError::kSuccess);
+      reference = (*lease)->generation() + "#1";
+    }
+    const std::string user =
+        area.files->personal_mailbox ? (id == storage::MailboxId("2:1/2.2") ? "point1" : "point2") : "owner";
+    auto presentation = messages->GetPresentation(id, reference, user, false);
+    ASSERT_TRUE(presentation) << id;
+    EXPECT_EQ(presentation->collapsed, area.config.kind == AreaKind::kEcho) << id;
+    if (presentation->collapsed) {
+      EXPECT_TRUE(presentation->message.body.empty());
+      EXPECT_FALSE(presentation->message.is_read);
+    }
+    EXPECT_FALSE(messages->GetPresentation(id, "stale#1", user, false));
+    if (area.config.kind == AreaKind::kEcho) {
+      {
+        auto lease =
+            storage::JamAccess::Open(*catalog, id, true, std::chrono::steady_clock::now() + std::chrono::seconds(2));
+        ASSERT_TRUE(lease);
+        ASSERT_EQ((*lease)->messages().DeleteMessage(1), msgapi::JamError::kSuccess);
+      }
+      EXPECT_FALSE(messages->GetPresentation(id, reference, user, false));
+    }
+
+    if (area.files->personal_mailbox)
+      EXPECT_FALSE(messages->GetPresentation(id, reference, user == "point1" ? "point2" : "owner", true));
+  }
+  auto invalid = messages->ReplacePersonalFilters("point1", 1, "net-scope", {{uuid, true, 2, net, "", "", "fixture"}});
+  ASSERT_FALSE(invalid);
+  EXPECT_EQ(invalid.error().code, domain::ErrorCode::kForbidden);
+  for (auto& [address, p] : hpt.echoes.front().links)
+    p.post = false;
+  auto policy = service::EchoAccess::Build(hpt, *catalog, {"2:1/2.1"});
+  ASSERT_TRUE(policy);
+  service::MessageService read_only(catalog, metadata, *policy);
+  EXPECT_TRUE(read_only.ReplacePersonalFilters("point1", 1, "read-only", {{uuid, true, 2, "ECHO", "", "", "fixture"}}));
+  hpt.echoes.front().links["2:1/2.2"] = {false, true};
+  policy = service::EchoAccess::Build(hpt, *catalog, {"2:1/2.1"});
+  ASSERT_TRUE(policy);
+  service::MessageService write_only(catalog, metadata, *policy);
+  EXPECT_FALSE(write_only.GetPresentation("ECHO", "stale#1", "point1", false));
+  // An existing inaccessible rule can be retained or disabled, but not enabled anew.
+  EXPECT_TRUE(write_only.ReplacePersonalFilters("point1", 2, "disable", {{uuid, false, 2, "ECHO", "", "", "fixture"}}));
+  EXPECT_FALSE(write_only.ReplacePersonalFilters("point1", 3, "enable", {{uuid, true, 2, "ECHO", "", "", "fixture"}}));
 }

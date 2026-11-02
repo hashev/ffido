@@ -38,6 +38,22 @@ abstract interface class ApiTransport {
     wire.FindMessageRequest request, {
     RpcCancellation? cancellation,
   });
+  Future<wire.PersonalMessageFilterSet> getPersonalMessageFilters({
+    RpcCancellation? cancellation,
+  });
+  Future<wire.ReplacePersonalMessageFiltersResponse>
+  replacePersonalMessageFilters(
+    wire.ReplacePersonalMessageFiltersRequest request, {
+    RpcCancellation? cancellation,
+  });
+  Future<wire.MessagePresentation> getMessagePresentation(
+    wire.GetMessagePresentationRequest request, {
+    RpcCancellation? cancellation,
+  });
+  Future<wire.MessageTechnicalData> getMessageTechnicalData(
+    wire.MessageReference request, {
+    RpcCancellation? cancellation,
+  });
   Future<wire.Message> getMessage(
     wire.MessageReference request, {
     RpcCancellation? cancellation,

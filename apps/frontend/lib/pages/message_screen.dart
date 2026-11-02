@@ -1,3 +1,8 @@
+import 'dart:math';
+
+import 'personal_message_filters_screen.dart';
+import '../api/generated/ffido/v1/ffido.pb.dart' as filter_wire;
+import '../widgets/message_technical_dialog.dart';
 import '../templates/template_engine.dart';
 import '../templates/template_settings.dart';
 import '../api/message_footer.dart';
@@ -14,7 +19,6 @@ import '../utils/ftn_text.dart';
 
 import 'dart:async';
 
-import 'package:flutter/services.dart';
 import 'package:flutter/rendering.dart' show ScrollDirection;
 
 import '../models/message_search.dart';
@@ -31,6 +35,9 @@ import '../models/message.dart';
 import '../models/conference.dart';
 import '../repositories/conference_repository.dart';
 import 'forward_destination.dart';
+import 'reply_destination.dart';
+import '../shortcuts/command_scope.dart';
+import '../shortcuts/desktop_commands.dart';
 import 'crosspost_destinations.dart';
 import '../repositories/message_repository.dart';
 
@@ -42,7 +49,7 @@ class MessageScreen extends StatefulWidget {
   final MessageRepository? repository;
   final Future<TemplateBundle?> Function()? loadTemplate;
   final ConferenceRepository? conferences;
-  final bool canRead, canPost;
+  final bool canRead, canPost, unsupportedFormat;
   final AreaKind kind;
   final bool personalMailbox;
   final List<Conference> conferenceOrder;
@@ -57,6 +64,7 @@ class MessageScreen extends StatefulWidget {
     this.conferences,
     this.canRead = false,
     this.canPost = false,
+    this.unsupportedFormat = false,
     this.kind = AreaKind.echo,
     this.personalMailbox = false,
     this.conferenceOrder = const [],
@@ -73,6 +81,22 @@ class _MessageScreenState extends State<MessageScreen>
 
   @override
   Future<void> refreshOnResume() async {
+    if (kind == AreaKind.echo) {
+      try {
+        if (await repository.filters.ensure()) {
+          await refreshPersonalView();
+          return;
+        }
+      } catch (e) {
+        if (mounted) {
+          setState(() {
+            error = '$e';
+            retry = refreshOnResume;
+          });
+        }
+        return;
+      }
+    }
     final message = selected;
     final epoch = repository.epoch;
     await load(
@@ -173,7 +197,7 @@ class _MessageScreenState extends State<MessageScreen>
   }
 
   Future<void> showSearch() async {
-    if (!canRead || loading || bulkBusy || unreadBusy || searchDialogOpen) {
+    if (commandReason(DesktopCommand.search) != null) {
       return;
     }
     final epoch = repository.epoch;
@@ -245,11 +269,14 @@ class _MessageScreenState extends State<MessageScreen>
       }
       setState(() {
         selected = result.message;
+        filterNeedsOpen = false;
         searchResult = result;
         searchLastId = result.message.id;
         revealSearch = true;
         threadId = null;
-        opened.add('$area/${result.message.id}');
+        if (!result.message.isCollapsed) {
+          opened.add('$area/${result.message.id}');
+        }
         if (personalMailbox &&
             result.message.positionRevision >= positionRevision) {
           positionRevision = result.message.positionRevision;
@@ -374,6 +401,7 @@ class _MessageScreenState extends State<MessageScreen>
       totalCount: 0,
       canRead: widget.canRead,
       canPost: widget.canPost,
+      unsupportedFormat: widget.unsupportedFormat,
       kind: widget.kind,
       personalMailbox: widget.personalMailbox,
     );
@@ -685,7 +713,10 @@ class _MessageScreenState extends State<MessageScreen>
                   .map((m) => m.id == result.id ? result : m)
                   .toList();
               selected = result;
-              opened.add('${destination.id}/${result.id}');
+              filterNeedsOpen = false;
+              if (!result.isCollapsed) {
+                opened.add('${destination.id}/${result.id}');
+              }
               firstOffset = 0;
               pageOffset = offset;
               hasMore = more;
@@ -854,7 +885,10 @@ class _MessageScreenState extends State<MessageScreen>
       if (result.id != message.id) throw const NotFoundException();
       setState(() {
         selected = result;
-        opened.add('$conferenceId/${result.id}');
+        filterNeedsOpen = false;
+        if (!result.isCollapsed) {
+          opened.add('$conferenceId/${result.id}');
+        }
         if (personalMailbox && result.positionRevision >= positionRevision) {
           positionRevision = result.positionRevision;
           lastOpenedMessageId = result.id;
@@ -903,49 +937,69 @@ class _MessageScreenState extends State<MessageScreen>
     bool reply = false,
     bool forward = false,
     bool quoted = true,
+    bool crossAreaReply = false,
+    bool personalOnly = false,
   }) async {
-    if ((forward && kind != AreaKind.echo) ||
-        loading ||
-        (!forward && !canPost) ||
-        ((reply || forward) && !canRead)) {
+    if (filteredSelection && (reply || forward || crossAreaReply)) return;
+    if (((forward || crossAreaReply) && kind != AreaKind.echo) ||
+        commandBusy ||
+        activeConference.unsupportedFormat ||
+        ((reply || forward || crossAreaReply) && selected == null) ||
+        (!forward && !crossAreaReply && !canPost) ||
+        ((reply || forward || crossAreaReply) && !canRead)) {
       return;
     }
-    final epoch = repository.epoch;
-    Conference? destination;
-    if (forward) {
-      destination = await Navigator.push<Conference>(
+    setState(() => composerOpen = true);
+    try {
+      final epoch = repository.epoch;
+      Conference? destination;
+      if (forward || crossAreaReply) {
+        destination = await Navigator.push<Conference>(
+          context,
+          MaterialPageRoute(
+            builder: (_) => crossAreaReply
+                ? ReplyDestination(
+                    repository: widget.conferences ?? conferenceRepository,
+                    sourceId: conferenceId,
+                    personalOnly: personalOnly,
+                  )
+                : ForwardDestination(
+                    repository: widget.conferences ?? conferenceRepository,
+                  ),
+          ),
+        );
+        if (!mounted || destination == null || repository.epoch != epoch) {
+          return;
+        }
+      }
+      final result = await Navigator.push<bool>(
         context,
         MaterialPageRoute(
-          builder: (_) => ForwardDestination(
-            repository: widget.conferences ?? conferenceRepository,
+          builder: (_) => _ComposeScreen(
+            repository: repository,
+            onAccessDenied: accessDenied,
+            conferenceId: conferenceId,
+            kind: kind,
+            conferenceName: conferenceName,
+            conferences: crossAreaReply
+                ? (widget.conferences ?? conferenceRepository)
+                : widget.conferences ??
+                      (widget.repository == null ? conferenceRepository : null),
+            destination: destination,
+            original: reply || forward || crossAreaReply ? selected : null,
+            forward: forward,
+            crossAreaReply: crossAreaReply,
+            quoted: quoted,
+            loadTemplate: widget.loadTemplate,
+            conferenceDescription: widget.conferenceDescription,
           ),
         ),
       );
-      if (!mounted || destination == null || repository.epoch != epoch) return;
-    }
-    final result = await Navigator.push<bool>(
-      context,
-      MaterialPageRoute(
-        builder: (_) => _ComposeScreen(
-          repository: repository,
-          onAccessDenied: accessDenied,
-          conferenceId: conferenceId,
-          kind: kind,
-          conferenceName: conferenceName,
-          conferences:
-              widget.conferences ??
-              (widget.repository == null ? conferenceRepository : null),
-          destination: destination,
-          original: reply || forward ? selected : null,
-          forward: forward,
-          quoted: quoted,
-          loadTemplate: widget.loadTemplate,
-          conferenceDescription: widget.conferenceDescription,
-        ),
-      ),
-    );
-    if (mounted && result == true && !forward) {
-      load(preserveThread: personalMailbox);
+      if (mounted && result == true && !forward && !crossAreaReply) {
+        load(preserveThread: personalMailbox);
+      }
+    } finally {
+      if (mounted) setState(() => composerOpen = false);
     }
   }
 
@@ -1195,25 +1249,305 @@ class _MessageScreenState extends State<MessageScreen>
     });
   }
 
-  @override
-  Widget build(BuildContext context) => CallbackShortcuts(
-    bindings: {
-      const SingleActivator(LogicalKeyboardKey.keyF, control: true): () =>
-          unawaited(showSearch()),
-      const SingleActivator(LogicalKeyboardKey.f6): () =>
-          unawaited(showSearch()),
-    },
-    child: Focus(
-      autofocus: true,
-      child: NotificationListener<UserScrollNotification>(
-        onNotification: (event) {
-          if (event.direction != ScrollDirection.idle && revealSearch) {
-            setState(() => revealSearch = false);
+  String _filterReason(String id) {
+    final rules = repository.filters.snapshot?.rules.where(
+      (r) => r.ruleId == id,
+    );
+    return rules != null && rules.isNotEmpty
+        ? personalRuleDescription(rules.first)
+        : 'Совпало правило $id';
+  }
+
+  bool filtersOpen = false, filterNeedsOpen = false;
+  bool get filteredSelection =>
+      selected?.isCollapsed == true || filterNeedsOpen;
+  Future<void> refreshPersonalView() async {
+    final captured = repository.epoch, current = ++version;
+    final previous = selected;
+    unawaited(cancellation?.cancel());
+    final token = cancellation = RpcCancellation();
+    if (!mounted) return;
+    setState(() {
+      loading = true;
+      error = null;
+    });
+    try {
+      await repository.filters.refresh(cancellation: token);
+      final target = max(20, messages.length), rows = <Message>[];
+      var offset = firstOffset, more = false;
+      while (rows.length < target) {
+        final limit = min(100, target - rows.length);
+        final page = threadId != null
+            ? await repository.getThreadPage(
+                conferenceId: conferenceId,
+                threadId: threadId!,
+                offset: offset,
+                limit: limit,
+                cancellation: token,
+              )
+            : await repository.getConferenceMessages(
+                conferenceId: conferenceId,
+                offset: offset,
+                limit: limit,
+                cancellation: token,
+              );
+        rows.addAll(page.messages);
+        offset += page.messages.length;
+        more = page.hasMore;
+        if (!more || page.messages.isEmpty) break;
+      }
+      if (!mounted || captured != repository.epoch || current != version) {
+        return;
+      }
+      setState(() {
+        messages = rows;
+        pageOffset = offset;
+        hasMore = more;
+        loading = false;
+        if (previous != null) {
+          final matches = rows.where((r) => r.id == previous.id);
+          if (matches.isEmpty) {
+            selected = null;
+            filterNeedsOpen = false;
+          } else if (matches.first.isCollapsed) {
+            selected = matches.first;
+            filterNeedsOpen = false;
+            searchResult = searchResult?.message.id == previous.id
+                ? MessageSearchResult(matches.first, {})
+                : null;
+          } else if (previous.isCollapsed || filterNeedsOpen) {
+            selected = matches.first;
+            filterNeedsOpen = true;
+            searchResult = searchResult?.message.id == previous.id
+                ? MessageSearchResult(matches.first, {})
+                : null;
           }
-          return false;
-        },
-        child: buildReader(context),
-      ),
+        }
+      });
+    } catch (e) {
+      if (mounted &&
+          captured == repository.epoch &&
+          current == version &&
+          e is ApiException &&
+          e.isAccessDenied) {
+        await accessDenied();
+      }
+      if (mounted && captured == repository.epoch && current == version) {
+        setState(() {
+          loading = false;
+          error = '$e';
+          retry = refreshPersonalView;
+        });
+      }
+    }
+  }
+
+  Future<void> managePersonalFilters([Message? message, String? field]) async {
+    if (commandBusy || kind != AreaKind.echo || !canRead) return;
+    final captured = repository.epoch;
+    filter_wire.PersonalMessageFilter? initial;
+    if (message != null && field != null) {
+      final value = switch (field) {
+        'author' => message.fromName,
+        'address' => message.fromAddress,
+        _ => message.subject,
+      };
+      if (value.trim().isEmpty) return;
+      initial = filter_wire.PersonalMessageFilter(
+        ruleId: newPersonalRuleId(),
+        enabled: true,
+        scope: filter_wire
+            .PersonalMessageFilterScope
+            .PERSONAL_MESSAGE_FILTER_SCOPE_CONFERENCE,
+        conferenceId: conferenceId,
+        authorContains: field == 'author' ? value : '',
+        addressEquals: field == 'address' ? value : '',
+        subjectContains: field == 'subject' ? value : '',
+      );
+    }
+    setState(() => filtersOpen = true);
+    try {
+      await Navigator.push<void>(
+        context,
+        MaterialPageRoute(
+          builder: (_) => PersonalMessageFiltersScreen(
+            repository: repository.filters,
+            conferenceId: conferenceId,
+            initialRule: initial,
+          ),
+        ),
+      );
+      if (mounted &&
+          captured == repository.epoch &&
+          repository.filters.supported == true) {
+        await refreshPersonalView();
+      }
+    } finally {
+      if (mounted) setState(() => filtersOpen = false);
+    }
+  }
+
+  Future<void> showFilteredRow(Message message) async {
+    final captured = repository.epoch;
+    await open(message);
+    if (mounted &&
+        repository.epoch == captured &&
+        selected?.id == message.id &&
+        selected!.isCollapsed) {
+      await revealPersonalMessage();
+    }
+  }
+
+  Future<void> revealPersonalMessage() async {
+    final source = selected;
+    if (source == null || commandBusy) return;
+    final captured = repository.epoch, current = ++version;
+    unawaited(cancellation?.cancel());
+    final token = cancellation = RpcCancellation();
+    final searching = searchResult != null;
+    setState(() {
+      loading = true;
+      error = null;
+    });
+    try {
+      final result = await repository.getPresentation(
+        conferenceId: conferenceId,
+        messageId: source.id,
+        reveal: source.isCollapsed,
+        query: searching ? searchQuery : '',
+        headersOnly: searchHeadersOnly,
+        cancellation: token,
+      );
+      if (!mounted || captured != repository.epoch || current != version) {
+        return;
+      }
+      setState(() {
+        selected = result.message;
+        filterNeedsOpen = false;
+        loading = false;
+        if (!result.message.isCollapsed) {
+          opened.add('$conferenceId/${source.id}');
+        }
+        final index = messages.indexWhere((m) => m.id == source.id);
+        if (index >= 0) messages[index] = result.message;
+        searchResult = searching ? result : null;
+        revealSearch = searching;
+      });
+    } catch (e) {
+      if (!mounted || captured != repository.epoch || current != version) {
+        return;
+      }
+      if (e is ApiException && e.isAccessDenied) await accessDenied();
+      if (mounted) {
+        setState(() {
+          loading = false;
+          error = '$e';
+          retry = revealPersonalMessage;
+        });
+      }
+    }
+  }
+
+  bool technicalOpen = false;
+  Future<void> showTechnicalData(String messageId) async {
+    if (commandBusy || !canRead || activeConference.unsupportedFormat) return;
+    final captured = repository.epoch;
+    final previousFocus = FocusManager.instance.primaryFocus;
+    setState(() => technicalOpen = true);
+    try {
+      await showDialog<void>(
+        context: context,
+        builder: (_) => MessageTechnicalDialog(
+          repository: repository,
+          conferenceId: conferenceId,
+          messageId: messageId,
+        ),
+      );
+    } finally {
+      if (mounted) {
+        setState(() => technicalOpen = false);
+        if (repository.epoch == captured &&
+            previousFocus?.context != null &&
+            previousFocus!.canRequestFocus) {
+          previousFocus.requestFocus();
+        }
+      }
+    }
+  }
+
+  bool composerOpen = false;
+  bool get commandBusy =>
+      loading ||
+      bulkBusy ||
+      unreadBusy ||
+      searchBusy ||
+      searchDialogOpen ||
+      composerOpen ||
+      technicalOpen ||
+      filtersOpen;
+
+  String? commandReason(DesktopCommand command) {
+    if (commandBusy) return 'Операция выполняется';
+    if (activeConference.unsupportedFormat) {
+      return 'Формат области не поддерживается';
+    }
+    if (command == DesktopCommand.compose) {
+      return canPost ? null : 'Нет права публикации';
+    }
+    if (!canRead) return 'Нет права чтения';
+    if (command == DesktopCommand.unread) {
+      if (!unreadNavigation) return 'Только в обычной эхе, вне цепочки';
+      return canNavigate(1) ? null : 'Дальнейших непрочитанных сообщений нет';
+    }
+    if (command == DesktopCommand.reply && filteredSelection) {
+      return 'Сначала покажите письмо';
+    }
+    if (command == DesktopCommand.reply && !canPost) {
+      return 'Нет права публикации';
+    }
+    if ((command == DesktopCommand.reply || command == DesktopCommand.list) &&
+        selected == null) {
+      return 'Нет открытого письма';
+    }
+    return null;
+  }
+
+  void returnToList() {
+    if (commandReason(DesktopCommand.list) != null) return;
+    if (personalMailbox) {
+      unawaited(load(preserveThread: true));
+    } else {
+      setState(() => selected = null);
+    }
+  }
+
+  Map<DesktopCommand, CommandAction> get readerCommands => {
+    for (final command in DesktopCommand.values.where(
+      (c) => c != DesktopCommand.help,
+    ))
+      command: commandReason(command) != null
+          ? CommandAction.disabled(commandReason(command)!)
+          : CommandAction.enabled(switch (command) {
+              DesktopCommand.unread => () => unawaited(navigate(1)),
+              DesktopCommand.reply => () => unawaited(compose(reply: true)),
+              DesktopCommand.compose => () => unawaited(compose()),
+              DesktopCommand.search => () => unawaited(showSearch()),
+              DesktopCommand.list => returnToList,
+              DesktopCommand.help => () {},
+            }),
+  };
+
+  @override
+  Widget build(BuildContext context) => CommandScope(
+    actions: readerCommands,
+    child: NotificationListener<UserScrollNotification>(
+      onNotification: (event) {
+        if (event.direction != ScrollDirection.idle && revealSearch) {
+          setState(() => revealSearch = false);
+        }
+        return false;
+      },
+      child: buildReader(context),
     ),
   );
 
@@ -1221,19 +1555,55 @@ class _MessageScreenState extends State<MessageScreen>
     appBar: AppBar(
       title: Text(conferenceName),
       actions: [
+        const CommandHelpButton(),
         if (canRead && !activeConference.unsupportedFormat)
+          CommandIconButton(
+            command: DesktopCommand.search,
+            label: 'Поиск по письмам',
+            icon: Icons.search,
+            onPressed: commandReason(DesktopCommand.search) == null
+                ? showSearch
+                : null,
+          ),
+        if (canRead &&
+            kind == AreaKind.echo &&
+            !activeConference.unsupportedFormat)
           IconButton(
-            onPressed: loading ? null : showSearch,
-            icon: const Icon(Icons.search),
-            tooltip: 'Поиск по письмам',
+            tooltip: 'Персональные фильтры',
+            onPressed: commandBusy ? null : () => managePersonalFilters(),
+            icon: const Icon(Icons.filter_alt_outlined),
           ),
         if (canRead && !activeConference.unsupportedFormat)
           PopupMenuButton<String>(
             tooltip: 'Действия области',
             enabled: !bulkBusy && !unreadBusy && !loading,
-            onSelected: (action) =>
-                action == 'unread' ? markSelectedUnread() : markAreaRead(),
+            onSelected: (action) {
+              if (action.startsWith('filter:')) {
+                managePersonalFilters(selected!, action.substring(7));
+              } else if (action == 'technical') {
+                showTechnicalData(selected!.id);
+              } else if (action == 'unread') {
+                markSelectedUnread();
+              } else {
+                markAreaRead();
+              }
+            },
             itemBuilder: (_) => [
+              if (selected != null && kind == AreaKind.echo)
+                for (final entry in {
+                  'author': 'Свернуть по автору',
+                  'address': 'Свернуть по адресу',
+                  'subject': 'Свернуть по теме',
+                }.entries)
+                  PopupMenuItem(
+                    value: 'filter:${entry.key}',
+                    child: Text(entry.value),
+                  ),
+              if (selected != null)
+                const PopupMenuItem(
+                  value: 'technical',
+                  child: Text('Технические данные'),
+                ),
               if (selected != null)
                 const PopupMenuItem(
                   value: 'unread',
@@ -1267,10 +1637,13 @@ class _MessageScreenState extends State<MessageScreen>
             tooltip: 'Обновить',
           ),
         if (canPost)
-          IconButton(
-            onPressed: loading ? null : () => compose(),
-            icon: const Icon(Icons.create),
-            tooltip: 'Новое сообщение',
+          CommandIconButton(
+            command: DesktopCommand.compose,
+            label: 'Новое сообщение',
+            icon: Icons.create,
+            onPressed: commandReason(DesktopCommand.compose) == null
+                ? () => compose()
+                : null,
           ),
       ],
     ),
@@ -1289,10 +1662,21 @@ class _MessageScreenState extends State<MessageScreen>
                     ),
                   ),
                   Expanded(
-                    child: TextButton.icon(
-                      onPressed: canNavigate(1) ? () => navigate(1) : null,
-                      icon: const Icon(Icons.chevron_right),
-                      label: const Text('Следующее'),
+                    child: Tooltip(
+                      message: unreadNavigation
+                          ? commandTooltip(
+                              DesktopCommand.unread,
+                              'Следующее непрочитанное',
+                            )
+                          : 'Следующее',
+                      excludeFromSemantics: true,
+                      child: TextButton.icon(
+                        onPressed: !commandBusy && canNavigate(1)
+                            ? () => navigate(1)
+                            : null,
+                        icon: const Icon(Icons.chevron_right),
+                        label: const Text('Следующее'),
+                      ),
                     ),
                   ),
                 ],
@@ -1368,7 +1752,44 @@ class _MessageScreenState extends State<MessageScreen>
             icon: const Icon(Icons.bookmark_outline),
             label: const Text('Продолжить с последнего открытого письма'),
           ),
-        if (selected != null)
+        if (selected != null && filteredSelection)
+          Expanded(
+            child: SingleChildScrollView(
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      selected!.subject,
+                      style: Theme.of(context).textTheme.titleLarge,
+                    ),
+                    Text('${selected!.fromName} <${selected!.fromAddress}>'),
+                    Text(
+                      filteredSelection && selected!.isCollapsed
+                          ? 'Письмо свернуто персональным фильтром'
+                          : 'Правило больше не действует. Письмо доступно к чтению.',
+                    ),
+                    for (final id in selected!.matchedFilterIds)
+                      Text(_filterReason(id)),
+                    FilledButton(
+                      onPressed: commandBusy ? null : revealPersonalMessage,
+                      child: Text(
+                        selected!.isCollapsed ? 'Показать' : 'Открыть',
+                      ),
+                    ),
+                    TextButton(
+                      onPressed: commandBusy
+                          ? null
+                          : () => managePersonalFilters(),
+                      child: const Text('Управление правилами'),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        if (selected != null && !filteredSelection)
           Expanded(
             child: SingleChildScrollView(
               controller: bodyController,
@@ -1376,17 +1797,15 @@ class _MessageScreenState extends State<MessageScreen>
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  TextButton(
-                    onPressed: loading
-                        ? null
-                        : () {
-                            if (personalMailbox) {
-                              load(preserveThread: true);
-                            } else {
-                              setState(() => selected = null);
-                            }
-                          },
-                    child: const Text('К списку'),
+                  Tooltip(
+                    message: commandTooltip(DesktopCommand.list, 'К списку'),
+                    excludeFromSemantics: true,
+                    child: TextButton(
+                      onPressed: commandReason(DesktopCommand.list) == null
+                          ? returnToList
+                          : null,
+                      child: const Text('К списку'),
+                    ),
                   ),
                   if (personalMailbox &&
                       selected!.direction != MailDirection.unspecified)
@@ -1447,15 +1866,24 @@ class _MessageScreenState extends State<MessageScreen>
                         Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            TextButton(
-                              onPressed: loading
-                                  ? null
-                                  : () => compose(reply: true),
-                              child: Text(kind.replyLabel),
+                            Tooltip(
+                              message: commandTooltip(
+                                DesktopCommand.reply,
+                                kind.replyLabel,
+                              ),
+                              excludeFromSemantics: true,
+                              child: TextButton(
+                                onPressed:
+                                    commandReason(DesktopCommand.reply) == null
+                                    ? () => compose(reply: true)
+                                    : null,
+                                child: Text(kind.replyLabel),
+                              ),
                             ),
                             PopupMenuButton<bool>(
                               tooltip: 'Вид ответа',
-                              enabled: !loading,
+                              enabled:
+                                  commandReason(DesktopCommand.reply) == null,
                               icon: const Icon(Icons.arrow_drop_down),
                               onSelected: (quoted) =>
                                   compose(reply: true, quoted: quoted),
@@ -1480,6 +1908,47 @@ class _MessageScreenState extends State<MessageScreen>
                               : () => compose(forward: true),
                           child: const Text('Переслать'),
                         ),
+                      if (canRead && kind == AreaKind.echo)
+                        for (final personal in [true, false])
+                          Wrap(
+                            crossAxisAlignment: WrapCrossAlignment.center,
+                            children: [
+                              TextButton(
+                                onPressed: loading
+                                    ? null
+                                    : () => compose(
+                                        crossAreaReply: true,
+                                        personalOnly: personal,
+                                      ),
+                                child: Text(
+                                  personal
+                                      ? 'Ответить лично'
+                                      : 'Ответить в другую область…',
+                                ),
+                              ),
+                              PopupMenuButton<bool>(
+                                tooltip: personal
+                                    ? 'Вид личного ответа'
+                                    : 'Вид ответа в другую область',
+                                enabled: !loading,
+                                onSelected: (quoted) => compose(
+                                  crossAreaReply: true,
+                                  personalOnly: personal,
+                                  quoted: quoted,
+                                ),
+                                itemBuilder: (_) => const [
+                                  PopupMenuItem(
+                                    value: true,
+                                    child: Text('С цитатой'),
+                                  ),
+                                  PopupMenuItem(
+                                    value: false,
+                                    child: Text('Без цитаты'),
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ),
                       TextButton(
                         onPressed: loading ? null : () => load(thread: true),
                         child: const Text('Цепочка сообщений'),
@@ -1511,12 +1980,60 @@ class _MessageScreenState extends State<MessageScreen>
                     overflow: TextOverflow.ellipsis,
                   ),
                   subtitle: Text(
-                    '${personalMailbox && message.direction != MailDirection.unspecified ? (message.direction == MailDirection.outgoing ? 'Исходящее · ' : 'Входящее · ') : ''}${message.fromName}\n${(message.bodyPreview ?? "").replaceAll(RegExp(r'\s+'), ' ').trim()}',
+                    '${personalMailbox && message.direction != MailDirection.unspecified ? (message.direction == MailDirection.outgoing ? 'Исходящее · ' : 'Входящее · ') : ''}${message.fromName}\n${(message.isCollapsed ? "Письмо свернуто персональным фильтром" : message.bodyPreview ?? "").replaceAll(RegExp(r'\s+'), ' ').trim()}',
                     maxLines: 3,
                     overflow: TextOverflow.ellipsis,
                   ),
                   isThreeLine: true,
                   leading: Icon(message.isRead ? Icons.drafts : Icons.mail),
+                  trailing: canRead && !activeConference.unsupportedFormat
+                      ? Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            if (message.isCollapsed)
+                              TextButton(
+                                onPressed: commandBusy
+                                    ? null
+                                    : () => showFilteredRow(message),
+                                child: const Text('Показать'),
+                              ),
+                            PopupMenuButton<String>(
+                              tooltip: 'Действия письма',
+                              enabled: !commandBusy,
+                              onSelected: (action) {
+                                if (action == 'technical') {
+                                  showTechnicalData(message.id);
+                                } else if (action == 'show') {
+                                  showFilteredRow(message);
+                                } else {
+                                  managePersonalFilters(message, action);
+                                }
+                              },
+                              itemBuilder: (_) => [
+                                if (message.isCollapsed)
+                                  const PopupMenuItem(
+                                    value: 'show',
+                                    child: Text('Показать'),
+                                  ),
+                                if (kind == AreaKind.echo)
+                                  for (final entry in {
+                                    'author': 'Свернуть по автору',
+                                    'address': 'Свернуть по адресу',
+                                    'subject': 'Свернуть по теме',
+                                  }.entries)
+                                    PopupMenuItem(
+                                      value: entry.key,
+                                      child: Text(entry.value),
+                                    ),
+                                const PopupMenuItem(
+                                  value: 'technical',
+                                  child: Text('Технические данные'),
+                                ),
+                              ],
+                            ),
+                          ],
+                        )
+                      : null,
                   onTap: loading ? null : () => open(message),
                 );
               },
@@ -1543,6 +2060,7 @@ class _ComposeScreen extends StatefulWidget {
   final Conference? destination;
   final Message? original;
   final bool forward;
+  final bool crossAreaReply;
   final AreaKind kind;
   const _ComposeScreen({
     required this.repository,
@@ -1556,6 +2074,7 @@ class _ComposeScreen extends StatefulWidget {
     this.destination,
     this.original,
     required this.forward,
+    this.crossAreaReply = false,
     required this.kind,
   });
   @override
@@ -1628,8 +2147,12 @@ class _ComposeScreenState extends State<_ComposeScreen> {
 
   Conference? destination;
   List<Conference> crosspostAreas = [];
+  AreaKind get targetKind => destination?.kind ?? widget.kind;
+  String? get replyId =>
+      widget.forward || widget.crossAreaReply ? null : widget.original?.id;
+  bool destinationTypeChanged = false;
   bool get canCrosspost =>
-      (widget.forward ? destination?.kind : widget.kind) == AreaKind.echo;
+      !widget.crossAreaReply && targetKind == AreaKind.echo;
   String get primaryId => destination?.id ?? widget.conferenceId;
   String get primaryName => destination?.name ?? widget.conferenceName;
   String? frozenCrosspostSignature;
@@ -1711,22 +2234,30 @@ class _ComposeScreenState extends State<_ComposeScreen> {
       setState(() => allowClose = true);
       unawaited(
         WidgetsBinding.instance.endOfFrame.then((_) {
+          if (!mounted) return;
+          final route = ModalRoute.of(context)!;
+          Navigator.popUntil(context, (candidate) => candidate == route);
           if (mounted) Navigator.pop(context, false);
         }),
       );
     });
     final original = widget.original;
     toName.text = original != null && !widget.forward
-        ? original.replyName
+        ? widget.crossAreaReply
+              ? original.fromName
+              : original.replyName
         : widget.kind == AreaKind.netmail
         ? ''
         : 'All';
     toAddress.text = original != null && !widget.forward
-        ? original.replyAddress
+        ? widget.crossAreaReply
+              ? original.fromAddress
+              : original.replyAddress
         : '';
     if (original != null) {
       final prefix = widget.forward ? 'Fwd: ' : 'Re: ';
-      subject.text = original.subject.startsWith(prefix)
+      subject.text =
+          original.subject.toLowerCase().startsWith(prefix.trim().toLowerCase())
           ? original.subject
           : '$prefix${original.subject}';
       if (widget.forward) {
@@ -1762,7 +2293,7 @@ class _ComposeScreenState extends State<_ComposeScreen> {
                 : widget.quoted
                 ? TemplateAction.quoted
                 : TemplateAction.reply,
-            kind: destination?.kind ?? widget.kind,
+            kind: targetKind,
             original: widget.original,
             name: profile.name,
             address: profile.address,
@@ -1818,12 +2349,46 @@ class _ComposeScreenState extends State<_ComposeScreen> {
     final target = await Navigator.push<Conference>(
       context,
       MaterialPageRoute(
-        builder: (_) => ForwardDestination(repository: widget.conferences!),
+        builder: (_) => widget.crossAreaReply
+            ? ReplyDestination(
+                repository: widget.conferences!,
+                sourceId: widget.conferenceId,
+              )
+            : ForwardDestination(repository: widget.conferences!),
       ),
     );
     if (!mounted || widget.repository.epoch != epoch || target == null) return;
+    if (widget.crossAreaReply &&
+        targetKind == AreaKind.netmail &&
+        target.kind == AreaKind.echo) {
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Опубликовать ответ в эхе?'),
+          content: Text(
+            'Ответ в ${target.name} будет доступен всем участникам эхи.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Отмена'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Выбрать эху'),
+            ),
+          ],
+        ),
+      );
+      if (!mounted || widget.repository.epoch != epoch || confirmed != true) {
+        return;
+      }
+    }
     setState(() {
+      destinationTypeChanged =
+          destinationTypeChanged || targetKind != target.kind;
       destination = target;
+      frozenUue = null;
       crosspostAreas.removeWhere((area) => area.id == target.id);
       operationId = MessageRepository.newOperationId();
     });
@@ -1837,7 +2402,7 @@ class _ComposeScreenState extends State<_ComposeScreen> {
     });
     var submitted = false;
     try {
-      if (widget.forward && !uncertain) {
+      if ((widget.forward || widget.crossAreaReply) && !uncertain) {
         final target = destination;
         if (target == null) {
           throw const ValidationException(message: 'Выберите эху назначения');
@@ -1848,16 +2413,18 @@ class _ComposeScreenState extends State<_ComposeScreen> {
         );
         if (!mounted || widget.repository.epoch != epoch) return;
         if (current == null ||
-            current.kind != AreaKind.echo ||
-            !current.canPost) {
-          setState(() => destination = null);
+            current.id != target.id ||
+            (widget.crossAreaReply
+                ? !isReplyDestination(current, widget.conferenceId) ||
+                      current.kind != target.kind
+                : current.kind != AreaKind.echo || !current.canPost)) {
+          if (!widget.crossAreaReply) setState(() => destination = null);
           throw const ValidationException(
-            message: 'Публикация в выбранную эху недоступна. Выберите другую.',
+            message: 'Публикация в выбранную область недоступна. Проверьте назначение или выберите другое.',
           );
         }
       }
-      if (widget.kind == AreaKind.netmail &&
-          !widget.forward &&
+      if (targetKind == AreaKind.netmail &&
           (toName.text.trim().isEmpty ||
               !RegExp(r'^[1-9][0-9]*:[1-9][0-9]*/[0-9]+(?:\.[0-9]+)?$')
                   .hasMatch(toAddress.text))) {
@@ -1874,7 +2441,7 @@ class _ComposeScreenState extends State<_ComposeScreen> {
           toAddress.text,
           subject.text,
           body.text,
-          widget.forward ? '' : widget.original?.id ?? '',
+          replyId ?? '',
         ].join('\u0000');
         if (!uncertain && frozenCrosspostSignature != signature) {
           operationId = MessageRepository.newOperationId();
@@ -1889,7 +2456,7 @@ class _ComposeScreenState extends State<_ComposeScreen> {
             toAddress: toAddress.text,
             subject: subject.text,
             body: body.text,
-            inReplyTo: widget.forward ? null : widget.original?.id,
+            inReplyTo: replyId,
           );
         }
         final draft = frozenCrosspost!;
@@ -1916,15 +2483,15 @@ class _ComposeScreenState extends State<_ComposeScreen> {
         }
       } else if (attachment != null) {
         frozenUue ??= UueDraft(
-          conference: destination?.id ?? widget.conferenceId,
+          conference: primaryId,
           operation: operationId,
           subject: subject.text,
           body: body.text,
           toName: toName.text,
           toAddress: toAddress.text,
-          reply: widget.forward ? '' : widget.original?.id ?? '',
+          reply: replyId ?? '',
           file: attachment!,
-          useFooter: widget.forward || widget.kind == AreaKind.echo,
+          useFooter: targetKind == AreaKind.echo,
         );
         final result = await widget.repository.uue.send(
           frozenUue!,
@@ -1945,18 +2512,20 @@ class _ComposeScreenState extends State<_ComposeScreen> {
         }
       } else {
         await widget.repository.sendMessage(
-          conferenceId: destination?.id ?? widget.conferenceId,
+          conferenceId: primaryId,
           toName: toName.text,
           toAddress: toAddress.text,
           subject: subject.text,
           body: body.text,
-          inReplyTo: widget.forward ? null : widget.original?.id,
+          inReplyTo: replyId,
           operationId: operationId,
-          useFooter: widget.forward || widget.kind == AreaKind.echo,
+          useFooter: targetKind == AreaKind.echo,
           cancellation: cancellation,
         );
       }
-      if (widget.forward) await widget.conferences!.clearCache();
+      if (widget.forward || widget.crossAreaReply) {
+        await widget.conferences!.clearCache();
+      }
       if (!mounted || widget.repository.epoch != epoch) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Сообщение сохранено локально')),
@@ -1972,7 +2541,7 @@ class _ComposeScreenState extends State<_ComposeScreen> {
       if (crosspostAreas.isEmpty && e is ApiException && e.isAccessDenied) {
         if (widget.forward && !uncertain) {
           destination = null;
-        } else if (!widget.forward) {
+        } else if (!widget.forward && !widget.crossAreaReply) {
           await widget.onAccessDenied();
         }
       }
@@ -2013,7 +2582,12 @@ class _ComposeScreenState extends State<_ComposeScreen> {
   }
 
   @override
-  Widget build(BuildContext context) => PopScope(
+  Widget build(BuildContext context) => CommandScope(
+    readerUnavailableReason: 'Команды читателя недоступны в редакторе',
+    child: buildComposer(context),
+  );
+
+  Widget buildComposer(BuildContext context) => PopScope(
     canPop: allowClose || crosspostAreas.isEmpty || (!sending && !uncertain),
     onPopInvokedWithResult: (didPop, result) async {
       if (didPop) return;
@@ -2031,6 +2605,7 @@ class _ComposeScreenState extends State<_ComposeScreen> {
       appBar: AppBar(
         title: const Text('Сообщение'),
         actions: [
+          const CommandHelpButton(),
           if (canCrosspost)
             PopupMenuButton<String>(
               tooltip: 'Дополнительно',
@@ -2101,8 +2676,18 @@ class _ComposeScreenState extends State<_ComposeScreen> {
               'Шаблон применён при открытии. После смены эхи проверьте оформление вручную.',
             ),
           Text(
-            '${widget.kind == AreaKind.echo ? 'Эха' : widget.kind.groupLabel}: ${widget.forward ? destination?.name ?? "не выбрана" : widget.conferenceName}',
+            '${targetKind == AreaKind.echo
+                ? 'Эха'
+                : targetKind == AreaKind.netmail
+                ? 'Netmail'
+                : targetKind.groupLabel}: ${destination?.name ?? (widget.forward ? "не выбрана" : widget.conferenceName)}',
           ),
+          if (widget.crossAreaReply && targetKind == AreaKind.netmail)
+            const Text('Личный ответ получателю через Netmail.'),
+          if (widget.crossAreaReply && destinationTypeChanged)
+            const Text(
+              'Шаблон уже применён. После смены типа области проверьте оформление вручную.',
+            ),
           if (crosspostAreas.isNotEmpty) ...[
             Text(
               'Кросспостинг: ${crosspostAreas.map((a) => a.name).join(', ')}',
@@ -2115,17 +2700,21 @@ class _ComposeScreenState extends State<_ComposeScreen> {
           ],
           if (widget.original != null &&
               !widget.forward &&
-              widget.kind == AreaKind.echo)
+              targetKind == AreaKind.echo)
             const Text(
               'Ответ будет опубликован в эхе и доступен всем участникам.',
             ),
-          if (widget.forward) ...[
+          if (widget.forward || widget.crossAreaReply) ...[
             Text('Источник: ${widget.conferenceName} (${widget.conferenceId})'),
             TextButton(
               onPressed: !templateReady || sending || uncertain
                   ? null
                   : changeDestination,
-              child: const Text('Изменить эху назначения'),
+              child: Text(
+                widget.crossAreaReply
+                    ? 'Изменить область назначения'
+                    : 'Изменить эху назначения',
+              ),
             ),
           ],
           TextField(
@@ -2135,7 +2724,9 @@ class _ComposeScreenState extends State<_ComposeScreen> {
                 templateReady &&
                 !sending &&
                 !uncertain &&
-                (widget.original == null || widget.forward),
+                (widget.original == null ||
+                    widget.forward ||
+                    widget.crossAreaReply),
             decoration: const InputDecoration(labelText: 'Получатель'),
           ),
           TextField(
@@ -2145,7 +2736,9 @@ class _ComposeScreenState extends State<_ComposeScreen> {
                 templateReady &&
                 !sending &&
                 !uncertain &&
-                (widget.original == null || widget.forward),
+                (widget.original == null ||
+                    widget.forward ||
+                    widget.crossAreaReply),
             decoration: const InputDecoration(
               labelText: 'FTN-адрес получателя',
             ),

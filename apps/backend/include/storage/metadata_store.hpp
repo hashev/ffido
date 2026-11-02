@@ -16,6 +16,7 @@
 #include "domain/bookmark.hpp"
 #include "domain/error.hpp"
 #include "domain/history.hpp"
+#include "domain/personal_filters.hpp"
 #include "domain/profile.hpp"
 #include "storage/mail_transfer.hpp"
 #include "storage/operation.hpp"
@@ -108,6 +109,12 @@ public:
 
   virtual std::expected<ReadingPosition, domain::ApiError> LastOpened(std::string_view user,
                                                                       std::string_view conference) = 0;
+
+  virtual std::expected<domain::PersonalMessageFilterSet, domain::ApiError> GetPersonalFilters(
+      std::string_view user) = 0;
+  virtual std::expected<uint64_t, domain::ApiError> ReplacePersonalFilters(
+      std::string_view user, uint64_t expected, std::string_view operation,
+      const std::vector<domain::PersonalMessageFilter>& rules, const std::function<bool()>& active = {}) = 0;
 
   // Profile
   [[nodiscard]] virtual std::expected<domain::Profile, domain::ApiError> GetProfile(std::string_view user_id) = 0;
