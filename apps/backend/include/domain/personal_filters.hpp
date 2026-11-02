@@ -8,7 +8,7 @@ struct PersonalMessageFilter {
   bool enabled = true;
   int scope = 1;
   std::string conference, author, address, subject;
-  bool operator==(const PersonalMessageFilter&) const = default;
+  bool operator==(const PersonalMessageFilter& other) const = default;
 };
 struct PersonalMessageFilterSet {
   uint64_t revision = 0;
