@@ -79,6 +79,16 @@ class FakeTransport implements ApiTransport {
     );
   }
 
+  Future<wire.FindMessageResponse> Function(wire.FindMessageRequest)? find;
+  @override
+  Future<wire.FindMessageResponse> findMessage(
+    wire.FindMessageRequest r, {
+    RpcCancellation? cancellation,
+  }) async {
+    calls.add(r);
+    return find == null ? wire.FindMessageResponse() : find!(r);
+  }
+
   final calls = <Object>[];
   @override
   Future<wire.ListConferencesResponse> listConferences(

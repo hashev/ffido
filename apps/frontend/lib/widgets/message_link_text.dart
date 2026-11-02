@@ -1,5 +1,8 @@
 import 'dart:async';
 
+import '../models/message_search.dart';
+import 'search_highlight.dart';
+
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -12,11 +15,15 @@ class MessageLinkText extends StatefulWidget {
   final String text;
   final ImageActions? actions;
   final bool sharedSelection;
+  final List<SearchRange> searchRanges;
+  final bool revealSearch;
   const MessageLinkText(
     this.text, {
     super.key,
     this.actions,
     this.sharedSelection = false,
+    this.searchRanges = const [],
+    this.revealSearch = false,
   });
   @override
   State<MessageLinkText> createState() => _MessageLinkTextState();
@@ -131,7 +138,14 @@ class _MessageLinkTextState extends State<MessageLinkText> {
       }
       offset = end;
     }
-    final textSpan = TextSpan(style: ftnTextStyle(scheme), children: spans);
+    final textSpan = TextSpan(
+      style: ftnTextStyle(scheme),
+      children: highlightSearch(
+        spans,
+        widget.searchRanges,
+        scheme.tertiaryContainer,
+      ),
+    );
     Widget result = widget.sharedSelection
         ? RichText(
             text: textSpan,
@@ -178,6 +192,12 @@ class _MessageLinkTextState extends State<MessageLinkText> {
         child: result,
       );
     }
-    return result;
+    return SearchReveal(
+      offset: widget.searchRanges.isEmpty
+          ? null
+          : widget.searchRanges.first.start,
+      enabled: widget.revealSearch,
+      child: result,
+    );
   }
 }

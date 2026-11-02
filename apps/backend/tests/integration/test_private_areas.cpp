@@ -1249,3 +1249,45 @@ TEST_F(PrivateAreasTest, MarkUnreadSupportsPrivateMailboxesAndReadOnlyAreasWitho
   service::MessageService denied(catalog, metadata, *policy);
   EXPECT_FALSE(denied.MarkAsUnread("ECHO", generation + "#1", "point1"));
 }
+
+TEST_F(PrivateAreasTest, FindMessageRespectsMailboxOwnerReadOnlyAndUnsupportedAreas) {
+  Mailboxes();
+  for (const auto& [id, area] : catalog->areas()) {
+    if (area.config.msgbase_type != "JAM") {
+      EXPECT_FALSE(messages->FindMessage(id, "fixture", 2, "oldest", {}, true, "owner"));
+      continue;
+    }
+    {
+      auto view =
+          storage::JamAccess::Open(*catalog, id, true, std::chrono::steady_clock::now() + std::chrono::seconds(2));
+      ASSERT_TRUE(view);
+      msgapi::JamMessage message;
+      message.SetSubject("fixture");
+      message.SetText("fixture");
+      ASSERT_EQ((*view)->messages().AddMessage(message), msgapi::JamError::kSuccess);
+    }
+    const std::string user =
+        area.files->personal_mailbox ? (id == storage::MailboxId("2:1/2.2") ? "point1" : "point2") : "owner";
+    auto found = messages->FindMessage(id, "FIXTURE", 2, "oldest", {}, true, user);
+    ASSERT_TRUE(found) << id;
+    ASSERT_TRUE(found->message) << id;
+    if (area.files->personal_mailbox) {
+      auto denied = messages->FindMessage(id, "FIXTURE", 2, "oldest", {}, true, user == "point1" ? "point2" : "owner");
+      ASSERT_FALSE(denied);
+      EXPECT_EQ(denied.error().code, domain::ErrorCode::kForbidden);
+    }
+  }
+  for (auto& [address, permission] : hpt.echoes.front().links)
+    permission.post = false;
+  auto policy = service::EchoAccess::Build(hpt, *catalog, {"2:1/2.1"});
+  ASSERT_TRUE(policy);
+  service::MessageService read_only(catalog, metadata, *policy);
+  auto found = read_only.FindMessage("ECHO", "FIXTURE", 1, "oldest", {}, true, "point1");
+  ASSERT_TRUE(found);
+  ASSERT_TRUE(found->message);
+  hpt.echoes.front().links.erase("2:1/2.2");
+  policy = service::EchoAccess::Build(hpt, *catalog, {"2:1/2.1"});
+  ASSERT_TRUE(policy);
+  service::MessageService denied(catalog, metadata, *policy);
+  EXPECT_FALSE(denied.FindMessage("ECHO", "FIXTURE", 1, "oldest", {}, true, "point1"));
+}

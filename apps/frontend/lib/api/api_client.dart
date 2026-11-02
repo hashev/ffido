@@ -364,6 +364,15 @@ class ApiClient implements ApiTransport, MessageFooterSupport {
     cancellation: cancellation,
   );
   @override
+  Future<wire.FindMessageResponse> findMessage(
+    wire.FindMessageRequest r, {
+    RpcCancellation? cancellation,
+  }) => _invoke(
+    'FindMessage',
+    (c, o) => c.findMessage(r, options: o),
+    cancellation: cancellation,
+  );
+  @override
   Future<wire.Message> getMessage(
     wire.MessageReference r, {
     RpcCancellation? cancellation,

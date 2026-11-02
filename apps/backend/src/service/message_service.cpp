@@ -13,6 +13,7 @@
 #include "service/auth_service.hpp"
 #include "service/crypto.hpp"
 #include "service/jam_mapping.hpp"
+#include "service/message_search.hpp"
 #include "service/request_context.hpp"
 
 namespace fidoback::service {
@@ -237,13 +238,127 @@ std::expected<domain::MessageDetail, domain::ApiError> MessageService::GetMessag
   auto result = Detail(**access, conference, *number, user);
   if (!result)
     return result;
-  const auto key_number = std::to_string(*number);
-  auto marked = metadata_->RecordMessageView(user, {conference, (*access)->generation(), key_number});
+  auto marked = RecordView(**access, conference, *number, user, *result);
   if (!marked)
     return std::unexpected(marked.error());
-  result->is_read = true;
-  result->position_revision = marked->revision;
   return result;
+}
+std::expected<void, domain::ApiError> MessageService::RecordView(storage::JamAccess& access,
+                                                                 std::string_view conference, uint32_t number,
+                                                                 std::string_view user, domain::MessageDetail& detail) {
+  const auto key = std::to_string(number);
+  auto marked = metadata_->RecordMessageView(user, {conference, access.generation(), key});
+  if (!marked)
+    return std::unexpected(marked.error());
+  detail.is_read = true;
+  detail.position_revision = marked->revision;
+  return {};
+}
+std::expected<domain::FindMessageResponse, domain::ApiError> MessageService::FindMessage(
+    std::string_view conference, std::string_view query, int scope, std::string_view sort, std::string_view start,
+    bool include_start, std::string_view user) {
+  // Trim the same whitespace as the client; the query itself remains literal.
+  auto folded = FoldSearch(query, false);
+  if (!folded)
+    return std::unexpected(folded.error());
+  const auto whitespace = [](char32_t c) {
+    return (c >= 9 && c <= 13) || c == 32 || c == 0x85 || c == 0xa0 || c == 0x1680 || (c >= 0x2000 && c <= 0x200a) ||
+           c == 0x2028 || c == 0x2029 || c == 0x202f || c == 0x205f || c == 0x3000 || c == 0xfeff;
+  };
+  // Trim at scalar boundaries without splitting UTF-8 characters.
+  size_t first = 0, last = folded->folded.size();
+  while (first < last && whitespace(folded->folded[first]))
+    ++first;
+  while (last > first && whitespace(folded->folded[last - 1]))
+    --last;
+  size_t scalar = 0, begin_byte = query.size(), end_byte = query.size();
+  for (size_t i = 0; i < query.size(); ++i) {
+    if ((static_cast<unsigned char>(query[i]) & 0xc0) == 0x80)
+      continue;
+    if (scalar == first)
+      begin_byte = i;
+    if (scalar == last)
+      end_byte = i;
+    ++scalar;
+  }
+  query = query.substr(begin_byte, end_byte - begin_byte);
+  if (query.empty() || query.size() > 256 || (scope != 1 && scope != 2) || (sort != "newest" && sort != "oldest"))
+    return std::unexpected(domain::ApiError::Validation("Invalid search parameters"));
+  auto permission = access_->Permissions(*metadata_, user, conference);
+  if (!permission)
+    return std::unexpected(permission.error());
+  if (!permission->read)
+    return std::unexpected(EchoAccess::Denied());
+  auto access =
+      storage::JamAccess::Open(*catalog_, conference, false, RequestDeadline(), RequestCancellation(), encoding_);
+  if (!access)
+    return std::unexpected(JamError(access.error()));
+  auto numbers = (*access)->messages().GetMessageNumbers();
+  if (!numbers) {
+    if (!RequestActive())
+      return std::unexpected(SearchInterrupted());
+    return std::unexpected(domain::ApiError::Server("Cannot list search messages"));
+  }
+  std::vector<std::pair<uint32_t, uint32_t>> ordered;
+  for (auto number : *numbers) {
+    if (!RequestActive())
+      return std::unexpected(SearchInterrupted());
+    auto header = (*access)->messages().GetHeader(number);
+    if (!header)
+      return std::unexpected(domain::ApiError::Server("Cannot read search header"));
+    ordered.emplace_back(header->date_written, number);
+  }
+  std::sort(ordered.begin(), ordered.end());
+  if (sort == "newest")
+    std::reverse(ordered.begin(), ordered.end());
+  size_t begin = 0;
+  if (!start.empty()) {
+    auto number = MessageNumber(**access, start);
+    if (!number)
+      return std::unexpected(number.error());
+    const auto found = std::find_if(ordered.begin(), ordered.end(), [&](auto row) { return row.second == *number; });
+    if (found == ordered.end())
+      return std::unexpected(domain::ApiError::NotFound("Search anchor unavailable"));
+    begin = static_cast<size_t>(found - ordered.begin()) + (include_start ? 0 : 1);
+  }
+  for (size_t i = begin; i < ordered.size(); ++i) {
+    if (!RequestActive())
+      return std::unexpected(SearchInterrupted());
+    const auto number = ordered[i].second;
+    auto detail = Detail(**access, conference, number, user);
+    if (!detail) {
+      if (!RequestActive())
+        return std::unexpected(SearchInterrupted());
+      return std::unexpected(detail.error());
+    }
+    auto original = (*access)->messages().ReadMessage(number, false);
+    if (!original)
+      return std::unexpected(domain::ApiError::Server("Cannot read search encoding"));
+    auto encoding = (*access)->messages().EffectiveEncoding(*original);
+    if (!encoding)
+      return std::unexpected(domain::ApiError::Server("Invalid search encoding"));
+    domain::FindMessageResponse result;
+    const std::array<std::string_view, 6> fields{detail->from_name,  detail->from_address, detail->to_name,
+                                                 detail->to_address, detail->subject,      detail->body};
+    for (size_t f = 0; f < (scope == 1 ? 5u : 6u); ++f) {
+      auto ranges = SearchRanges(fields[f], query, SearchCp866(*encoding), static_cast<int>(f + 1));
+      if (!ranges)
+        return std::unexpected(ranges.error());
+      result.matches.insert(result.matches.end(), ranges->begin(), ranges->end());
+    }
+    if (result.matches.empty())
+      continue;
+    if (!RequestActive())
+      return std::unexpected(SearchInterrupted());
+    auto marked = RecordView(**access, conference, number, user, *detail);
+    if (!marked)
+      return std::unexpected(marked.error());
+    result.message = std::move(*detail);
+    return result;
+  }
+  if (!RequestActive())
+    return std::unexpected(SearchInterrupted());
+  return domain::FindMessageResponse{};
 }
 std::expected<domain::MessageDetail, domain::ApiError> MessageService::PeekMessage(std::string_view conference,
                                                                                    std::string_view id,

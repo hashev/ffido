@@ -76,6 +76,13 @@ class FfidoClient extends $grpc.Client {
     return $createUnaryCall(_$listMessages, request, options: options);
   }
 
+  $grpc.ResponseFuture<$0.FindMessageResponse> findMessage(
+    $0.FindMessageRequest request, {
+    $grpc.CallOptions? options,
+  }) {
+    return $createUnaryCall(_$findMessage, request, options: options);
+  }
+
   $grpc.ResponseFuture<$0.Message> getMessage(
     $0.MessageReference request, {
     $grpc.CallOptions? options,
@@ -245,6 +252,11 @@ class FfidoClient extends $grpc.Client {
           '/ffido.v1.Ffido/ListMessages',
           ($0.ListMessagesRequest value) => value.writeToBuffer(),
           $0.ListMessagesResponse.fromBuffer);
+  static final _$findMessage =
+      $grpc.ClientMethod<$0.FindMessageRequest, $0.FindMessageResponse>(
+          '/ffido.v1.Ffido/FindMessage',
+          ($0.FindMessageRequest value) => value.writeToBuffer(),
+          $0.FindMessageResponse.fromBuffer);
   static final _$getMessage =
       $grpc.ClientMethod<$0.MessageReference, $0.Message>(
           '/ffido.v1.Ffido/GetMessage',
@@ -394,6 +406,15 @@ abstract class FfidoServiceBase extends $grpc.Service {
             ($core.List<$core.int> value) =>
                 $0.ListMessagesRequest.fromBuffer(value),
             ($0.ListMessagesResponse value) => value.writeToBuffer()));
+    $addMethod(
+        $grpc.ServiceMethod<$0.FindMessageRequest, $0.FindMessageResponse>(
+            'FindMessage',
+            findMessage_Pre,
+            false,
+            false,
+            ($core.List<$core.int> value) =>
+                $0.FindMessageRequest.fromBuffer(value),
+            ($0.FindMessageResponse value) => value.writeToBuffer()));
     $addMethod($grpc.ServiceMethod<$0.MessageReference, $0.Message>(
         'GetMessage',
         getMessage_Pre,
@@ -601,6 +622,14 @@ abstract class FfidoServiceBase extends $grpc.Service {
 
   $async.Future<$0.ListMessagesResponse> listMessages(
       $grpc.ServiceCall call, $0.ListMessagesRequest request);
+
+  $async.Future<$0.FindMessageResponse> findMessage_Pre($grpc.ServiceCall $call,
+      $async.Future<$0.FindMessageRequest> $request) async {
+    return findMessage($call, await $request);
+  }
+
+  $async.Future<$0.FindMessageResponse> findMessage(
+      $grpc.ServiceCall call, $0.FindMessageRequest request);
 
   $async.Future<$0.Message> getMessage_Pre($grpc.ServiceCall $call,
       $async.Future<$0.MessageReference> $request) async {

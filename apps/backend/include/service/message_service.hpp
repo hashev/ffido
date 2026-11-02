@@ -38,6 +38,11 @@ public:
                                                                            std::string_view anchor_message_id = {});
   std::expected<domain::MessageDetail, domain::ApiError> GetMessage(std::string_view conference,
                                                                     std::string_view message, std::string_view user);
+  std::expected<domain::FindMessageResponse, domain::ApiError> FindMessage(std::string_view conference,
+                                                                           std::string_view query, int scope,
+                                                                           std::string_view sort,
+                                                                           std::string_view start, bool include_start,
+                                                                           std::string_view user);
   // Read without changing read status, history or reading position (attachment indexing).
   std::expected<domain::MessageDetail, domain::ApiError> PeekMessage(std::string_view conference,
                                                                      std::string_view message, std::string_view user);
@@ -62,6 +67,9 @@ public:
 private:
   std::expected<domain::MessageDetail, domain::ApiError> Detail(storage::JamAccess& access, std::string_view conference,
                                                                 uint32_t number, std::string_view user);
+  std::expected<void, domain::ApiError> RecordView(storage::JamAccess& access, std::string_view conference,
+                                                   uint32_t number, std::string_view user,
+                                                   domain::MessageDetail& detail);
   std::shared_ptr<storage::JamCatalog> catalog_;
   std::shared_ptr<storage::IMetadataStore> metadata_;
   std::shared_ptr<const EchoAccess> access_;

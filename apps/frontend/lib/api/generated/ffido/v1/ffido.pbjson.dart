@@ -127,6 +127,44 @@ final $typed_data.Uint8List uueStateDescriptor = $convert.base64Decode(
     'kQARIYChRVVUVfU1RBVEVfSU5DT01QTEVURRACEhYKElVVRV9TVEFURV9DT05GTElDVBADEhUK'
     'EVVVRV9TVEFURV9DT1JSVVBUEAQ=');
 
+@$core.Deprecated('Use messageSearchScopeDescriptor instead')
+const MessageSearchScope$json = {
+  '1': 'MessageSearchScope',
+  '2': [
+    {'1': 'MESSAGE_SEARCH_SCOPE_UNSPECIFIED', '2': 0},
+    {'1': 'MESSAGE_SEARCH_HEADER_ONLY', '2': 1},
+    {'1': 'MESSAGE_SEARCH_HEADER_AND_BODY', '2': 2},
+  ],
+};
+
+/// Descriptor for `MessageSearchScope`. Decode as a `google.protobuf.EnumDescriptorProto`.
+final $typed_data.Uint8List messageSearchScopeDescriptor = $convert.base64Decode(
+    'ChJNZXNzYWdlU2VhcmNoU2NvcGUSJAogTUVTU0FHRV9TRUFSQ0hfU0NPUEVfVU5TUEVDSUZJRU'
+    'QQABIeChpNRVNTQUdFX1NFQVJDSF9IRUFERVJfT05MWRABEiIKHk1FU1NBR0VfU0VBUkNIX0hF'
+    'QURFUl9BTkRfQk9EWRAC');
+
+@$core.Deprecated('Use messageSearchFieldDescriptor instead')
+const MessageSearchField$json = {
+  '1': 'MessageSearchField',
+  '2': [
+    {'1': 'MESSAGE_SEARCH_FIELD_UNSPECIFIED', '2': 0},
+    {'1': 'MESSAGE_SEARCH_FROM_NAME', '2': 1},
+    {'1': 'MESSAGE_SEARCH_FROM_ADDRESS', '2': 2},
+    {'1': 'MESSAGE_SEARCH_TO_NAME', '2': 3},
+    {'1': 'MESSAGE_SEARCH_TO_ADDRESS', '2': 4},
+    {'1': 'MESSAGE_SEARCH_SUBJECT', '2': 5},
+    {'1': 'MESSAGE_SEARCH_BODY', '2': 6},
+  ],
+};
+
+/// Descriptor for `MessageSearchField`. Decode as a `google.protobuf.EnumDescriptorProto`.
+final $typed_data.Uint8List messageSearchFieldDescriptor = $convert.base64Decode(
+    'ChJNZXNzYWdlU2VhcmNoRmllbGQSJAogTUVTU0FHRV9TRUFSQ0hfRklFTERfVU5TUEVDSUZJRU'
+    'QQABIcChhNRVNTQUdFX1NFQVJDSF9GUk9NX05BTUUQARIfChtNRVNTQUdFX1NFQVJDSF9GUk9N'
+    'X0FERFJFU1MQAhIaChZNRVNTQUdFX1NFQVJDSF9UT19OQU1FEAMSHQoZTUVTU0FHRV9TRUFSQ0'
+    'hfVE9fQUREUkVTUxAEEhoKFk1FU1NBR0VfU0VBUkNIX1NVQkpFQ1QQBRIXChNNRVNTQUdFX1NF'
+    'QVJDSF9CT0RZEAY=');
+
 @$core.Deprecated('Use pageRequestDescriptor instead')
 const PageRequest$json = {
   '1': 'PageRequest',
@@ -1203,3 +1241,90 @@ final $typed_data.Uint8List uueSendStatusDescriptor = $convert.base64Decode(
     'EuTWVzc2FnZVJlZmVyZW5jZVIIbWVzc2FnZXMSHgoKZGlhZ25vc3RpYxgGIAEoCVIKZGlhZ25v'
     'c3RpYxIaCghmaWxlbmFtZRgHIAEoCVIIZmlsZW5hbWUSGwoJZmlsZV9zaXplGAggASgEUghmaW'
     'xlU2l6ZRIWCgZzaGEyNTYYCSABKAlSBnNoYTI1Ng==');
+
+@$core.Deprecated('Use findMessageRequestDescriptor instead')
+const FindMessageRequest$json = {
+  '1': 'FindMessageRequest',
+  '2': [
+    {'1': 'conference_id', '3': 1, '4': 1, '5': 9, '10': 'conferenceId'},
+    {'1': 'query', '3': 2, '4': 1, '5': 9, '10': 'query'},
+    {
+      '1': 'scope',
+      '3': 3,
+      '4': 1,
+      '5': 14,
+      '6': '.ffido.v1.MessageSearchScope',
+      '10': 'scope'
+    },
+    {
+      '1': 'sort',
+      '3': 4,
+      '4': 1,
+      '5': 14,
+      '6': '.ffido.v1.MessageSort',
+      '10': 'sort'
+    },
+    {'1': 'start_message_id', '3': 5, '4': 1, '5': 9, '10': 'startMessageId'},
+    {'1': 'include_start', '3': 6, '4': 1, '5': 8, '10': 'includeStart'},
+  ],
+};
+
+/// Descriptor for `FindMessageRequest`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List findMessageRequestDescriptor = $convert.base64Decode(
+    'ChJGaW5kTWVzc2FnZVJlcXVlc3QSIwoNY29uZmVyZW5jZV9pZBgBIAEoCVIMY29uZmVyZW5jZU'
+    'lkEhQKBXF1ZXJ5GAIgASgJUgVxdWVyeRIyCgVzY29wZRgDIAEoDjIcLmZmaWRvLnYxLk1lc3Nh'
+    'Z2VTZWFyY2hTY29wZVIFc2NvcGUSKQoEc29ydBgEIAEoDjIVLmZmaWRvLnYxLk1lc3NhZ2VTb3'
+    'J0UgRzb3J0EigKEHN0YXJ0X21lc3NhZ2VfaWQYBSABKAlSDnN0YXJ0TWVzc2FnZUlkEiMKDWlu'
+    'Y2x1ZGVfc3RhcnQYBiABKAhSDGluY2x1ZGVTdGFydA==');
+
+@$core.Deprecated('Use searchMatchDescriptor instead')
+const SearchMatch$json = {
+  '1': 'SearchMatch',
+  '2': [
+    {
+      '1': 'field',
+      '3': 1,
+      '4': 1,
+      '5': 14,
+      '6': '.ffido.v1.MessageSearchField',
+      '10': 'field'
+    },
+    {'1': 'start_utf16', '3': 2, '4': 1, '5': 13, '10': 'startUtf16'},
+    {'1': 'length_utf16', '3': 3, '4': 1, '5': 13, '10': 'lengthUtf16'},
+  ],
+};
+
+/// Descriptor for `SearchMatch`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List searchMatchDescriptor = $convert.base64Decode(
+    'CgtTZWFyY2hNYXRjaBIyCgVmaWVsZBgBIAEoDjIcLmZmaWRvLnYxLk1lc3NhZ2VTZWFyY2hGaW'
+    'VsZFIFZmllbGQSHwoLc3RhcnRfdXRmMTYYAiABKA1SCnN0YXJ0VXRmMTYSIQoMbGVuZ3RoX3V0'
+    'ZjE2GAMgASgNUgtsZW5ndGhVdGYxNg==');
+
+@$core.Deprecated('Use findMessageResponseDescriptor instead')
+const FindMessageResponse$json = {
+  '1': 'FindMessageResponse',
+  '2': [
+    {
+      '1': 'message',
+      '3': 1,
+      '4': 1,
+      '5': 11,
+      '6': '.ffido.v1.Message',
+      '10': 'message'
+    },
+    {
+      '1': 'matches',
+      '3': 2,
+      '4': 3,
+      '5': 11,
+      '6': '.ffido.v1.SearchMatch',
+      '10': 'matches'
+    },
+  ],
+};
+
+/// Descriptor for `FindMessageResponse`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List findMessageResponseDescriptor = $convert.base64Decode(
+    'ChNGaW5kTWVzc2FnZVJlc3BvbnNlEisKB21lc3NhZ2UYASABKAsyES5mZmlkby52MS5NZXNzYW'
+    'dlUgdtZXNzYWdlEi8KB21hdGNoZXMYAiADKAsyFS5mZmlkby52MS5TZWFyY2hNYXRjaFIHbWF0'
+    'Y2hlcw==');

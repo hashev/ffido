@@ -13,6 +13,7 @@ service Ffido {
   rpc ListConferences(ListConferencesRequest) returns (ListConferencesResponse);
   rpc GetConference(GetConferenceRequest) returns (Conference);
   rpc ListMessages(ListMessagesRequest) returns (ListMessagesResponse);
+  rpc FindMessage(FindMessageRequest) returns (FindMessageResponse);
   rpc GetMessage(MessageReference) returns (Message);
   rpc CreateMessage(CreateMessageRequest) returns (CreateMessageResponse);
   rpc CreateCrosspost(CreateCrosspostRequest) returns (CreateCrosspostResponse);
@@ -378,4 +379,38 @@ message UueSendStatus {
   string filename = 7;
   uint64 file_size = 8;
   string sha256 = 9;
+}
+
+// Последовательный поиск открывает только найденное письмо, без изменения пропущенных.
+enum MessageSearchScope {
+  MESSAGE_SEARCH_SCOPE_UNSPECIFIED = 0;
+  MESSAGE_SEARCH_HEADER_ONLY = 1;
+  MESSAGE_SEARCH_HEADER_AND_BODY = 2;
+}
+enum MessageSearchField {
+  MESSAGE_SEARCH_FIELD_UNSPECIFIED = 0;
+  MESSAGE_SEARCH_FROM_NAME = 1;
+  MESSAGE_SEARCH_FROM_ADDRESS = 2;
+  MESSAGE_SEARCH_TO_NAME = 3;
+  MESSAGE_SEARCH_TO_ADDRESS = 4;
+  MESSAGE_SEARCH_SUBJECT = 5;
+  MESSAGE_SEARCH_BODY = 6;
+}
+message FindMessageRequest {
+  string conference_id = 1;
+  string query = 2;
+  MessageSearchScope scope = 3;
+  MessageSort sort = 4;
+  string start_message_id = 5;
+  bool include_start = 6;
+}
+message SearchMatch {
+  MessageSearchField field = 1;
+  uint32 start_utf16 = 2;
+  uint32 length_utf16 = 3;
+}
+message FindMessageResponse {
+  // Отсутствие message означает конец поиска, а не ошибку.
+  Message message = 1;
+  repeated SearchMatch matches = 2;
 }

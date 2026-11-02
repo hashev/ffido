@@ -1,6 +1,9 @@
 import '../api/message_footer_snapshot.dart';
 
 import 'dart:math';
+import 'dart:convert';
+
+import '../models/message_search.dart';
 
 import 'uue_repository.dart';
 
@@ -103,6 +106,56 @@ class MessageRepository {
     );
     _check(captured, cancellation);
     return mapMessages(response);
+  }
+
+  Future<MessageSearchResult?> findMessage({
+    required String conferenceId,
+    required String query,
+    bool headersOnly = false,
+    String? startMessageId,
+    bool includeStart = true,
+    String sort = ApiConstants.sortNewest,
+    RpcCancellation? cancellation,
+  }) async {
+    query = query.trim();
+    if (query.isEmpty ||
+        utf8.encode(query).length > 256 ||
+        (sort != ApiConstants.sortNewest && sort != ApiConstants.sortOldest)) {
+      throw const ValidationException(
+        message: 'Введите запрос до 256 байт UTF-8',
+      );
+    }
+    final captured = epoch;
+    _check(captured, cancellation);
+    final response = await _apiClient.findMessage(
+      wire.FindMessageRequest(
+        conferenceId: conferenceId,
+        query: query,
+        scope: headersOnly
+            ? wire.MessageSearchScope.MESSAGE_SEARCH_HEADER_ONLY
+            : wire.MessageSearchScope.MESSAGE_SEARCH_HEADER_AND_BODY,
+        sort: sort == ApiConstants.sortNewest
+            ? wire.MessageSort.MESSAGE_SORT_DATE_DESCENDING
+            : wire.MessageSort.MESSAGE_SORT_DATE_ASCENDING,
+        startMessageId: startMessageId,
+        includeStart: includeStart,
+      ),
+      cancellation: cancellation,
+    );
+    _check(captured, cancellation);
+    if (!response.hasMessage()) {
+      if (response.matches.isNotEmpty) {
+        throw const ServerException(message: 'Некорректный результат поиска');
+      }
+      return null;
+    }
+    final ranges = MessageSearchResult.validate(response);
+    final message = mapMessage(response.message);
+    _latestRevision[conferenceId] = max(
+      _latestRevision[conferenceId] ?? 0,
+      message.positionRevision,
+    );
+    return MessageSearchResult(message, ranges);
   }
 
   /// Получение одного сообщения

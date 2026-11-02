@@ -1507,3 +1507,54 @@ TEST_F(ServicesTest, CrosspostFooterSurvivesServiceRestartAndRejectsChanges) {
   ASSERT_FALSE(conflict);
   EXPECT_EQ(conflict.error().code, domain::ErrorCode::kConflict);
 }
+
+TEST_F(ServicesTest, FindMessageAllFieldsAndNoResultPreservesPositionAndHistory) {
+  auto request = Request("find-fields");
+  request.to_name = "Получатель";
+  request.to_address = "2:5015/9.7";
+  auto saved = messages->CreateMessage("echo.one", request, "A");
+  ASSERT_TRUE(saved);
+  const auto header = test::ReadFile(temp.path() / "different-file.jhr");
+  auto none = messages->FindMessage("echo.one", "нетсовпадений", 2, "oldest", {}, true, "B");
+  ASSERT_TRUE(none);
+  EXPECT_FALSE(none->message);
+  EXPECT_TRUE(metadata->GetHistory("B")->empty());
+  EXPECT_EQ(metadata->LastOpened("B", "echo.one")->revision, 0);
+  for (const auto& [query, field] : std::vector<std::pair<std::string, int>>{
+           {"АЛЕКСЕЙ", 1}, {"2:5015/1.1", 2}, {"ПОЛУЧАТЕЛЬ", 3}, {"2:5015/9.7", 4}, {"ТЕМА", 5}, {"МИР", 6}}) {
+    auto found = messages->FindMessage("echo.one", query, 2, "oldest", {}, true, "B");
+    ASSERT_TRUE(found) << query;
+    ASSERT_TRUE(found->message) << query;
+    ASSERT_FALSE(found->matches.empty());
+    EXPECT_EQ(found->matches.front().field, field);
+    EXPECT_EQ(found->message->id, saved->id);
+  }
+  const auto position = *metadata->LastOpened("B", "echo.one");
+  const auto history = *metadata->GetHistory("B");
+  none = messages->FindMessage("echo.one", "нетсовпадений", 2, "oldest", {}, true, "B");
+  ASSERT_TRUE(none);
+  EXPECT_EQ(metadata->LastOpened("B", "echo.one")->revision, position.revision);
+  EXPECT_EQ(metadata->GetHistory("B")->size(), history.size());
+  EXPECT_EQ(test::ReadFile(temp.path() / "different-file.jhr"), header);
+  EXPECT_FALSE(messages->FindMessage("echo.one", std::string("\xff", 1), 2, "oldest", {}, true, "B"));
+  auto stale = messages->FindMessage("echo.one", "x", 2, "oldest", position.generation + "#999", true, "B");
+  ASSERT_FALSE(stale);
+  EXPECT_EQ(stale.error().code, domain::ErrorCode::kNotFound);
+}
+TEST_F(ServicesTest, FindMessageCancelledScanReleasesLeaseWithoutReadState) {
+  ASSERT_TRUE(messages->CreateMessage("echo.one", Request("cancel-search"), "A"));
+  {
+    std::stop_source stop;
+    stop.request_stop();
+    service::RequestBudget budget{std::chrono::steady_clock::now() + std::chrono::seconds(3), stop.get_token()};
+    service::RequestScope scope(budget);
+    auto result = messages->FindMessage("echo.one", "Привет", 2, "oldest", {}, true, "B");
+    ASSERT_FALSE(result);
+    EXPECT_EQ(result.error().code, domain::ErrorCode::kCancelled);
+  }
+  auto view =
+      storage::JamAccess::Open(*catalog, "echo.one", true, std::chrono::steady_clock::now() + std::chrono::seconds(1));
+  ASSERT_TRUE(view);
+  EXPECT_EQ(*metadata->GetReadCount("B", "echo.one", (*view)->generation()), 0);
+  EXPECT_TRUE(metadata->GetHistory("B")->empty());
+}
