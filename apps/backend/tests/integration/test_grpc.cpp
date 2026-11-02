@@ -1433,3 +1433,159 @@ TEST_F(GrpcTest, MarkUnreadRpcPreservesJamAndOtherUserAndRejectsStaleOrDeletedRe
   Auth(deleted, a);
   EXPECT_EQ(client->MarkUnread(&deleted, created.message(), &empty).error_code(), grpc::StatusCode::NOT_FOUND);
 }
+
+TEST_F(GrpcTest, FindMessageWalksBothOrdersWithoutReadingSkippedMessages) {
+  std::vector<std::string> ids;
+  for (int i = 0; i < 24; ++i) {
+    auto request = Request("search-" + std::to_string(i));
+    request.set_subject(i == 0 || i == 23 ? "Совпадение" : "Другое");
+    request.set_body("Hовый Привет");
+    wire::CreateMessageResponse created;
+    grpc::ClientContext context;
+    Auth(context, a);
+    ASSERT_TRUE(client->CreateMessage(&context, request, &created).ok());
+    ids.push_back(created.message().message_id());
+  }
+  wire::FindMessageRequest request;
+  request.set_conference_id("RU.TEST");
+  request.set_query("  СОВПАДЕНИЕ  ");
+  request.set_scope(wire::MESSAGE_SEARCH_HEADER_ONLY);
+  request.set_sort(wire::MESSAGE_SORT_DATE_ASCENDING);
+  request.set_start_message_id(ids.front());
+  request.set_include_start(true);
+  const auto find = [&]() {
+    wire::FindMessageResponse response;
+    grpc::ClientContext context;
+    Auth(context, b);
+    EXPECT_TRUE(client->FindMessage(&context, request, &response).ok());
+    return response;
+  };
+  auto first = find();
+  ASSERT_TRUE(first.has_message());
+  EXPECT_EQ(first.message().id(), ids.front());
+  EXPECT_TRUE(first.message().is_read());
+  ASSERT_EQ(first.matches_size(), 1);
+  EXPECT_EQ(first.matches(0).field(), wire::MESSAGE_SEARCH_SUBJECT);
+  EXPECT_EQ(first.matches(0).length_utf16(), 10);
+  request.set_include_start(false);
+  auto last = find();
+  ASSERT_TRUE(last.has_message());
+  EXPECT_EQ(last.message().id(), ids.back());
+  request.set_start_message_id(last.message().id());
+  EXPECT_FALSE(find().has_message());
+  request.set_sort(wire::MESSAGE_SORT_DATE_DESCENDING);
+  auto backward = find();
+  ASSERT_TRUE(backward.has_message());
+  EXPECT_EQ(backward.message().id(), ids.front());
+  request.clear_start_message_id();
+  request.set_query("НОВЫЙ");
+  EXPECT_FALSE(find().has_message());  // body excluded
+  request.set_scope(wire::MESSAGE_SEARCH_HEADER_AND_BODY);
+  auto cp866 = find();
+  ASSERT_TRUE(cp866.has_message());
+  EXPECT_EQ(cp866.matches(0).field(), wire::MESSAGE_SEARCH_BODY);
+  EXPECT_EQ(cp866.matches(0).start_utf16(), 0);
+  EXPECT_EQ(cp866.matches(0).length_utf16(), 5);
+  wire::ListMessagesRequest list;
+  list.set_conference_id("RU.TEST");
+  list.set_sort(wire::MESSAGE_SORT_DATE_ASCENDING);
+  list.mutable_page()->set_limit(100);
+  for (const auto& token : {a, b}) {
+    grpc::ClientContext context;
+    Auth(context, token);
+    wire::ListMessagesResponse rows;
+    ASSERT_TRUE(client->ListMessages(&context, list, &rows).ok());
+    ASSERT_EQ(rows.messages_size(), 24);
+    for (int i = 0; i < rows.messages_size(); ++i)
+      EXPECT_EQ(rows.messages(i).is_read(), token == b && (i == 0 || i == 23));
+  }
+}
+TEST_F(GrpcTest, FindMessageChecksParametersAccessAndAnchors) {
+  wire::FindMessageRequest request;
+  request.set_conference_id("RU.TEST");
+  request.set_scope(wire::MESSAGE_SEARCH_HEADER_AND_BODY);
+  request.set_sort(wire::MESSAGE_SORT_DATE_ASCENDING);
+  request.set_query(std::string(256, 'a'));
+  auto status = [&]() {
+    grpc::ClientContext context;
+    Auth(context, a);
+    wire::FindMessageResponse response;
+    return client->FindMessage(&context, request, &response);
+  };
+  EXPECT_TRUE(status().ok());
+  request.set_query(std::string(257, 'a'));
+  EXPECT_EQ(status().error_code(), grpc::StatusCode::INVALID_ARGUMENT);
+  request.set_query("   ");
+  EXPECT_EQ(status().error_code(), grpc::StatusCode::INVALID_ARGUMENT);
+  request.set_query("x");
+  request.GetReflection()->SetEnumValue(&request, request.GetDescriptor()->FindFieldByName("scope"), 99);
+  EXPECT_EQ(status().error_code(), grpc::StatusCode::INVALID_ARGUMENT);
+  request.set_scope(wire::MESSAGE_SEARCH_HEADER_ONLY);
+  request.set_sort(wire::MESSAGE_SORT_UNSPECIFIED);
+  EXPECT_EQ(status().error_code(), grpc::StatusCode::INVALID_ARGUMENT);
+  request.set_sort(wire::MESSAGE_SORT_DATE_ASCENDING);
+  request.set_start_message_id("old-generation#42");
+  EXPECT_EQ(status().error_code(), grpc::StatusCode::NOT_FOUND);
+  request.clear_start_message_id();
+  request.set_conference_id("PRIVATE.UNKNOWN");
+  EXPECT_FALSE(status().ok());
+}
+
+TEST_F(ForcedUtf8GrpcTest, FindMessageDoesNotApplyCp866PairsToUtf8Override) {
+  auto create = Request("search-utf8");
+  create.set_subject("😀 Привет");
+  create.set_body("Hовый рУ");
+  wire::CreateMessageResponse saved;
+  grpc::ClientContext posting;
+  Auth(posting, a);
+  ASSERT_TRUE(client->CreateMessage(&posting, create, &saved).ok());
+  wire::FindMessageRequest request;
+  request.set_conference_id("RU.TEST");
+  request.set_sort(wire::MESSAGE_SORT_DATE_ASCENDING);
+  request.set_scope(wire::MESSAGE_SEARCH_HEADER_AND_BODY);
+  request.set_query("Новый");
+  wire::FindMessageResponse response;
+  grpc::ClientContext searching;
+  Auth(searching, b);
+  ASSERT_TRUE(client->FindMessage(&searching, request, &response).ok());
+  EXPECT_FALSE(response.has_message());
+  request.set_query("ПРИВЕТ");
+  grpc::ClientContext second;
+  Auth(second, b);
+  ASSERT_TRUE(client->FindMessage(&second, request, &response).ok());
+  ASSERT_TRUE(response.has_message());
+  ASSERT_EQ(response.matches_size(), 1);
+  EXPECT_EQ(response.matches(0).start_utf16(), 3);
+  EXPECT_EQ(response.matches(0).length_utf16(), 6);
+}
+TEST_F(ForcedKoi8GrpcTest, FindMessageHonorsOverrideDespiteStaleCp866Chrs) {
+  auto create = Request("search-koi8");
+  create.set_subject("Привет");
+  create.set_body("Hовый");
+  wire::CreateMessageResponse saved;
+  grpc::ClientContext posting;
+  Auth(posting, a);
+  ASSERT_TRUE(client->CreateMessage(&posting, create, &saved).ok());
+  auto header = test::ReadFile(temp.path() / "file.jhr");
+  const auto at = header.find("CHRS: KOI8-R 2");
+  ASSERT_NE(at, std::string::npos);
+  header.replace(at, 14, "CHRS: CP866 2 ");
+  std::ofstream(temp.path() / "file.jhr", std::ios::binary | std::ios::trunc) << header;
+  wire::FindMessageRequest request;
+  request.set_conference_id("RU.TEST");
+  request.set_sort(wire::MESSAGE_SORT_DATE_ASCENDING);
+  request.set_scope(wire::MESSAGE_SEARCH_HEADER_AND_BODY);
+  request.set_query("Новый");
+  wire::FindMessageResponse response;
+  grpc::ClientContext first;
+  Auth(first, b);
+  ASSERT_TRUE(client->FindMessage(&first, request, &response).ok());
+  EXPECT_FALSE(response.has_message());
+  request.set_query("ПРИВЕТ");
+  grpc::ClientContext second;
+  Auth(second, b);
+  ASSERT_TRUE(client->FindMessage(&second, request, &response).ok());
+  ASSERT_TRUE(response.has_message());
+  EXPECT_EQ(response.message().subject(), "Привет");
+  EXPECT_EQ(test::ReadFile(temp.path() / "file.jhr"), header);
+}

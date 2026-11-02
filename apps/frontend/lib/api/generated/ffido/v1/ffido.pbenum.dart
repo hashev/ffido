@@ -184,5 +184,68 @@ class UueState extends $pb.ProtobufEnum {
   const UueState._(super.value, super.name);
 }
 
+/// Последовательный поиск открывает только найденное письмо, без изменения пропущенных.
+class MessageSearchScope extends $pb.ProtobufEnum {
+  static const MessageSearchScope MESSAGE_SEARCH_SCOPE_UNSPECIFIED =
+      MessageSearchScope._(
+          0, _omitEnumNames ? '' : 'MESSAGE_SEARCH_SCOPE_UNSPECIFIED');
+  static const MessageSearchScope MESSAGE_SEARCH_HEADER_ONLY =
+      MessageSearchScope._(
+          1, _omitEnumNames ? '' : 'MESSAGE_SEARCH_HEADER_ONLY');
+  static const MessageSearchScope MESSAGE_SEARCH_HEADER_AND_BODY =
+      MessageSearchScope._(
+          2, _omitEnumNames ? '' : 'MESSAGE_SEARCH_HEADER_AND_BODY');
+
+  static const $core.List<MessageSearchScope> values = <MessageSearchScope>[
+    MESSAGE_SEARCH_SCOPE_UNSPECIFIED,
+    MESSAGE_SEARCH_HEADER_ONLY,
+    MESSAGE_SEARCH_HEADER_AND_BODY,
+  ];
+
+  static final $core.List<MessageSearchScope?> _byValue =
+      $pb.ProtobufEnum.$_initByValueList(values, 2);
+  static MessageSearchScope? valueOf($core.int value) =>
+      value < 0 || value >= _byValue.length ? null : _byValue[value];
+
+  const MessageSearchScope._(super.value, super.name);
+}
+
+class MessageSearchField extends $pb.ProtobufEnum {
+  static const MessageSearchField MESSAGE_SEARCH_FIELD_UNSPECIFIED =
+      MessageSearchField._(
+          0, _omitEnumNames ? '' : 'MESSAGE_SEARCH_FIELD_UNSPECIFIED');
+  static const MessageSearchField MESSAGE_SEARCH_FROM_NAME =
+      MessageSearchField._(1, _omitEnumNames ? '' : 'MESSAGE_SEARCH_FROM_NAME');
+  static const MessageSearchField MESSAGE_SEARCH_FROM_ADDRESS =
+      MessageSearchField._(
+          2, _omitEnumNames ? '' : 'MESSAGE_SEARCH_FROM_ADDRESS');
+  static const MessageSearchField MESSAGE_SEARCH_TO_NAME =
+      MessageSearchField._(3, _omitEnumNames ? '' : 'MESSAGE_SEARCH_TO_NAME');
+  static const MessageSearchField MESSAGE_SEARCH_TO_ADDRESS =
+      MessageSearchField._(
+          4, _omitEnumNames ? '' : 'MESSAGE_SEARCH_TO_ADDRESS');
+  static const MessageSearchField MESSAGE_SEARCH_SUBJECT =
+      MessageSearchField._(5, _omitEnumNames ? '' : 'MESSAGE_SEARCH_SUBJECT');
+  static const MessageSearchField MESSAGE_SEARCH_BODY =
+      MessageSearchField._(6, _omitEnumNames ? '' : 'MESSAGE_SEARCH_BODY');
+
+  static const $core.List<MessageSearchField> values = <MessageSearchField>[
+    MESSAGE_SEARCH_FIELD_UNSPECIFIED,
+    MESSAGE_SEARCH_FROM_NAME,
+    MESSAGE_SEARCH_FROM_ADDRESS,
+    MESSAGE_SEARCH_TO_NAME,
+    MESSAGE_SEARCH_TO_ADDRESS,
+    MESSAGE_SEARCH_SUBJECT,
+    MESSAGE_SEARCH_BODY,
+  ];
+
+  static final $core.List<MessageSearchField?> _byValue =
+      $pb.ProtobufEnum.$_initByValueList(values, 6);
+  static MessageSearchField? valueOf($core.int value) =>
+      value < 0 || value >= _byValue.length ? null : _byValue[value];
+
+  const MessageSearchField._(super.value, super.name);
+}
+
 const $core.bool _omitEnumNames =
     $core.bool.fromEnvironment('protobuf.omit_enum_names');

@@ -14,6 +14,13 @@ import '../utils/ftn_text.dart';
 
 import 'dart:async';
 
+import 'package:flutter/services.dart';
+import 'package:flutter/rendering.dart' show ScrollDirection;
+
+import '../models/message_search.dart';
+import '../widgets/search_highlight.dart';
+import '../widgets/message_search_dialog.dart';
+
 import 'package:flutter/material.dart';
 import 'package:grpc/grpc_or_grpcweb.dart' show StatusCode;
 
@@ -62,7 +69,7 @@ class MessageScreen extends StatefulWidget {
 class _MessageScreenState extends State<MessageScreen>
     with RefreshOnResume<MessageScreen> {
   @override
-  bool get resumeRefreshEnabled => !unreadBusy && !bulkBusy;
+  bool get resumeRefreshEnabled => !unreadBusy && !bulkBusy && !searchBusy;
 
   @override
   Future<void> refreshOnResume() async {
@@ -146,6 +153,215 @@ class _MessageScreenState extends State<MessageScreen>
   RpcCancellation? bulkCancellation;
   String? threadId;
   RpcCancellation? cancellation;
+  String searchQuery = '';
+  bool searchHeadersOnly = false,
+      searchBusy = false,
+      searchDialogOpen = false,
+      revealSearch = false;
+  String? searchLastId, searchNotice;
+  MessageSearchResult? searchResult;
+  RpcCancellation? searchCancellation;
+  void resetSearch({bool clearQuery = false}) {
+    searchResult = null;
+    searchLastId = null;
+    searchNotice = null;
+    revealSearch = false;
+    if (clearQuery) {
+      searchQuery = '';
+      searchHeadersOnly = false;
+    }
+  }
+
+  Future<void> showSearch() async {
+    if (!canRead || loading || bulkBusy || unreadBusy || searchDialogOpen) {
+      return;
+    }
+    final epoch = repository.epoch;
+    searchDialogOpen = true;
+    final choice = await showDialog<({String query, bool headersOnly})>(
+      context: context,
+      builder: (_) => MessageSearchDialog(
+        query: searchQuery,
+        headersOnly: searchHeadersOnly,
+      ),
+    );
+    searchDialogOpen = false;
+    if (!mounted || epoch != repository.epoch || choice == null) return;
+    if (choice.query != searchQuery ||
+        choice.headersOnly != searchHeadersOnly) {
+      resetSearch();
+    }
+    searchQuery = choice.query;
+    searchHeadersOnly = choice.headersOnly;
+    await findNext();
+  }
+
+  void cancelSearch() {
+    ++version;
+    unawaited(searchCancellation?.cancel());
+    setState(() {
+      searchBusy = false;
+      loading = false;
+      searchNotice = 'Поиск отменён';
+    });
+  }
+
+  Future<void> findNext() async {
+    if (loading || !canRead || searchQuery.isEmpty) return;
+    final current = ++version, epoch = repository.epoch;
+    final area = conferenceId;
+    final token = searchCancellation = RpcCancellation();
+    unawaited(cancellation?.cancel());
+    final anchor = searchLastId ?? selected?.id;
+    final includeStart = searchLastId == null;
+    setState(() {
+      searchBusy = true;
+      loading = true;
+      error = null;
+      searchNotice = null;
+    });
+    bool valid() =>
+        mounted &&
+        current == version &&
+        epoch == repository.epoch &&
+        area == conferenceId;
+    try {
+      final result = await repository.findMessage(
+        conferenceId: area,
+        query: searchQuery,
+        headersOnly: searchHeadersOnly,
+        startMessageId: anchor,
+        includeStart: includeStart,
+        cancellation: token,
+      );
+      if (!valid()) return;
+      if (result == null) {
+        setState(() {
+          searchResult = null;
+          revealSearch = false;
+          searchNotice = 'До конца области совпадений нет';
+        });
+        return;
+      }
+      setState(() {
+        selected = result.message;
+        searchResult = result;
+        searchLastId = result.message.id;
+        revealSearch = true;
+        threadId = null;
+        opened.add('$area/${result.message.id}');
+        if (personalMailbox &&
+            result.message.positionRevision >= positionRevision) {
+          positionRevision = result.message.positionRevision;
+          lastOpenedMessageId = result.message.id;
+        }
+      });
+      try {
+        final page = await repository.getConferenceMessages(
+          conferenceId: area,
+          anchorMessageId: result.message.id,
+          cancellation: token,
+        );
+        if (!valid()) return;
+        setState(() {
+          messages = page.messages;
+          firstOffset = page.actualOffset ?? 0;
+          pageOffset = firstOffset + messages.length;
+          hasMore = page.hasMore;
+        });
+      } catch (e) {
+        if (!valid()) return;
+        if (e is ApiException &&
+            (e.isAccessDenied || e is UnauthorizedException)) {
+          rethrow;
+        }
+        setState(() {
+          messages = [];
+          hasMore = false;
+          searchNotice = 'Письмо найдено. Не удалось обновить список: $e';
+        });
+      }
+    } catch (e) {
+      if (!valid()) return;
+      if (e is ApiException &&
+          (e.isAccessDenied || e is UnauthorizedException)) {
+        await accessDenied();
+      }
+      if (!valid()) return;
+      setState(() {
+        searchNotice =
+            e is ApiException && e.statusCode == StatusCode.unimplemented
+            ? 'Сервер не поддерживает поиск. Обновите сервер.'
+            : 'Ошибка поиска: $e';
+      });
+    } finally {
+      if (valid()) {
+        setState(() {
+          searchBusy = false;
+          loading = false;
+        });
+      }
+    }
+  }
+
+  Widget searchHeader(String text, int field, {TextStyle? style}) {
+    final ranges = searchResult?.matches[field] ?? const <SearchRange>[];
+    return SearchReveal(
+      offset: ranges.isEmpty ? null : ranges.first.start,
+      enabled: revealSearch && searchResult?.firstField == field,
+      child: SelectableText.rich(
+        TextSpan(
+          children: highlightSearch(
+            [TextSpan(text: text)],
+            ranges,
+            Theme.of(context).colorScheme.tertiaryContainer,
+          ),
+        ),
+        style: style,
+      ),
+    );
+  }
+
+  Widget correspondent(
+    String label,
+    String name,
+    String address,
+    int nameField,
+    int addressField,
+  ) {
+    final text = '$label ${_correspondent(name, address)}';
+    final ranges = <SearchRange>[
+      for (final range
+          in searchResult?.matches[nameField] ?? const <SearchRange>[])
+        SearchRange(
+          range.start + label.length + 1,
+          range.end + label.length + 1,
+        ),
+      for (final range
+          in searchResult?.matches[addressField] ?? const <SearchRange>[])
+        SearchRange(
+          range.start + label.length + name.length + 3,
+          range.end + label.length + name.length + 3,
+        ),
+    ];
+    return SearchReveal(
+      offset: ranges.isEmpty ? null : ranges.first.start,
+      enabled:
+          revealSearch &&
+          (searchResult?.firstField == nameField ||
+              searchResult?.firstField == addressField),
+      child: SelectableText.rich(
+        TextSpan(
+          children: highlightSearch(
+            [TextSpan(text: text)],
+            ranges,
+            Theme.of(context).colorScheme.tertiaryContainer,
+          ),
+        ),
+      ),
+    );
+  }
+
   late final StreamSubscription<int> subscription;
   @override
   void initState() {
@@ -164,6 +380,9 @@ class _MessageScreenState extends State<MessageScreen>
     conferenceOrder = List.unmodifiable(widget.conferenceOrder);
     orderEpoch = repository.epoch;
     subscription = repository.sessionChanges.listen((_) {
+      resetSearch(clearQuery: true);
+      searchBusy = false;
+      unawaited(searchCancellation?.cancel());
       opened.clear();
       echoesExhausted = true;
       bulkOperation = null;
@@ -183,6 +402,7 @@ class _MessageScreenState extends State<MessageScreen>
   @override
   void dispose() {
     ++version;
+    unawaited(searchCancellation?.cancel());
     listController.dispose();
     bodyController.dispose();
     unawaited(cancellation?.cancel());
@@ -198,7 +418,8 @@ class _MessageScreenState extends State<MessageScreen>
     bool preserveOpenedMessage = false,
     String? anchorMessageId,
   }) async {
-    if (unreadBusy || !canRead || (more && loading)) return;
+    if (searchBusy || unreadBusy || !canRead || (more && loading)) return;
+    if (!more) resetSearch();
     if (!more) echoesExhausted = false;
     final current = ++version;
     unawaited(cancellation?.cancel());
@@ -538,6 +759,7 @@ class _MessageScreenState extends State<MessageScreen>
 
   Future<void> navigate(int direction) async {
     if (loading || bulkBusy) return;
+    resetSearch();
     if (unreadNavigation) {
       await navigateUnread(direction);
       return;
@@ -612,6 +834,7 @@ class _MessageScreenState extends State<MessageScreen>
 
   Future<void> open(Message message) async {
     if (loading || unreadBusy || bulkBusy) return;
+    resetSearch();
     final current = ++version;
     unawaited(cancellation?.cancel());
     final token = cancellation = RpcCancellation();
@@ -727,6 +950,7 @@ class _MessageScreenState extends State<MessageScreen>
   }
 
   Future<void> accessDenied() async {
+    resetSearch();
     if (mounted) {
       setState(() {
         messages = [];
@@ -972,10 +1196,37 @@ class _MessageScreenState extends State<MessageScreen>
   }
 
   @override
-  Widget build(BuildContext context) => Scaffold(
+  Widget build(BuildContext context) => CallbackShortcuts(
+    bindings: {
+      const SingleActivator(LogicalKeyboardKey.keyF, control: true): () =>
+          unawaited(showSearch()),
+      const SingleActivator(LogicalKeyboardKey.f6): () =>
+          unawaited(showSearch()),
+    },
+    child: Focus(
+      autofocus: true,
+      child: NotificationListener<UserScrollNotification>(
+        onNotification: (event) {
+          if (event.direction != ScrollDirection.idle && revealSearch) {
+            setState(() => revealSearch = false);
+          }
+          return false;
+        },
+        child: buildReader(context),
+      ),
+    ),
+  );
+
+  Widget buildReader(BuildContext context) => Scaffold(
     appBar: AppBar(
       title: Text(conferenceName),
       actions: [
+        if (canRead && !activeConference.unsupportedFormat)
+          IconButton(
+            onPressed: loading ? null : showSearch,
+            icon: const Icon(Icons.search),
+            tooltip: 'Поиск по письмам',
+          ),
         if (canRead && !activeConference.unsupportedFormat)
           PopupMenuButton<String>(
             tooltip: 'Действия области',
@@ -1050,6 +1301,25 @@ class _MessageScreenState extends State<MessageScreen>
           ),
     body: Column(
       children: [
+        if (searchQuery.isNotEmpty)
+          Wrap(
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              Text('Поиск: $searchQuery'),
+              TextButton(
+                onPressed: loading ? null : findNext,
+                child: const Text('Найти далее'),
+              ),
+              TextButton(
+                onPressed: searchBusy
+                    ? cancelSearch
+                    : () => setState(() => resetSearch(clearQuery: true)),
+                child: Text(searchBusy ? 'Отменить поиск' : 'Закрыть поиск'),
+              ),
+            ],
+          ),
+        if (searchNotice != null)
+          Padding(padding: const EdgeInsets.all(8), child: Text(searchNotice!)),
         if (unreadNavigation && !loading && !canNavigate(1) && error == null)
           const Padding(
             padding: EdgeInsets.all(8),
@@ -1125,17 +1395,41 @@ class _MessageScreenState extends State<MessageScreen>
                           ? 'Исходящее'
                           : 'Входящее',
                     ),
-                  Text(
-                    'От: ${_correspondent(selected!.fromName, selected!.fromAddress)}',
-                  ),
-                  Text(
-                    'К: ${_correspondent(selected!.toName, selected!.toAddress)}',
-                  ),
+                  if (searchResult == null) ...[
+                    Text(
+                      'От: ${_correspondent(selected!.fromName, selected!.fromAddress)}',
+                    ),
+                    Text(
+                      'К: ${_correspondent(selected!.toName, selected!.toAddress)}',
+                    ),
+                  ] else ...[
+                    correspondent(
+                      'От:',
+                      selected!.fromName,
+                      selected!.fromAddress,
+                      1,
+                      2,
+                    ),
+                    correspondent(
+                      'К:',
+                      selected!.toName,
+                      selected!.toAddress,
+                      3,
+                      4,
+                    ),
+                  ],
                   Text(selected!.date.toLocal().toString().split('.').first),
-                  Text(
-                    selected!.subject,
-                    style: Theme.of(context).textTheme.titleLarge,
-                  ),
+                  if (searchResult == null)
+                    Text(
+                      selected!.subject,
+                      style: Theme.of(context).textTheme.titleLarge,
+                    )
+                  else
+                    searchHeader(
+                      selected!.subject,
+                      5,
+                      style: Theme.of(context).textTheme.titleLarge,
+                    ),
                   const Divider(),
                   UueBody(
                     key: ValueKey(
@@ -1144,6 +1438,8 @@ class _MessageScreenState extends State<MessageScreen>
                     repository: repository.uue,
                     conference: conferenceId,
                     message: selected!,
+                    searchRanges: searchResult?.matches[6] ?? const [],
+                    revealSearch: revealSearch && searchResult?.firstField == 6,
                   ),
                   Wrap(
                     children: [
@@ -1226,7 +1522,11 @@ class _MessageScreenState extends State<MessageScreen>
               },
             ),
           ),
-        if (canRead && !loading && error == null && messages.isEmpty)
+        if (canRead &&
+            selected == null &&
+            !loading &&
+            error == null &&
+            messages.isEmpty)
           const Expanded(child: Center(child: Text('Сообщений нет'))),
       ],
     ),

@@ -106,6 +106,7 @@ endif()
 target_compile_features(${PROJECT_NAME} PRIVATE cxx_std_20)
 # --- Tests ---
 set(TEST_SOURCES
+  tests/unit/test_message_search.cpp
   tests/unit/test_uue.cpp
   tests/unit/test_crc32.cpp
   tests/unit/test_jam_attributes.cpp

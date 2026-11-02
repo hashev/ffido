@@ -36,6 +36,7 @@ public:
   FFIDO_RPC(ListConferences, ffido::v1::ListConferencesRequest, ffido::v1::ListConferencesResponse)
   FFIDO_RPC(GetConference, ffido::v1::GetConferenceRequest, ffido::v1::Conference)
   FFIDO_RPC(ListMessages, ffido::v1::ListMessagesRequest, ffido::v1::ListMessagesResponse)
+  FFIDO_RPC(FindMessage, ffido::v1::FindMessageRequest, ffido::v1::FindMessageResponse)
   FFIDO_RPC(GetMessage, ffido::v1::MessageReference, ffido::v1::Message)
   FFIDO_RPC(CreateMessage, ffido::v1::CreateMessageRequest, ffido::v1::CreateMessageResponse)
   FFIDO_RPC(CreateCrosspost, ffido::v1::CreateCrosspostRequest, ffido::v1::CreateCrosspostResponse)

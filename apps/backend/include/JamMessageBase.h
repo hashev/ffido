@@ -605,6 +605,9 @@ public:
   }
 
   [[nodiscard]] std::expected<std::vector<uint32_t>, JamError> GetMessageNumbers() const;
+  std::expected<std::string, JamError> EffectiveEncoding(const JamMessage& message) const {
+    return MessageEncoding(message, default_encoding_, force_encoding_);
+  }
   [[nodiscard]] std::expected<JamMessage, JamError> ReadMessage(uint32_t msg_num, bool include_body = true) const;
   std::expected<uint32_t, JamError> GetLastRead(std::string_view username);
   [[nodiscard]] JamError SetLastRead(std::string_view username, uint32_t msg_num);

@@ -266,6 +266,27 @@ grpc::Status GrpcService::ListMessages(grpc::ServerContext* context, const wire:
     return {};
   });
 }
+grpc::Status GrpcService::FindMessage(grpc::ServerContext* context, const wire::FindMessageRequest* request,
+                                      wire::FindMessageResponse* response) {
+  return Dispatch(context, [&](const auto& user) -> Result {
+    if (request->sort() != wire::MESSAGE_SORT_DATE_ASCENDING && request->sort() != wire::MESSAGE_SORT_DATE_DESCENDING)
+      return std::unexpected(domain::ApiError::Validation("Unknown search sort"));
+    auto result = messages_.FindMessage(request->conference_id(), request->query(), static_cast<int>(request->scope()),
+                                        request->sort() == wire::MESSAGE_SORT_DATE_ASCENDING ? "oldest" : "newest",
+                                        request->start_message_id(), request->include_start(), user.id);
+    if (!result)
+      return std::unexpected(result.error());
+    if (result->message)
+      Map(*result->message, request->conference_id(), response->mutable_message());
+    for (const auto& range : result->matches) {
+      auto* match = response->add_matches();
+      match->set_field(static_cast<wire::MessageSearchField>(range.field));
+      match->set_start_utf16(range.start_utf16);
+      match->set_length_utf16(range.length_utf16);
+    }
+    return {};
+  });
+}
 grpc::Status GrpcService::GetMessage(grpc::ServerContext* context, const wire::MessageReference* request,
                                      wire::Message* response) {
   return Dispatch(context, [&](const auto& user) -> Result {

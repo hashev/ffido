@@ -63,7 +63,11 @@ TEST(Contract, RpcSurfaceAndTrustedIdentity) {
   const auto* service =
       google::protobuf::DescriptorPool::generated_pool()->FindServiceByName("ffido.v1.Ffido");
   ASSERT_NE(service, nullptr);
-  EXPECT_EQ(service->method_count(), 26);
+  EXPECT_EQ(service->method_count(), 27);
+  ASSERT_NE(service->FindMethodByName("FindMessage"), nullptr);
+  EXPECT_EQ(service->FindMethodByName("FindMessage")->input_type(), ffido::v1::FindMessageRequest::descriptor());
+  EXPECT_EQ(service->FindMethodByName("FindMessage")->output_type(), ffido::v1::FindMessageResponse::descriptor());
+  EXPECT_EQ(ffido::v1::FindMessageRequest::descriptor()->FindFieldByName("user_id"), nullptr);
   EXPECT_EQ(service->FindMethodByName("MarkRead")->output_type()->full_name(),
             "google.protobuf.Empty");
   ASSERT_NE(service->FindMethodByName("MarkUnread"), nullptr);

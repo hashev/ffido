@@ -4097,6 +4097,277 @@ class UueSendStatus extends $pb.GeneratedMessage {
   void clearSha256() => $_clearField(9);
 }
 
+class FindMessageRequest extends $pb.GeneratedMessage {
+  factory FindMessageRequest({
+    $core.String? conferenceId,
+    $core.String? query,
+    MessageSearchScope? scope,
+    MessageSort? sort,
+    $core.String? startMessageId,
+    $core.bool? includeStart,
+  }) {
+    final result = FindMessageRequest._();
+    if (conferenceId != null) result.conferenceId = conferenceId;
+    if (query != null) result.query = query;
+    if (scope != null) result.scope = scope;
+    if (sort != null) result.sort = sort;
+    if (startMessageId != null) result.startMessageId = startMessageId;
+    if (includeStart != null) result.includeStart = includeStart;
+    return result;
+  }
+
+  FindMessageRequest._();
+
+  factory FindMessageRequest.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      FindMessageRequest()..mergeFromBuffer(data, registry);
+  factory FindMessageRequest.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      FindMessageRequest()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'FindMessageRequest',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'ffido.v1'),
+      createEmptyInstance: FindMessageRequest.$_createMessage)
+    ..aOS(1, _omitFieldNames ? '' : 'conferenceId')
+    ..aOS(2, _omitFieldNames ? '' : 'query')
+    ..aE<MessageSearchScope>(3, _omitFieldNames ? '' : 'scope',
+        enumValues: MessageSearchScope.values)
+    ..aE<MessageSort>(4, _omitFieldNames ? '' : 'sort',
+        enumValues: MessageSort.values)
+    ..aOS(5, _omitFieldNames ? '' : 'startMessageId')
+    ..aOB(6, _omitFieldNames ? '' : 'includeStart')
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  FindMessageRequest clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  FindMessageRequest copyWith(void Function(FindMessageRequest) updates) =>
+      super.copyWith((message) => updates(message as FindMessageRequest))
+          as FindMessageRequest;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  @$core.Deprecated('Use FindMessageRequest() / FindMessageRequest.new instead')
+  static FindMessageRequest create() => FindMessageRequest._();
+  static $pb.GeneratedMessage $_createMessage() => FindMessageRequest._();
+  @$core.override
+  FindMessageRequest createEmptyInstance() => FindMessageRequest._();
+  @$core.pragma('dart2js:noInline')
+  static FindMessageRequest getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<FindMessageRequest>(
+          FindMessageRequest.$_createMessage);
+  static FindMessageRequest? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $core.String get conferenceId => $_getSZ(0);
+  @$pb.TagNumber(1)
+  set conferenceId($core.String value) => $_setString(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasConferenceId() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearConferenceId() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  $core.String get query => $_getSZ(1);
+  @$pb.TagNumber(2)
+  set query($core.String value) => $_setString(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasQuery() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearQuery() => $_clearField(2);
+
+  @$pb.TagNumber(3)
+  MessageSearchScope get scope => $_getN(2);
+  @$pb.TagNumber(3)
+  set scope(MessageSearchScope value) => $_setField(3, value);
+  @$pb.TagNumber(3)
+  $core.bool hasScope() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearScope() => $_clearField(3);
+
+  @$pb.TagNumber(4)
+  MessageSort get sort => $_getN(3);
+  @$pb.TagNumber(4)
+  set sort(MessageSort value) => $_setField(4, value);
+  @$pb.TagNumber(4)
+  $core.bool hasSort() => $_has(3);
+  @$pb.TagNumber(4)
+  void clearSort() => $_clearField(4);
+
+  @$pb.TagNumber(5)
+  $core.String get startMessageId => $_getSZ(4);
+  @$pb.TagNumber(5)
+  set startMessageId($core.String value) => $_setString(4, value);
+  @$pb.TagNumber(5)
+  $core.bool hasStartMessageId() => $_has(4);
+  @$pb.TagNumber(5)
+  void clearStartMessageId() => $_clearField(5);
+
+  @$pb.TagNumber(6)
+  $core.bool get includeStart => $_getBF(5);
+  @$pb.TagNumber(6)
+  set includeStart($core.bool value) => $_setBool(5, value);
+  @$pb.TagNumber(6)
+  $core.bool hasIncludeStart() => $_has(5);
+  @$pb.TagNumber(6)
+  void clearIncludeStart() => $_clearField(6);
+}
+
+class SearchMatch extends $pb.GeneratedMessage {
+  factory SearchMatch({
+    MessageSearchField? field_1,
+    $core.int? startUtf16,
+    $core.int? lengthUtf16,
+  }) {
+    final result = SearchMatch._();
+    if (field_1 != null) result.field_1 = field_1;
+    if (startUtf16 != null) result.startUtf16 = startUtf16;
+    if (lengthUtf16 != null) result.lengthUtf16 = lengthUtf16;
+    return result;
+  }
+
+  SearchMatch._();
+
+  factory SearchMatch.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      SearchMatch()..mergeFromBuffer(data, registry);
+  factory SearchMatch.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      SearchMatch()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'SearchMatch',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'ffido.v1'),
+      createEmptyInstance: SearchMatch.$_createMessage)
+    ..aE<MessageSearchField>(1, _omitFieldNames ? '' : 'field',
+        enumValues: MessageSearchField.values)
+    ..aI(2, _omitFieldNames ? '' : 'startUtf16', fieldType: $pb.PbFieldType.OU3)
+    ..aI(3, _omitFieldNames ? '' : 'lengthUtf16',
+        fieldType: $pb.PbFieldType.OU3)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  SearchMatch clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  SearchMatch copyWith(void Function(SearchMatch) updates) =>
+      super.copyWith((message) => updates(message as SearchMatch))
+          as SearchMatch;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  @$core.Deprecated('Use SearchMatch() / SearchMatch.new instead')
+  static SearchMatch create() => SearchMatch._();
+  static $pb.GeneratedMessage $_createMessage() => SearchMatch._();
+  @$core.override
+  SearchMatch createEmptyInstance() => SearchMatch._();
+  @$core.pragma('dart2js:noInline')
+  static SearchMatch getDefault() =>
+      _defaultInstance ??= $pb.GeneratedMessage.$_defaultFor<SearchMatch>(
+          SearchMatch.$_createMessage);
+  static SearchMatch? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  MessageSearchField get field_1 => $_getN(0);
+  @$pb.TagNumber(1)
+  set field_1(MessageSearchField value) => $_setField(1, value);
+  @$pb.TagNumber(1)
+  $core.bool hasField_1() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearField_1() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  $core.int get startUtf16 => $_getIZ(1);
+  @$pb.TagNumber(2)
+  set startUtf16($core.int value) => $_setUnsignedInt32(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasStartUtf16() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearStartUtf16() => $_clearField(2);
+
+  @$pb.TagNumber(3)
+  $core.int get lengthUtf16 => $_getIZ(2);
+  @$pb.TagNumber(3)
+  set lengthUtf16($core.int value) => $_setUnsignedInt32(2, value);
+  @$pb.TagNumber(3)
+  $core.bool hasLengthUtf16() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearLengthUtf16() => $_clearField(3);
+}
+
+class FindMessageResponse extends $pb.GeneratedMessage {
+  factory FindMessageResponse({
+    Message? message,
+    $core.Iterable<SearchMatch>? matches,
+  }) {
+    final result = FindMessageResponse._();
+    if (message != null) result.message = message;
+    if (matches != null) result.matches.addAll(matches);
+    return result;
+  }
+
+  FindMessageResponse._();
+
+  factory FindMessageResponse.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      FindMessageResponse()..mergeFromBuffer(data, registry);
+  factory FindMessageResponse.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      FindMessageResponse()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'FindMessageResponse',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'ffido.v1'),
+      createEmptyInstance: FindMessageResponse.$_createMessage)
+    ..aOM<Message>(1, _omitFieldNames ? '' : 'message',
+        subBuilder: Message.$_createMessage)
+    ..pPM<SearchMatch>(2, _omitFieldNames ? '' : 'matches',
+        subBuilder: SearchMatch.$_createMessage)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  FindMessageResponse clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  FindMessageResponse copyWith(void Function(FindMessageResponse) updates) =>
+      super.copyWith((message) => updates(message as FindMessageResponse))
+          as FindMessageResponse;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  @$core
+      .Deprecated('Use FindMessageResponse() / FindMessageResponse.new instead')
+  static FindMessageResponse create() => FindMessageResponse._();
+  static $pb.GeneratedMessage $_createMessage() => FindMessageResponse._();
+  @$core.override
+  FindMessageResponse createEmptyInstance() => FindMessageResponse._();
+  @$core.pragma('dart2js:noInline')
+  static FindMessageResponse getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<FindMessageResponse>(
+          FindMessageResponse.$_createMessage);
+  static FindMessageResponse? _defaultInstance;
+
+  /// Отсутствие message означает конец поиска, а не ошибку.
+  @$pb.TagNumber(1)
+  Message get message => $_getN(0);
+  @$pb.TagNumber(1)
+  set message(Message value) => $_setField(1, value);
+  @$pb.TagNumber(1)
+  $core.bool hasMessage() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearMessage() => $_clearField(1);
+  @$pb.TagNumber(1)
+  Message ensureMessage() => $_ensure(0);
+
+  @$pb.TagNumber(2)
+  $pb.PbList<SearchMatch> get matches => $_getList(1);
+}
+
 const $core.bool _omitFieldNames =
     $core.bool.fromEnvironment('protobuf.omit_field_names');
 const $core.bool _omitMessageNames =

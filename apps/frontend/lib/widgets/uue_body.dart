@@ -16,6 +16,7 @@ import '../utils/uue_image.dart';
 import '../media/message_images.dart';
 import '../utils/message_links.dart';
 import 'message_link_text.dart';
+import '../models/message_search.dart';
 import 'external_image_preview.dart';
 
 class UueBody extends StatefulWidget {
@@ -24,6 +25,8 @@ class UueBody extends StatefulWidget {
   final Message message;
   final MessageImages Function(String)? createImages;
   final ImageActions? imageActions;
+  final List<SearchRange> searchRanges;
+  final bool revealSearch;
   const UueBody({
     super.key,
     required this.repository,
@@ -31,6 +34,8 @@ class UueBody extends StatefulWidget {
     required this.message,
     this.createImages,
     this.imageActions,
+    this.searchRanges = const [],
+    this.revealSearch = false,
   });
   @override
   State<UueBody> createState() => _UueBodyState();
@@ -40,7 +45,7 @@ class _UueBodyState extends State<UueBody> {
   final cancellation = RpcCancellation();
   List<UuePart> parts = [];
   String? error;
-  bool raw = false;
+  bool raw = false, searchSourceDismissed = false;
   late final MessageImages images;
   late final int initialEpoch;
   late final StreamSubscription<int> sessionSubscription;
@@ -58,6 +63,14 @@ class _UueBodyState extends State<UueBody> {
       if (mounted) setState(() => parts = []);
     });
     unawaited(load());
+  }
+
+  @override
+  void didUpdateWidget(covariant UueBody oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!identical(oldWidget.searchRanges, widget.searchRanges)) {
+      searchSourceDismissed = false;
+    }
   }
 
   void imagesChanged() {
@@ -97,7 +110,7 @@ class _UueBodyState extends State<UueBody> {
   }
 
   final shownImages = <Uri>{};
-  Widget text(String value) {
+  Widget text(String value, [int bodyOffset = 0]) {
     final available = {
       for (final entry in images.entries.take(images.visible))
         if (entry.showPreview) entry.uri: entry,
@@ -121,6 +134,20 @@ class _UueBodyState extends State<UueBody> {
           value.substring(start, end),
           actions: widget.imageActions,
           sharedSelection: images.entries.isNotEmpty,
+          searchRanges: [
+            for (final range in widget.searchRanges)
+              if (range.start < bodyOffset + end &&
+                  range.end > bodyOffset + start)
+                SearchRange(
+                  (range.start - bodyOffset - start).clamp(0, end - start),
+                  (range.end - bodyOffset - start).clamp(0, end - start),
+                ),
+          ],
+          revealSearch:
+              widget.revealSearch &&
+              widget.searchRanges.isNotEmpty &&
+              widget.searchRanges.first.start >= bodyOffset + start &&
+              widget.searchRanges.first.start < bodyOffset + end,
         ),
       );
       start = end;
@@ -162,14 +189,28 @@ class _UueBodyState extends State<UueBody> {
   Widget body(BuildContext context) {
     shownImages.clear();
     if (initialEpoch != widget.repository.epoch) return const SizedBox.shrink();
-    if (raw || parts.isEmpty) {
+    final bytes = utf8.encode(widget.message.body);
+    final hiddenMatch = parts.any((part) {
+      if (part.begin < 0 || part.end > bytes.length || part.end < part.begin) {
+        return false;
+      }
+      final begin = utf8.decode(bytes.sublist(0, part.begin)).length;
+      final end = utf8.decode(bytes.sublist(0, part.end)).length;
+      return widget.searchRanges.any(
+        (range) => range.start < end && range.end > begin,
+      );
+    });
+    if (raw || (hiddenMatch && !searchSourceDismissed) || parts.isEmpty) {
       return Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           if (error != null) Text(error!),
           if (parts.isNotEmpty)
             TextButton(
-              onPressed: () => setState(() => raw = false),
+              onPressed: () => setState(() {
+                raw = false;
+                searchSourceDismissed = true;
+              }),
               child: const Text('Показать вложения'),
             ),
           text(widget.message.body),
@@ -177,7 +218,6 @@ class _UueBodyState extends State<UueBody> {
         ],
       );
     }
-    final bytes = utf8.encode(widget.message.body);
     final children = <Widget>[];
     var offset = 0;
     final ordered = parts.toList()..sort((a, b) => a.begin.compareTo(b.begin));
@@ -188,7 +228,12 @@ class _UueBodyState extends State<UueBody> {
         return text(widget.message.body);
       }
       if (part.begin > offset) {
-        children.add(text(utf8.decode(bytes.sublist(offset, part.begin))));
+        children.add(
+          text(
+            utf8.decode(bytes.sublist(offset, part.begin)),
+            utf8.decode(bytes.sublist(0, offset)).length,
+          ),
+        );
       }
       children.add(
         UueAttachmentCard(
@@ -200,7 +245,12 @@ class _UueBodyState extends State<UueBody> {
       offset = part.end;
     }
     if (offset < bytes.length) {
-      children.add(text(utf8.decode(bytes.sublist(offset))));
+      children.add(
+        text(
+          utf8.decode(bytes.sublist(offset)),
+          utf8.decode(bytes.sublist(0, offset)).length,
+        ),
+      );
     }
     children.add(moreImages());
     children.add(

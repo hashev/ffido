@@ -12,6 +12,11 @@ import 'package:fido/api/generated/ffido/v1/ffido.pbgrpc.dart' as wire;
 
 class TestService extends wire.FfidoServiceBase {
   @override
+  Future<wire.FindMessageResponse> findMessage(
+    grpc.ServiceCall c,
+    wire.FindMessageRequest r,
+  ) async => throw const grpc.GrpcError.unimplemented();
+  @override
   Future<wire.UueLimits> getUueLimits(grpc.ServiceCall c, Empty r) async =>
       throw const grpc.GrpcError.unimplemented();
   @override

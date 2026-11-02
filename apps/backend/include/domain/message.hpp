@@ -47,6 +47,15 @@ struct MessageDetail {
   std::vector<std::string> ftn_kludges;
 };
 
+struct SearchMatch {
+  int field = 0;
+  uint32_t start_utf16 = 0, length_utf16 = 0;
+};
+struct FindMessageResponse {
+  std::optional<MessageDetail> message;
+  std::vector<SearchMatch> matches;
+};
+
 struct MessageFooter {
   std::string tagline, origin;
 };

@@ -34,6 +34,10 @@ abstract interface class ApiTransport {
     wire.ListMessagesRequest request, {
     RpcCancellation? cancellation,
   });
+  Future<wire.FindMessageResponse> findMessage(
+    wire.FindMessageRequest request, {
+    RpcCancellation? cancellation,
+  });
   Future<wire.Message> getMessage(
     wire.MessageReference request, {
     RpcCancellation? cancellation,
