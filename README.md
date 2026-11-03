@@ -16,6 +16,16 @@ FFIDO — клиент FidoNet для macOS, Windows, Android и Linux и сер
 Пакеты появляются после успешного полного CI и настройки release-ключа Android.
 Пока это не выполнено, наличие ссылки Releases не означает наличие готового выпуска.
 
+## Android в действии
+
+| Чтение эх | Поиск с подсветкой | Ответ в Netmail |
+| --- | --- | --- |
+| <a href="docs/images/android-reading.gif"><img src="docs/images/android-reading.gif" width="260" alt="Выбор эхи, чтение письма и переход к следующему непрочитанному"></a> | <a href="docs/images/android-search.gif"><img src="docs/images/android-search.gif" width="260" alt="Поиск TLS по письмам с подсветкой совпадений и переходом к следующему результату"></a> | <a href="docs/images/android-netmail-reply.gif"><img src="docs/images/android-netmail-reply.gif" width="260" alt="Личный ответ из эхи: адрес автора и цитата автоматически перенесены в черновик Netmail"></a> |
+
+Записан настоящий интерфейс приложения на Android-эмуляторе с вымышленными письмами.
+Личный ответ показан до отправки. Нажмите на анимацию, чтобы открыть полный размер.
+[Как повторить запись](docs/images/README.md).
+
 ## Выбор пакета
 
 | Система | Клиент | Сервер | Базовое окружение сборки |
