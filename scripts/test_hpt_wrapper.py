@@ -125,17 +125,22 @@ def main():
         assert events.read_text().splitlines() == ['recover', 'toss', 'dispatch', 'export-begin', 'pack', 'scan', 'export-complete']
         for scenario in ('timeout', 'cancel', 'signal'):
             state.write_text('0')
+            events.write_text('')
             mode.write_text('signal' if scenario == 'signal' else 'sleep')
             if scenario == 'cancel':
                 process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
                 assert process.stdout.readline().strip() == 'PACK_START'
                 process.terminate()
-                process.communicate(timeout=5)
+                output, errors = process.communicate(timeout=10)
                 result_code = process.returncode
             else:
-                result_code = subprocess.run(command + ['--timeout', '.3'], capture_output=True, timeout=5).returncode
-            assert result_code == (143 if scenario == 'signal' else 75), (scenario, result_code)
-            assert state.read_text() == '2'
+                # The deadline must expire in the sleeping pack, not in Python startup.
+                result = subprocess.run(command + ['--timeout', '2'], capture_output=True, text=True, timeout=30)
+                result_code, output, errors = result.returncode, result.stdout, result.stderr
+            trace = (scenario, result_code, output, errors, events.read_text(), state.read_text())
+            assert result_code == (143 if scenario == 'signal' else 75), trace
+            assert state.read_text() == '2', trace
+            assert events.read_text().splitlines() == ['recover', 'toss', 'dispatch', 'export-begin', 'pack', 'export-uncertain'], trace
             with (root / 'hpt.lock').open('r+b') as lease:
                 fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
         # An unknown prior export outcome never starts another toss.

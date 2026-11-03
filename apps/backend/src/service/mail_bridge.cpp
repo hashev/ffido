@@ -2,6 +2,7 @@
 
 #include <map>
 #include <stdexcept>
+#include <tuple>
 
 #include "service/crypto.hpp"
 #include "service/mail_addressing.hpp"
@@ -134,8 +135,13 @@ void MailBridge::Finish(storage::MailTransfer transfer) {
   if (source->generation() != transfer.source_generation)
     throw std::runtime_error("Mail source generation changed");
   auto snapshot = Take(*io_, *source, transfer.source_number);
+  // A claimed inbound quarantine is already isolated and will never be copied.
+  // HPT may subsequently update reply links or other service fields in its source.
+  if (transfer.state == TransferState::kQuarantine && !transfer.source_key.starts_with("out:") &&
+      (snapshot.flags & locked) != 0)
+    return;
   if (snapshot.hash != transfer.source_hash)
-    throw std::runtime_error("Mail source payload changed");
+    throw std::runtime_error("Mail source payload changed: " + transfer.source_key);
   const bool outbound = transfer.source_key.starts_with("out:");
   const bool claim = !outbound && (!transfer.target_conference.empty() || transfer.duplicate || transfer.collision ||
                                    transfer.state == TransferState::kQuarantine);
@@ -231,8 +237,9 @@ std::expected<void, domain::ApiError> MailBridge::Recover() {
       if (transfer.state != TransferState::kDone)
         Finish(transfer);
     return {};
-  } catch (const std::exception&) {
-    return std::unexpected(domain::ApiError::Server("Mail bridge recovery requires administrator attention"));
+  } catch (const std::exception& error) {
+    return std::unexpected(domain::ApiError::Server("Mail bridge recovery requires administrator attention: " +
+                                                    std::string(error.what())));
   }
 }
 std::expected<void, domain::ApiError> MailBridge::Dispatch() {
@@ -246,9 +253,13 @@ std::expected<void, domain::ApiError> MailBridge::Dispatch() {
     // The raw source identity is stable across local decoding-policy changes.
     // Reuse completed journal entries instead of reinterpreting their payload hash.
     std::map<std::string, MailTransfer> completed;
-    for (const auto& transfer : Value(metadata_->MailTransfers()))
+    std::set<std::tuple<std::string, std::string, uint32_t>> quarantined;
+    for (const auto& transfer : Value(metadata_->MailTransfers())) {
       if (transfer.state == TransferState::kDone)
         completed.emplace(transfer.source_key, transfer);
+      else if (transfer.state == TransferState::kQuarantine && !transfer.source_key.starts_with("out:"))
+        quarantined.emplace(transfer.source_conference, transfer.source_generation, transfer.source_number);
+    }
     for (const auto& name : config_.point_mail.ingress_areas) {
       const auto id = AreaId(name);
       auto source = Open(*catalog_, id, false, config_.ftn.default_encoding);
@@ -264,6 +275,12 @@ std::expected<void, domain::ApiError> MailBridge::Dispatch() {
         if (access->generation() != generation)
           throw std::runtime_error("Ingress changed");
         access.reset();
+        // Rewrites must not turn an isolated source slot into a fresh delivery.
+        if (quarantined.contains(std::tuple{id, generation, number})) {
+          if ((snapshot.flags & locked) == 0)
+            throw std::runtime_error("Quarantined mail source is no longer isolated");
+          continue;
+        }
         MailTransfer input;
         input.source_conference = id;
         input.source_generation = generation;
