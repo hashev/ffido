@@ -97,10 +97,12 @@ int RunMailStage(const std::filesystem::path& configuration, const std::filesyst
     return 1;
   auto catalog = std::shared_ptr<storage::JamCatalog>(std::move(*opened));
   MailBridge bridge(*config, *hpt, catalog, metadata);
-  if (stage == "recover")
-    return bridge.Recover() ? 0 : 1;
-  if (stage == "dispatch")
-    return bridge.Dispatch() ? 0 : 1;
+  if (stage == "recover" || stage == "dispatch") {
+    auto result = stage == "recover" ? bridge.Recover() : bridge.Dispatch();
+    if (!result)
+      std::cerr << result.error().message << '\n';
+    return result ? 0 : 1;
+  }
   if (stage == "export-begin") {
     if (!bridge.Dispatch())
       return 1;

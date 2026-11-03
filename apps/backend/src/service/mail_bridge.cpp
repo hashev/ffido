@@ -134,8 +134,13 @@ void MailBridge::Finish(storage::MailTransfer transfer) {
   if (source->generation() != transfer.source_generation)
     throw std::runtime_error("Mail source generation changed");
   auto snapshot = Take(*io_, *source, transfer.source_number);
+  // A claimed inbound quarantine is already isolated and will never be copied.
+  // HPT may subsequently update reply links or other service fields in its source.
+  if (transfer.state == TransferState::kQuarantine && !transfer.source_key.starts_with("out:") &&
+      (snapshot.flags & locked) != 0)
+    return;
   if (snapshot.hash != transfer.source_hash)
-    throw std::runtime_error("Mail source payload changed");
+    throw std::runtime_error("Mail source payload changed: " + transfer.source_key);
   const bool outbound = transfer.source_key.starts_with("out:");
   const bool claim = !outbound && (!transfer.target_conference.empty() || transfer.duplicate || transfer.collision ||
                                    transfer.state == TransferState::kQuarantine);
@@ -231,8 +236,9 @@ std::expected<void, domain::ApiError> MailBridge::Recover() {
       if (transfer.state != TransferState::kDone)
         Finish(transfer);
     return {};
-  } catch (const std::exception&) {
-    return std::unexpected(domain::ApiError::Server("Mail bridge recovery requires administrator attention"));
+  } catch (const std::exception& error) {
+    return std::unexpected(domain::ApiError::Server("Mail bridge recovery requires administrator attention: " +
+                                                    std::string(error.what())));
   }
 }
 std::expected<void, domain::ApiError> MailBridge::Dispatch() {
