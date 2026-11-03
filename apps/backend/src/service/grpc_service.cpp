@@ -393,6 +393,79 @@ grpc::Status GrpcService::GetMessageTechnicalData(grpc::ServerContext* context, 
     return {};
   });
 }
+grpc::Status GrpcService::SearchArchiveMessages(grpc::ServerContext* context,
+                                                const wire::SearchArchiveMessagesRequest* request,
+                                                wire::SearchArchiveMessagesResponse* response) {
+  return Dispatch(context, [&](const auto& user) -> Result {
+    domain::ArchiveSearchRequest value;
+    value.conferences.assign(request->conference_ids().begin(), request->conference_ids().end());
+    value.query = request->query();
+    value.cursor = request->cursor();
+    value.scope = static_cast<int>(request->scope());
+    value.sort = static_cast<int>(request->sort());
+    value.limit = request->limit();
+    for (const auto* timestamp :
+         {request->has_from() ? &request->from() : nullptr, request->has_to() ? &request->to() : nullptr})
+      if (timestamp && (!google::protobuf::util::TimeUtil::IsTimestampValid(*timestamp) || timestamp->nanos() != 0))
+        return std::unexpected(domain::ApiError::Validation("Archive period requires valid whole UTC seconds"));
+    if (request->has_from())
+      value.from = request->from().seconds();
+    if (request->has_to())
+      value.to = request->to().seconds();
+    auto result = messages_.SearchArchive(value, user.id);
+    if (!result)
+      return std::unexpected(result.error());
+    response->set_complete(result->complete);
+    response->set_incomplete_reason(result->incomplete_reason);
+    response->set_next_cursor(result->next_cursor);
+    for (const auto& item : result->results) {
+      auto* output = response->add_results();
+      Map(item.message, item.conference, output->mutable_message());
+      output->set_snippet(item.snippet);
+      for (const auto& match : item.matches) {
+        auto* range = output->add_matches();
+        range->set_field(static_cast<wire::MessageSearchField>(match.field));
+        range->set_start_utf16(match.start_utf16);
+        range->set_length_utf16(match.length_utf16);
+      }
+    }
+    return {};
+  });
+}
+grpc::Status GrpcService::ReadArchiveMessage(grpc::ServerContext* context,
+                                             const wire::ReadArchiveMessageRequest* request,
+                                             wire::ReadArchiveMessageResponse* response) {
+  return Dispatch(context, [&](const auto& user) -> Result {
+    auto result =
+        messages_.ReadArchiveMessage(request->message().conference_id(), request->message().message_id(), user.id,
+                                     request->body_offset(), request->body_limit(), request->reveal());
+    if (!result)
+      return std::unexpected(result.error());
+    Map(result->message, request->message().conference_id(), response->mutable_message());
+    response->set_body_offset(result->body_offset);
+    response->set_next_offset(result->next_offset);
+    response->set_complete(result->complete);
+    response->set_collapsed(result->collapsed);
+    return {};
+  });
+}
+grpc::Status GrpcService::GetArchiveThread(grpc::ServerContext* context, const wire::GetArchiveThreadRequest* request,
+                                           wire::ListMessagesResponse* response) {
+  return Dispatch(context, [&](const auto& user) -> Result {
+    auto valid = ValidatePage(request->page());
+    if (!valid)
+      return valid;
+    auto result = messages_.GetArchiveThread(request->message().conference_id(), request->message().message_id(),
+                                             user.id, Page(request->page()));
+    if (!result)
+      return std::unexpected(result.error());
+    for (const auto& message : result->messages)
+      Map(message, request->message().conference_id(), response->add_messages());
+    response->set_total(result->total);
+    response->set_has_more(result->has_more);
+    return {};
+  });
+}
 grpc::Status GrpcService::GetMessage(grpc::ServerContext* context, const wire::MessageReference* request,
                                      wire::Message* response) {
   return Dispatch(context, [&](const auto& user) -> Result {
@@ -403,11 +476,52 @@ grpc::Status GrpcService::GetMessage(grpc::ServerContext* context, const wire::M
     return {};
   });
 }
+grpc::Status GrpcService::PreviewMessage(grpc::ServerContext* context, const wire::CreateMessageRequest* request,
+                                         wire::MessagePreview* response) {
+  return Dispatch(context, [&](const auto& user) -> Result {
+    domain::CreateMessageRequest value;
+    value.operation_id = request->operation_id();
+    value.to_name = request->to_name();
+    value.to_address = request->to_address();
+    value.subject = request->subject();
+    value.body = request->body();
+    value.in_reply_to = request->in_reply_to();
+    if (request->has_footer())
+      value.footer = domain::MessageFooter{request->footer().tagline(), request->footer().origin()};
+    // Preview never reuses an operation that may already have a durable intent.
+    auto existing = metadata_->FindOperation(user.id, value.operation_id);
+    if (!existing)
+      return std::unexpected(existing.error());
+    if (*existing)
+      return std::unexpected(domain::ApiError{domain::ErrorCode::kConflict, "Preview requires a new operation ID", {}});
+    auto result = messages_.CreateMessage(request->conference_id(), value, user.id, nullptr, true);
+    if (!result)
+      return std::unexpected(result.error());
+    if (!result->preview)
+      return std::unexpected(domain::ApiError{domain::ErrorCode::kConflict, "Preview operation already exists", {}});
+    const auto& p = *result->preview;
+    response->set_conference_id(p.conference);
+    response->set_from_name(p.from_name);
+    response->set_from_address(p.from_address);
+    response->set_to_name(p.to_name);
+    response->set_to_address(p.to_address);
+    response->set_subject(p.subject);
+    response->set_body(p.body);
+    response->set_effective_encoding(p.encoding);
+    response->set_wire_body_bytes(p.wire_body_bytes);
+    response->set_preview_digest(p.digest);
+    response->set_kind(static_cast<wire::AreaKind>(p.kind));
+    response->set_public_message(p.public_message);
+    response->set_in_reply_to(p.in_reply_to);
+    return {};
+  });
+}
 grpc::Status GrpcService::CreateMessage(grpc::ServerContext* context, const wire::CreateMessageRequest* request,
                                         wire::CreateMessageResponse* response) {
   return Dispatch(context, [&](const auto& user) -> Result {
     domain::CreateMessageRequest value;
     value.operation_id = request->operation_id();
+    value.expected_preview_digest = request->expected_preview_digest();
     value.to_name = request->to_name();
     value.to_address = request->to_address();
     value.subject = request->subject();

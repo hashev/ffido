@@ -1355,6 +1355,17 @@ TEST_F(PrivateAreasTest, MarkUnreadSupportsPrivateMailboxesAndReadOnlyAreasWitho
     google::protobuf::Empty response;
     return client->MarkUnread(&context, request, &response);
   };
+  const auto archive = [&](const std::string& id, const std::string& message, const std::string& user) {
+    ffido::v1::ReadArchiveMessageRequest request;
+    request.mutable_message()->set_conference_id(id);
+    request.mutable_message()->set_message_id(message);
+    request.set_body_limit(65536);
+    grpc::ClientContext context;
+    context.AddMetadata("authorization", "Bearer " + tokens.at(user));
+    context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(3));
+    ffido::v1::ReadArchiveMessageResponse response;
+    return client->ReadArchiveMessage(&context, request, &response);
+  };
   for (const auto& [id, area] : catalog->areas()) {
     if (area.config.msgbase_type != "JAM") {
       EXPECT_FALSE(mark(id, "invalid#1", "owner").ok());
@@ -1380,12 +1391,15 @@ TEST_F(PrivateAreasTest, MarkUnreadSupportsPrivateMailboxesAndReadOnlyAreasWitho
     const auto header = test::ReadFile(path.string() + ".jhr");
     const auto text = test::ReadFile(path.string() + ".jdt");
     ASSERT_TRUE(mark(id, generation + "#1", user).ok()) << id;
+    ASSERT_TRUE(archive(id, generation + "#1", user).ok()) << id;
     EXPECT_FALSE(*metadata->IsMessageRead(user, key));
     EXPECT_EQ(metadata->LastOpened(user, id)->revision, position.revision);
     EXPECT_EQ(test::ReadFile(path.string() + ".jhr"), header);
     EXPECT_EQ(test::ReadFile(path.string() + ".jdt"), text);
     if (area.config.kind != AreaKind::kEcho) {
       EXPECT_FALSE(mark(id, generation + "#1", user == "point1" ? "point2" : "point1").ok());
+      EXPECT_EQ(archive(id, generation + "#1", user == "point1" ? "point2" : "point1").error_code(),
+                grpc::StatusCode::PERMISSION_DENIED);
     }
   }
   for (auto& [address, permission] : hpt.echoes.front().links)
@@ -1565,4 +1579,28 @@ TEST_F(PrivateAreasTest, PersonalFiltersRespectAreaKindsReadAccessAndStableRefer
   // An existing inaccessible rule can be retained or disabled, but not enabled anew.
   EXPECT_TRUE(write_only.ReplacePersonalFilters("point1", 2, "disable", {{uuid, false, 2, "ECHO", "", "", "fixture"}}));
   EXPECT_FALSE(write_only.ReplacePersonalFilters("point1", 3, "enable", {{uuid, true, 2, "ECHO", "", "", "fixture"}}));
+}
+
+TEST_F(PrivateAreasTest, PreviewOfNetmailAndLocalNeverCreatesAnIntentOrWritesJam) {
+  for (const auto& area : {net, local}) {
+    auto request = Request("preview");
+    request.to_name = "Recipient";
+    request.to_address = "2:1/3.4";
+    auto preview = messages->CreateMessage(area, request, "owner", nullptr, true);
+    ASSERT_TRUE(preview);
+    ASSERT_TRUE(preview->preview);
+    EXPECT_FALSE(preview->preview->public_message);
+    EXPECT_EQ(preview->preview->to_address, "2:1/3.4");
+    auto count = conferences->GetConference(area, "owner");
+    ASSERT_TRUE(count);
+    EXPECT_EQ(count->total_count, 0);
+    auto operation = metadata->FindOperation("owner", "preview");
+    ASSERT_TRUE(operation);
+    EXPECT_FALSE(*operation);
+  }
+  auto list = conferences->GetConferences({}, std::nullopt, "owner");
+  ASSERT_TRUE(list);
+  for (const auto& area : list->conferences)
+    if (area.kind == AreaKind::kBad || area.kind == AreaKind::kDupe || area.kind == AreaKind::kRobots)
+      EXPECT_FALSE(messages->CreateMessage(area.id, Request("denied"), "owner", nullptr, true));
 }

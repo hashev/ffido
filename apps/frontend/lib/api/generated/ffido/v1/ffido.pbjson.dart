@@ -551,6 +551,18 @@ const CreateMessageRequest$json = {
       '6': '.ffido.v1.MessageFooter',
       '10': 'footer'
     },
+    {
+      '1': 'expected_preview_digest',
+      '3': 9,
+      '4': 1,
+      '5': 9,
+      '9': 0,
+      '10': 'expectedPreviewDigest',
+      '17': true
+    },
+  ],
+  '8': [
+    {'1': '_expected_preview_digest'},
   ],
 };
 
@@ -560,8 +572,9 @@ final $typed_data.Uint8List createMessageRequestDescriptor = $convert.base64Deco
     'NlSWQSIQoMb3BlcmF0aW9uX2lkGAIgASgJUgtvcGVyYXRpb25JZBIXCgd0b19uYW1lGAMgASgJ'
     'UgZ0b05hbWUSHQoKdG9fYWRkcmVzcxgEIAEoCVIJdG9BZGRyZXNzEhgKB3N1YmplY3QYBSABKA'
     'lSB3N1YmplY3QSEgoEYm9keRgGIAEoCVIEYm9keRIeCgtpbl9yZXBseV90bxgHIAEoCVIJaW5S'
-    'ZXBseVRvEi8KBmZvb3RlchgIIAEoCzIXLmZmaWRvLnYxLk1lc3NhZ2VGb290ZXJSBmZvb3Rlcg'
-    '==');
+    'ZXBseVRvEi8KBmZvb3RlchgIIAEoCzIXLmZmaWRvLnYxLk1lc3NhZ2VGb290ZXJSBmZvb3Rlch'
+    'I7ChdleHBlY3RlZF9wcmV2aWV3X2RpZ2VzdBgJIAEoCUgAUhVleHBlY3RlZFByZXZpZXdEaWdl'
+    'c3SIAQFCGgoYX2V4cGVjdGVkX3ByZXZpZXdfZGlnZXN0');
 
 @$core.Deprecated('Use createCrosspostRequestDescriptor instead')
 const CreateCrosspostRequest$json = {
@@ -1685,3 +1698,241 @@ final $typed_data.Uint8List messagePresentationDescriptor = $convert.base64Decod
     'bGUYAyABKAsyES5mZmlkby52MS5NZXNzYWdlSABSB3Zpc2libGUSQQoJY29sbGFwc2VkGAQgAS'
     'gLMiEuZmZpZG8udjEuQ29sbGFwc2VkTWVzc2FnZUhlYWRlcnNIAFIJY29sbGFwc2VkEi8KB21h'
     'dGNoZXMYBSADKAsyFS5mZmlkby52MS5TZWFyY2hNYXRjaFIHbWF0Y2hlc0IJCgdjb250ZW50');
+
+@$core.Deprecated('Use searchArchiveMessagesRequestDescriptor instead')
+const SearchArchiveMessagesRequest$json = {
+  '1': 'SearchArchiveMessagesRequest',
+  '2': [
+    {'1': 'conference_ids', '3': 1, '4': 3, '5': 9, '10': 'conferenceIds'},
+    {'1': 'query', '3': 2, '4': 1, '5': 9, '10': 'query'},
+    {
+      '1': 'scope',
+      '3': 3,
+      '4': 1,
+      '5': 14,
+      '6': '.ffido.v1.MessageSearchScope',
+      '10': 'scope'
+    },
+    {
+      '1': 'from',
+      '3': 4,
+      '4': 1,
+      '5': 11,
+      '6': '.google.protobuf.Timestamp',
+      '10': 'from'
+    },
+    {
+      '1': 'to',
+      '3': 5,
+      '4': 1,
+      '5': 11,
+      '6': '.google.protobuf.Timestamp',
+      '10': 'to'
+    },
+    {
+      '1': 'sort',
+      '3': 6,
+      '4': 1,
+      '5': 14,
+      '6': '.ffido.v1.MessageSort',
+      '10': 'sort'
+    },
+    {'1': 'limit', '3': 7, '4': 1, '5': 5, '10': 'limit'},
+    {'1': 'cursor', '3': 8, '4': 1, '5': 9, '10': 'cursor'},
+  ],
+};
+
+/// Descriptor for `SearchArchiveMessagesRequest`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List searchArchiveMessagesRequestDescriptor = $convert.base64Decode(
+    'ChxTZWFyY2hBcmNoaXZlTWVzc2FnZXNSZXF1ZXN0EiUKDmNvbmZlcmVuY2VfaWRzGAEgAygJUg'
+    '1jb25mZXJlbmNlSWRzEhQKBXF1ZXJ5GAIgASgJUgVxdWVyeRIyCgVzY29wZRgDIAEoDjIcLmZm'
+    'aWRvLnYxLk1lc3NhZ2VTZWFyY2hTY29wZVIFc2NvcGUSLgoEZnJvbRgEIAEoCzIaLmdvb2dsZS'
+    '5wcm90b2J1Zi5UaW1lc3RhbXBSBGZyb20SKgoCdG8YBSABKAsyGi5nb29nbGUucHJvdG9idWYu'
+    'VGltZXN0YW1wUgJ0bxIpCgRzb3J0GAYgASgOMhUuZmZpZG8udjEuTWVzc2FnZVNvcnRSBHNvcn'
+    'QSFAoFbGltaXQYByABKAVSBWxpbWl0EhYKBmN1cnNvchgIIAEoCVIGY3Vyc29y');
+
+@$core.Deprecated('Use archiveSearchResultDescriptor instead')
+const ArchiveSearchResult$json = {
+  '1': 'ArchiveSearchResult',
+  '2': [
+    {
+      '1': 'message',
+      '3': 1,
+      '4': 1,
+      '5': 11,
+      '6': '.ffido.v1.Message',
+      '10': 'message'
+    },
+    {'1': 'snippet', '3': 2, '4': 1, '5': 9, '10': 'snippet'},
+    {
+      '1': 'matches',
+      '3': 3,
+      '4': 3,
+      '5': 11,
+      '6': '.ffido.v1.SearchMatch',
+      '10': 'matches'
+    },
+  ],
+};
+
+/// Descriptor for `ArchiveSearchResult`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List archiveSearchResultDescriptor = $convert.base64Decode(
+    'ChNBcmNoaXZlU2VhcmNoUmVzdWx0EisKB21lc3NhZ2UYASABKAsyES5mZmlkby52MS5NZXNzYW'
+    'dlUgdtZXNzYWdlEhgKB3NuaXBwZXQYAiABKAlSB3NuaXBwZXQSLwoHbWF0Y2hlcxgDIAMoCzIV'
+    'LmZmaWRvLnYxLlNlYXJjaE1hdGNoUgdtYXRjaGVz');
+
+@$core.Deprecated('Use searchArchiveMessagesResponseDescriptor instead')
+const SearchArchiveMessagesResponse$json = {
+  '1': 'SearchArchiveMessagesResponse',
+  '2': [
+    {
+      '1': 'results',
+      '3': 1,
+      '4': 3,
+      '5': 11,
+      '6': '.ffido.v1.ArchiveSearchResult',
+      '10': 'results'
+    },
+    {'1': 'complete', '3': 2, '4': 1, '5': 8, '10': 'complete'},
+    {
+      '1': 'incomplete_reason',
+      '3': 3,
+      '4': 1,
+      '5': 9,
+      '10': 'incompleteReason'
+    },
+    {'1': 'next_cursor', '3': 4, '4': 1, '5': 9, '10': 'nextCursor'},
+  ],
+};
+
+/// Descriptor for `SearchArchiveMessagesResponse`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List searchArchiveMessagesResponseDescriptor = $convert.base64Decode(
+    'Ch1TZWFyY2hBcmNoaXZlTWVzc2FnZXNSZXNwb25zZRI3CgdyZXN1bHRzGAEgAygLMh0uZmZpZG'
+    '8udjEuQXJjaGl2ZVNlYXJjaFJlc3VsdFIHcmVzdWx0cxIaCghjb21wbGV0ZRgCIAEoCFIIY29t'
+    'cGxldGUSKwoRaW5jb21wbGV0ZV9yZWFzb24YAyABKAlSEGluY29tcGxldGVSZWFzb24SHwoLbm'
+    'V4dF9jdXJzb3IYBCABKAlSCm5leHRDdXJzb3I=');
+
+@$core.Deprecated('Use readArchiveMessageRequestDescriptor instead')
+const ReadArchiveMessageRequest$json = {
+  '1': 'ReadArchiveMessageRequest',
+  '2': [
+    {
+      '1': 'message',
+      '3': 1,
+      '4': 1,
+      '5': 11,
+      '6': '.ffido.v1.MessageReference',
+      '10': 'message'
+    },
+    {'1': 'body_offset', '3': 2, '4': 1, '5': 4, '10': 'bodyOffset'},
+    {'1': 'body_limit', '3': 3, '4': 1, '5': 13, '10': 'bodyLimit'},
+    {'1': 'reveal', '3': 4, '4': 1, '5': 8, '10': 'reveal'},
+  ],
+};
+
+/// Descriptor for `ReadArchiveMessageRequest`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List readArchiveMessageRequestDescriptor = $convert.base64Decode(
+    'ChlSZWFkQXJjaGl2ZU1lc3NhZ2VSZXF1ZXN0EjQKB21lc3NhZ2UYASABKAsyGi5mZmlkby52MS'
+    '5NZXNzYWdlUmVmZXJlbmNlUgdtZXNzYWdlEh8KC2JvZHlfb2Zmc2V0GAIgASgEUgpib2R5T2Zm'
+    'c2V0Eh0KCmJvZHlfbGltaXQYAyABKA1SCWJvZHlMaW1pdBIWCgZyZXZlYWwYBCABKAhSBnJldm'
+    'VhbA==');
+
+@$core.Deprecated('Use readArchiveMessageResponseDescriptor instead')
+const ReadArchiveMessageResponse$json = {
+  '1': 'ReadArchiveMessageResponse',
+  '2': [
+    {
+      '1': 'message',
+      '3': 1,
+      '4': 1,
+      '5': 11,
+      '6': '.ffido.v1.Message',
+      '10': 'message'
+    },
+    {'1': 'body_offset', '3': 2, '4': 1, '5': 4, '10': 'bodyOffset'},
+    {'1': 'next_offset', '3': 3, '4': 1, '5': 4, '10': 'nextOffset'},
+    {'1': 'complete', '3': 4, '4': 1, '5': 8, '10': 'complete'},
+    {'1': 'collapsed', '3': 5, '4': 1, '5': 8, '10': 'collapsed'},
+  ],
+};
+
+/// Descriptor for `ReadArchiveMessageResponse`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List readArchiveMessageResponseDescriptor = $convert.base64Decode(
+    'ChpSZWFkQXJjaGl2ZU1lc3NhZ2VSZXNwb25zZRIrCgdtZXNzYWdlGAEgASgLMhEuZmZpZG8udj'
+    'EuTWVzc2FnZVIHbWVzc2FnZRIfCgtib2R5X29mZnNldBgCIAEoBFIKYm9keU9mZnNldBIfCgtu'
+    'ZXh0X29mZnNldBgDIAEoBFIKbmV4dE9mZnNldBIaCghjb21wbGV0ZRgEIAEoCFIIY29tcGxldG'
+    'USHAoJY29sbGFwc2VkGAUgASgIUgljb2xsYXBzZWQ=');
+
+@$core.Deprecated('Use getArchiveThreadRequestDescriptor instead')
+const GetArchiveThreadRequest$json = {
+  '1': 'GetArchiveThreadRequest',
+  '2': [
+    {
+      '1': 'message',
+      '3': 1,
+      '4': 1,
+      '5': 11,
+      '6': '.ffido.v1.MessageReference',
+      '10': 'message'
+    },
+    {
+      '1': 'page',
+      '3': 2,
+      '4': 1,
+      '5': 11,
+      '6': '.ffido.v1.PageRequest',
+      '10': 'page'
+    },
+  ],
+};
+
+/// Descriptor for `GetArchiveThreadRequest`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List getArchiveThreadRequestDescriptor = $convert.base64Decode(
+    'ChdHZXRBcmNoaXZlVGhyZWFkUmVxdWVzdBI0CgdtZXNzYWdlGAEgASgLMhouZmZpZG8udjEuTW'
+    'Vzc2FnZVJlZmVyZW5jZVIHbWVzc2FnZRIpCgRwYWdlGAIgASgLMhUuZmZpZG8udjEuUGFnZVJl'
+    'cXVlc3RSBHBhZ2U=');
+
+@$core.Deprecated('Use messagePreviewDescriptor instead')
+const MessagePreview$json = {
+  '1': 'MessagePreview',
+  '2': [
+    {'1': 'conference_id', '3': 1, '4': 1, '5': 9, '10': 'conferenceId'},
+    {'1': 'from_name', '3': 2, '4': 1, '5': 9, '10': 'fromName'},
+    {'1': 'from_address', '3': 3, '4': 1, '5': 9, '10': 'fromAddress'},
+    {'1': 'to_name', '3': 4, '4': 1, '5': 9, '10': 'toName'},
+    {'1': 'to_address', '3': 5, '4': 1, '5': 9, '10': 'toAddress'},
+    {'1': 'subject', '3': 6, '4': 1, '5': 9, '10': 'subject'},
+    {'1': 'body', '3': 7, '4': 1, '5': 9, '10': 'body'},
+    {
+      '1': 'effective_encoding',
+      '3': 8,
+      '4': 1,
+      '5': 9,
+      '10': 'effectiveEncoding'
+    },
+    {'1': 'wire_body_bytes', '3': 9, '4': 1, '5': 4, '10': 'wireBodyBytes'},
+    {'1': 'preview_digest', '3': 10, '4': 1, '5': 9, '10': 'previewDigest'},
+    {
+      '1': 'kind',
+      '3': 11,
+      '4': 1,
+      '5': 14,
+      '6': '.ffido.v1.AreaKind',
+      '10': 'kind'
+    },
+    {'1': 'public_message', '3': 12, '4': 1, '5': 8, '10': 'publicMessage'},
+    {'1': 'in_reply_to', '3': 13, '4': 1, '5': 9, '10': 'inReplyTo'},
+  ],
+};
+
+/// Descriptor for `MessagePreview`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List messagePreviewDescriptor = $convert.base64Decode(
+    'Cg5NZXNzYWdlUHJldmlldxIjCg1jb25mZXJlbmNlX2lkGAEgASgJUgxjb25mZXJlbmNlSWQSGw'
+    'oJZnJvbV9uYW1lGAIgASgJUghmcm9tTmFtZRIhCgxmcm9tX2FkZHJlc3MYAyABKAlSC2Zyb21B'
+    'ZGRyZXNzEhcKB3RvX25hbWUYBCABKAlSBnRvTmFtZRIdCgp0b19hZGRyZXNzGAUgASgJUgl0b0'
+    'FkZHJlc3MSGAoHc3ViamVjdBgGIAEoCVIHc3ViamVjdBISCgRib2R5GAcgASgJUgRib2R5Ei0K'
+    'EmVmZmVjdGl2ZV9lbmNvZGluZxgIIAEoCVIRZWZmZWN0aXZlRW5jb2RpbmcSJgoPd2lyZV9ib2'
+    'R5X2J5dGVzGAkgASgEUg13aXJlQm9keUJ5dGVzEiUKDnByZXZpZXdfZGlnZXN0GAogASgJUg1w'
+    'cmV2aWV3RGlnZXN0EiYKBGtpbmQYCyABKA4yEi5mZmlkby52MS5BcmVhS2luZFIEa2luZBIlCg'
+    '5wdWJsaWNfbWVzc2FnZRgMIAEoCFINcHVibGljTWVzc2FnZRIeCgtpbl9yZXBseV90bxgNIAEo'
+    'CVIJaW5SZXBseVRv');

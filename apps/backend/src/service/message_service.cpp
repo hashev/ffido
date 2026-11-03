@@ -142,6 +142,82 @@ std::expected<domain::MessageDetail, domain::ApiError> MessageService::Detail(st
   result.thread_id = message->reply_to() ? MessageId(access, message->reply_to()) : result.id;
   return result;
 }
+std::expected<domain::ArchiveMessage, domain::ApiError> MessageService::ReadArchiveMessage(
+    std::string_view conference, std::string_view id, std::string_view user, uint64_t body_offset, uint32_t body_limit,
+    bool reveal) {
+  RequestBudget budget{std::min(RequestDeadline(), std::chrono::steady_clock::now() + std::chrono::seconds(5)),
+                       RequestCancellation()};
+  RequestScope scope(budget);
+  auto permission = access_->Permissions(*metadata_, user, conference);
+  if (!permission)
+    return std::unexpected(RequestActive() ? permission.error() : SearchInterrupted());
+  if (!permission->read)
+    return std::unexpected(EchoAccess::Denied());
+  if (body_limit == 0 || body_limit > 65536)
+    return std::unexpected(domain::ApiError::Validation("Body limit must be between 1 and 65536"));
+  auto filters = metadata_->GetPersonalFilters(user);
+  if (!filters)
+    return std::unexpected(RequestActive() ? filters.error() : SearchInterrupted());
+  auto access =
+      storage::JamAccess::Open(*catalog_, conference, false, RequestDeadline(), RequestCancellation(), encoding_);
+  if (!access)
+    return std::unexpected(RequestActive() ? JamError(access.error()) : SearchInterrupted());
+  auto number = MessageNumber(**access, id);
+  if (!number)
+    return std::unexpected(number.error());
+  auto detail = FilteredDetail(**access, conference, *number, user, &*filters);
+  if (!detail)
+    return std::unexpected(RequestActive() ? detail.error() : SearchInterrupted());
+  domain::ArchiveMessage result;
+  result.collapsed = !reveal && !detail->personal_collapse->rules.empty();
+  if (result.collapsed) {
+    detail->ftn_kludges.clear();
+    if (body_offset != 0)
+      return std::unexpected(domain::ApiError::Validation("Collapsed message has no body offset"));
+    if (!RequestActive())
+      return std::unexpected(SearchInterrupted());
+    result.message = std::move(*detail);
+    result.complete = true;
+    return result;
+  }
+  if (reveal && !detail->personal_collapse->rules.empty()) {
+    auto collapse = std::move(detail->personal_collapse);
+    detail = Detail(**access, conference, *number, user);
+    if (!detail)
+      return std::unexpected(RequestActive() ? detail.error() : SearchInterrupted());
+    detail->personal_collapse = std::move(collapse);
+  }
+  const auto& text = detail->body;
+  const auto continuation = [&](size_t offset) {
+    return offset < text.size() && (static_cast<unsigned char>(text[offset]) & 0xc0) == 0x80;
+  };
+  if (body_offset > text.size() || continuation(static_cast<size_t>(body_offset)))
+    return std::unexpected(domain::ApiError::Validation("Body offset is not a UTF-8 boundary"));
+  auto end = std::min<uint64_t>(text.size(), body_offset + body_limit);
+  while (end > body_offset && continuation(static_cast<size_t>(end)))
+    --end;
+  if (end == body_offset && end < text.size())
+    return std::unexpected(domain::ApiError::Validation("Body limit cannot hold the next UTF-8 character"));
+  result.body_offset = body_offset;
+  result.next_offset = end;
+  result.complete = end == text.size();
+  detail->body = text.substr(static_cast<size_t>(body_offset), static_cast<size_t>(end - body_offset));
+  if (!RequestActive())
+    return std::unexpected(SearchInterrupted());
+  result.message = std::move(*detail);
+  return result;
+}
+std::expected<domain::ThreadListResponse, domain::ApiError> MessageService::GetArchiveThread(
+    std::string_view conference, std::string_view id, std::string_view user, const domain::PaginationRequest& page) {
+  RequestBudget budget{std::min(RequestDeadline(), std::chrono::steady_clock::now() + std::chrono::seconds(5)),
+                       RequestCancellation()};
+  RequestScope scope(budget);
+  auto result = GetThread(conference, id, user, page, true, true);
+  if (!RequestActive())
+    return std::unexpected(SearchInterrupted());
+  return result;
+}
+
 std::expected<domain::MessageTechnicalData, domain::ApiError> MessageService::GetMessageTechnicalData(
     std::string_view conference, std::string_view id, std::string_view user) {
   auto permission = access_->Permissions(*metadata_, user, conference);
@@ -233,8 +309,8 @@ std::expected<uint64_t, domain::ApiError> MessageService::ReplacePersonalFilters
 }
 std::expected<domain::MessageDetail, domain::ApiError> MessageService::FilteredDetail(
     storage::JamAccess& access, std::string_view conference, uint32_t number, std::string_view user,
-    const domain::PersonalMessageFilterSet* filters) {
-  auto result = Detail(access, conference, number, user, filters == nullptr);
+    const domain::PersonalMessageFilterSet* filters, bool body) {
+  auto result = Detail(access, conference, number, user, body && filters == nullptr);
   if (!result || !filters)
     return result;
   const bool echo = catalog_->areas().find(conference)->second.config.kind == AreaKind::kEcho;
@@ -242,7 +318,7 @@ std::expected<domain::MessageDetail, domain::ApiError> MessageService::FilteredD
       MatchPersonalFilters(*filters, conference, echo, result->from_name, result->from_address, result->subject);
   if (!matched)
     return std::unexpected(matched.error());
-  if (matched->empty()) {
+  if (matched->empty() && body) {
     result = Detail(access, conference, number, user);
     if (!result)
       return result;
@@ -717,6 +793,8 @@ std::expected<domain::CreateMessageResponse, domain::ApiError> MessageService::C
     for (const auto& text : {request.footer->tagline, request.footer->origin})
       payload += std::to_string(text.size()) + ":" + text;
   }
+  if (!request.expected_preview_digest.empty())
+    payload += "PREVIEW1:" + request.expected_preview_digest;
   auto hashed = Sha256(payload);
   if (!hashed)
     return std::unexpected(hashed.error());
@@ -739,6 +817,8 @@ std::expected<domain::CreateMessageResponse, domain::ApiError> MessageService::C
     return result;
   };
   if (*existing) {
+    if (validate_only && !uue && !crosspost)
+      return std::unexpected(domain::ApiError{domain::ErrorCode::kConflict, "Preview requires a new operation ID", {}});
     auto checked = check(**existing);
     if (!checked)
       return std::unexpected(checked.error());
@@ -762,6 +842,8 @@ std::expected<domain::CreateMessageResponse, domain::ApiError> MessageService::C
   if (!existing)
     return std::unexpected(existing.error());
   if (*existing) {
+    if (validate_only && !uue && !crosspost)
+      return std::unexpected(domain::ApiError{domain::ErrorCode::kConflict, "Preview requires a new operation ID", {}});
     auto checked = check(**existing);
     if (!checked)
       return std::unexpected(checked.error());
@@ -882,10 +964,54 @@ std::expected<domain::CreateMessageResponse, domain::ApiError> MessageService::C
     operation.mail_direction = 2;
     operation.recipient = message.dest_address();
   }
+  std::optional<domain::MessagePreview> preview;
+  if (validate_only || !request.expected_preview_digest.empty()) {
+    domain::MessagePreview value;
+    value.conference = conference;
+    value.from_name = message.sender_name();
+    value.from_address = message.origin_address();
+    value.to_name = message.receiver_name();
+    value.to_address = message.dest_address();
+    value.subject = message.subject();
+    value.in_reply_to = request.in_reply_to;
+    auto encoding = (*access)->messages().EffectiveEncoding(message);
+    if (!encoding)
+      return std::unexpected(domain::ApiError::Validation("Invalid publication encoding"));
+    value.encoding = *encoding;
+    auto decoded = storage::ConvertText(operation.plan.text, value.encoding, "UTF-8");
+    if (!decoded)
+      return std::unexpected(domain::ApiError::Validation("Invalid publication encoding"));
+    value.body = DisplayText(*decoded);
+    value.wire_body_bytes = operation.plan.text.size();
+    value.kind = static_cast<int>(kind);
+    value.public_message = kind == AreaKind::kEcho;
+    const auto reply_id = message.reply_id();
+    std::string canonical = "FFIDO-PREVIEW-1:";
+    for (const std::string_view part :
+         {user, conference, std::string_view(operation.generation), std::string_view(value.from_name),
+          std::string_view(value.from_address), std::string_view(value.to_name), std::string_view(value.to_address),
+          std::string_view(value.subject), std::string_view(operation.plan.text), std::string_view(value.encoding),
+          std::string_view(value.in_reply_to), std::string_view(reply_id)})
+      canonical += std::to_string(part.size()) + ":" + std::string(part);
+    canonical += std::to_string(value.kind);
+    auto digest = Sha256(canonical);
+    if (!digest)
+      return std::unexpected(digest.error());
+    constexpr char hex[] = "0123456789abcdef";
+    for (auto byte : *digest) {
+      value.digest += hex[byte >> 4];
+      value.digest += hex[byte & 15];
+    }
+    if (!request.expected_preview_digest.empty() && request.expected_preview_digest != value.digest)
+      return std::unexpected(
+          domain::ApiError{domain::ErrorCode::kPrecondition, "Publication preview changed; prepare again", {}});
+    preview = std::move(value);
+  }
   if (validate_only) {
     domain::CreateMessageResponse result;
     result.wire_body_bytes = operation.plan.text.size();
     result.status = "validated";
+    result.preview = std::move(preview);
     result.resolved_to_name = resolved_to_name;
     result.resolved_to_address = resolved_to_address;
     return result;
@@ -1111,7 +1237,7 @@ std::expected<domain::CreateCrosspostResponse, domain::ApiError> MessageService:
 
 std::expected<domain::ThreadListResponse, domain::ApiError> MessageService::GetThread(
     std::string_view conference, std::string_view id, std::string_view user, const domain::PaginationRequest& page,
-    bool respect_filters) {
+    bool respect_filters, bool headers_only) {
   auto permission = access_->Permissions(*metadata_, user, conference);
   if (!permission)
     return std::unexpected(permission.error());
@@ -1198,7 +1324,8 @@ std::expected<domain::ThreadListResponse, domain::ApiError> MessageService::GetT
              end = std::min<uint64_t>(start + page.limit, pending.size());
   size_t response_bytes = 0;
   for (auto i = start; i < end; ++i) {
-    auto detail = FilteredDetail(**access, conference, pending[i], user, respect_filters ? &*filters : nullptr);
+    auto detail =
+        FilteredDetail(**access, conference, pending[i], user, respect_filters ? &*filters : nullptr, !headers_only);
     if (!detail)
       return std::unexpected(detail.error());
     response_bytes +=

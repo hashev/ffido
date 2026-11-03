@@ -51,6 +51,12 @@ struct MessageDetail {
   std::vector<std::string> ftn_kludges;
 };
 
+struct ArchiveMessage {
+  MessageDetail message;
+  uint64_t body_offset = 0, next_offset = 0;
+  bool complete = false, collapsed = false;
+};
+
 struct MessageTechnicalSubfield {
   uint32_t low_id = 0, high_id = 0;
   std::string value;
@@ -92,6 +98,14 @@ struct CreateMessageRequest {
   std::string body;
   std::string in_reply_to;
   std::optional<MessageFooter> footer = std::nullopt;
+  std::string expected_preview_digest = {};
+};
+
+struct MessagePreview {
+  std::string conference, from_name, from_address, to_name, to_address, subject, body, encoding, digest, in_reply_to;
+  uint64_t wire_body_bytes = 0;
+  int kind = 0;
+  bool public_message = false;
 };
 
 /// @brief Ответ на создание.
@@ -101,6 +115,7 @@ struct CreateMessageResponse {
   std::string resolved_to_name, resolved_to_address;
   uint64_t wire_body_bytes = 0;
   std::string ftn_message_id;
+  std::optional<MessagePreview> preview;
 };
 
 struct CrosspostCopy {

@@ -1,9 +1,13 @@
 #pragma once
+#include <array>
 #include <expected>
+#include <map>
 #include <memory>
+#include <mutex>
 #include <string_view>
 #include <vector>
 
+#include "domain/archive.hpp"
 #include "domain/error.hpp"
 #include "domain/message.hpp"
 #include "domain/pagination.hpp"
@@ -36,6 +40,21 @@ public:
       std::string_view query = {}, std::string_view anchor_message_id = {}, bool respect_filters = false);
   std::expected<domain::MessageDetail, domain::ApiError> GetMessage(std::string_view conference,
                                                                     std::string_view message, std::string_view user);
+  std::expected<domain::ArchiveSearchResponse, domain::ApiError> SearchArchive(
+      const domain::ArchiveSearchRequest& request, std::string_view user);
+  void SetArchiveScanBudgetForTesting(size_t budget, size_t max_hits = 100000, int ttl_seconds = 600) {
+    archive_scan_budget_ = budget;
+    archive_max_hits_ = max_hits;
+    archive_ttl_ = std::chrono::seconds(ttl_seconds);
+  }
+  std::expected<domain::ArchiveMessage, domain::ApiError> ReadArchiveMessage(std::string_view conference,
+                                                                             std::string_view message,
+                                                                             std::string_view user,
+                                                                             uint64_t body_offset, uint32_t body_limit,
+                                                                             bool reveal = false);
+  std::expected<domain::ThreadListResponse, domain::ApiError> GetArchiveThread(
+      std::string_view conference, std::string_view message, std::string_view user,
+      const domain::PaginationRequest& page = {});
   std::expected<domain::MessageTechnicalData, domain::ApiError> GetMessageTechnicalData(std::string_view conference,
                                                                                         std::string_view message,
                                                                                         std::string_view user);
@@ -71,12 +90,40 @@ public:
   std::expected<domain::ThreadListResponse, domain::ApiError> GetThread(std::string_view conference,
                                                                         std::string_view thread, std::string_view user,
                                                                         const domain::PaginationRequest& page = {},
-                                                                        bool respect_filters = false);
+                                                                        bool respect_filters = false,
+                                                                        bool headers_only = false);
 
 private:
-  std::expected<domain::MessageDetail, domain::ApiError> FilteredDetail(
-      storage::JamAccess& access, std::string_view conference, uint32_t number, std::string_view user,
-      const domain::PersonalMessageFilterSet* filters);
+  struct ArchiveFingerprint {
+    std::string generation;
+    uint32_t mod_counter = 0;
+    std::array<int64_t, 21> files{};
+    bool operator==(const ArchiveFingerprint&) const = default;
+  };
+  struct ArchiveHit {
+    uint32_t date = 0, number = 0;
+    size_t area = 0;
+  };
+  struct ArchiveScan {
+    domain::ArchiveSearchRequest request;
+    std::string user;
+    uint64_t filters_revision = 0;
+    std::vector<ArchiveFingerprint> fingerprints;
+    std::vector<ArchiveHit> hits;
+    size_t area = 0, number = 0, page = 0;
+    bool sorted = false;
+    std::chrono::steady_clock::time_point expires;
+  };
+  static std::expected<ArchiveFingerprint, domain::ApiError> Fingerprint(storage::JamAccess& access);
+  std::mutex archive_mutex_;
+  std::map<std::string, ArchiveScan> archive_scans_;
+  size_t archive_scan_budget_ = 100000, archive_max_hits_ = 100000;
+  std::chrono::seconds archive_ttl_{600};
+  std::expected<domain::MessageDetail, domain::ApiError> FilteredDetail(storage::JamAccess& access,
+                                                                        std::string_view conference, uint32_t number,
+                                                                        std::string_view user,
+                                                                        const domain::PersonalMessageFilterSet* filters,
+                                                                        bool body = true);
   std::expected<domain::MessageDetail, domain::ApiError> Detail(storage::JamAccess& access, std::string_view conference,
                                                                 uint32_t number, std::string_view user,
                                                                 bool body = true);

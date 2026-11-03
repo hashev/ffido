@@ -13,12 +13,16 @@ service Ffido {
   rpc ListConferences(ListConferencesRequest) returns (ListConferencesResponse);
   rpc GetConference(GetConferenceRequest) returns (Conference);
   rpc ListMessages(ListMessagesRequest) returns (ListMessagesResponse);
+  rpc SearchArchiveMessages(SearchArchiveMessagesRequest) returns (SearchArchiveMessagesResponse);
+  rpc ReadArchiveMessage(ReadArchiveMessageRequest) returns (ReadArchiveMessageResponse);
+  rpc GetArchiveThread(GetArchiveThreadRequest) returns (ListMessagesResponse);
   rpc FindMessage(FindMessageRequest) returns (FindMessageResponse);
   rpc GetMessage(MessageReference) returns (Message);
   rpc GetPersonalMessageFilters(google.protobuf.Empty) returns (PersonalMessageFilterSet);
   rpc ReplacePersonalMessageFilters(ReplacePersonalMessageFiltersRequest) returns (ReplacePersonalMessageFiltersResponse);
   rpc GetMessagePresentation(GetMessagePresentationRequest) returns (MessagePresentation);
   rpc GetMessageTechnicalData(MessageReference) returns (MessageTechnicalData);
+  rpc PreviewMessage(CreateMessageRequest) returns (MessagePreview);
   rpc CreateMessage(CreateMessageRequest) returns (CreateMessageResponse);
   rpc CreateCrosspost(CreateCrosspostRequest) returns (CreateCrosspostResponse);
   rpc MarkRead(MessageReference) returns (google.protobuf.Empty);
@@ -173,6 +177,7 @@ message CreateMessageRequest {
   string body = 6;
   string in_reply_to = 7;
   MessageFooter footer = 8;
+  optional string expected_preview_digest = 9;
 }
 
 // Text-only group; conference_id is the mandatory original area.
@@ -496,4 +501,62 @@ message MessagePresentation {
     CollapsedMessageHeaders collapsed = 4;
   }
   repeated SearchMatch matches = 5;
+}
+
+// Архивные RPC не изменяют прочитанность, историю или позицию чтения.
+message SearchArchiveMessagesRequest {
+  repeated string conference_ids = 1;
+  string query = 2;
+  MessageSearchScope scope = 3;
+  google.protobuf.Timestamp from = 4;
+  google.protobuf.Timestamp to = 5;
+  MessageSort sort = 6;
+  int32 limit = 7;
+  string cursor = 8;
+}
+message ArchiveSearchResult {
+  Message message = 1;
+  string snippet = 2;
+  repeated SearchMatch matches = 3;
+}
+message SearchArchiveMessagesResponse {
+  repeated ArchiveSearchResult results = 1;
+  bool complete = 2;
+  string incomplete_reason = 3;
+  string next_cursor = 4;
+}
+message ReadArchiveMessageRequest {
+  MessageReference message = 1;
+  uint64 body_offset = 2;
+  // 1–65536 UTF-8 bytes; граница блока не разрывает символ.
+  uint32 body_limit = 3;
+  bool reveal = 4;
+}
+message ReadArchiveMessageResponse {
+  // body содержит только запрошенный блок, остальные поля — заголовки.
+  Message message = 1;
+  uint64 body_offset = 2;
+  uint64 next_offset = 3;
+  bool complete = 4;
+  bool collapsed = 5;
+}
+message GetArchiveThreadRequest {
+  MessageReference message = 1;
+  PageRequest page = 2;
+}
+
+message MessagePreview {
+  string conference_id = 1;
+  string from_name = 2;
+  string from_address = 3;
+  string to_name = 4;
+  string to_address = 5;
+  string subject = 6;
+  string body = 7;
+  string effective_encoding = 8;
+  uint64 wire_body_bytes = 9;
+  string preview_digest = 10;
+  AreaKind kind = 11;
+  bool public_message = 12;
+  string in_reply_to = 13;
 }

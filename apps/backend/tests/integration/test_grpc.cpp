@@ -1,9 +1,13 @@
 #include <gtest/gtest.h>
+#include <spawn.h>
+#include <sys/wait.h>
 
+#include <condition_variable>
 #include <future>
 
 #include "../support/echo_access.hpp"
 #include "../support/jam_wire_record.hpp"
+#include "../support/mcp_process.hpp"
 #include "../support/temp_directory.hpp"
 #include "../support/tls_certificate.hpp"
 #include "service/grpc_runtime.hpp"
@@ -40,6 +44,9 @@ protected:
   }
   virtual std::shared_ptr<const service::EchoAccess> AccessPolicy() const {
     return test::EchoAccess(*catalog, temp.path());
+  }
+  virtual grpc::Service* RegisteredService() {
+    return service.get();
   }
   void SetUp() override {
     test::GenerateTlsCertificate(temp.path());
@@ -96,7 +103,7 @@ protected:
     builder.AddListeningPort("127.0.0.1:0", grpc::SslServerCredentials(tls), &port);
     builder.SetMaxReceiveMessageSize(2 * 1024 * 1024);
     builder.SetMaxSendMessageSize(4 * 1024 * 1024);
-    builder.RegisterService(service.get());
+    builder.RegisterService(RegisteredService());
     server = builder.BuildAndStart();
     ASSERT_TRUE(server);
     ASSERT_GT(port, 0);
@@ -2009,4 +2016,593 @@ TEST_F(GrpcTest, PersonalFiltersPresentationRejectsBadEncodingAndExpiredRequests
   EXPECT_EQ(client->GetMessagePresentation(&cancelled, open, &result).error_code(), grpc::StatusCode::CANCELLED);
   EXPECT_TRUE(metadata->GetHistory("B")->empty());
   EXPECT_EQ(metadata->LastOpened("B", "RU.TEST")->revision, 0);
+}
+
+TEST_F(GrpcTest, ArchiveReadAndThreadAreAuthorizedAndLeaveReadingStateUntouched) {
+  wire::CreateMessageResponse created;
+  {
+    grpc::ClientContext context;
+    Auth(context, a);
+    const auto request = Request();
+    ASSERT_TRUE(client->CreateMessage(&context, request, &created).ok());
+  }
+  wire::ReadArchiveMessageRequest request;
+  *request.mutable_message() = created.message();
+  request.set_body_limit(65536);
+  wire::ReadArchiveMessageResponse read;
+  {
+    grpc::ClientContext context;
+    EXPECT_EQ(client->ReadArchiveMessage(&context, request, &read).error_code(), grpc::StatusCode::UNAUTHENTICATED);
+  }
+  {
+    grpc::ClientContext context;
+    Auth(context, a);
+    ASSERT_TRUE(client->ReadArchiveMessage(&context, request, &read).ok());
+    EXPECT_FALSE(read.message().is_read());
+    EXPECT_FALSE(read.message().body().empty());
+    EXPECT_TRUE(read.complete());
+  }
+  {
+    wire::GetArchiveThreadRequest thread;
+    *thread.mutable_message() = created.message();
+    thread.mutable_page()->set_limit(20);
+    wire::ListMessagesResponse result;
+    grpc::ClientContext context;
+    Auth(context, a);
+    ASSERT_TRUE(client->GetArchiveThread(&context, thread, &result).ok());
+    ASSERT_EQ(result.messages_size(), 1);
+    EXPECT_TRUE(result.messages(0).body().empty());
+    EXPECT_TRUE(result.messages(0).body_preview().empty());
+    EXPECT_FALSE(result.messages(0).is_read());
+  }
+  auto history = metadata->GetHistory("A");
+  auto position = metadata->LastOpened("A", "RU.TEST");
+  ASSERT_TRUE(history);
+  ASSERT_TRUE(position);
+  EXPECT_TRUE(history->empty());
+  EXPECT_EQ(position->revision, 0u);
+  {
+    grpc::ClientContext context;
+    Auth(context, a);
+    context.set_deadline(std::chrono::system_clock::now() - std::chrono::seconds(1));
+    EXPECT_EQ(client->ReadArchiveMessage(&context, request, &read).error_code(), grpc::StatusCode::DEADLINE_EXCEEDED);
+  }
+  {
+    grpc::ClientContext context;
+    Auth(context, a);
+    context.TryCancel();
+    EXPECT_EQ(client->ReadArchiveMessage(&context, request, &read).error_code(), grpc::StatusCode::CANCELLED);
+  }
+  {
+    grpc::ClientContext context;
+    Auth(context, a);
+    request.mutable_message()->set_conference_id("mailbox.of.someone.else");
+    EXPECT_EQ(client->ReadArchiveMessage(&context, request, &read).error_code(), grpc::StatusCode::PERMISSION_DENIED);
+  }
+}
+
+TEST_F(GrpcTest, PreviewAndDigestProtectTheFirstPublicationAndPreserveLegacySend) {
+  auto request = Request();
+  request.set_body("Новый ответ");
+  wire::MessagePreview preview;
+  {
+    grpc::ClientContext context;
+    Auth(context, a);
+    ASSERT_TRUE(client->PreviewMessage(&context, request, &preview).ok());
+    EXPECT_TRUE(preview.public_message());
+    EXPECT_EQ(preview.from_address(), "2:5015/1.1");
+    EXPECT_EQ(preview.preview_digest().size(), 64u);
+  }
+  request.set_expected_preview_digest(preview.preview_digest());
+  wire::CreateMessageResponse sent;
+  {
+    auto changed = request;
+    changed.set_subject("Changed");
+    grpc::ClientContext context;
+    Auth(context, a);
+    EXPECT_EQ(client->CreateMessage(&context, changed, &sent).error_code(), grpc::StatusCode::FAILED_PRECONDITION);
+  }
+  {
+    grpc::ClientContext context;
+    Auth(context, a);
+    ASSERT_TRUE(client->CreateMessage(&context, request, &sent).ok());
+    EXPECT_EQ(sent.status(), wire::SAVE_STATUS_SAVED_LOCALLY);
+  }
+  {
+    grpc::ClientContext context;
+    Auth(context, a);
+    wire::Message read;
+    ASSERT_TRUE(client->GetMessage(&context, sent.message(), &read).ok());
+    EXPECT_EQ(read.body(), preview.body());
+  }
+  {
+    grpc::ClientContext context;
+    Auth(context, a);
+    const auto old_request = Request("legacy");
+    ASSERT_TRUE(client->CreateMessage(&context, old_request, &sent).ok());
+  }
+}
+
+namespace {
+class McpGrpcTest : public GrpcTest {
+protected:
+  std::filesystem::path ConfigureMcp() {
+    const auto state = temp.path() / "mcp-state";
+    std::filesystem::create_directory(state);
+    chmod(state.c_str(), 0700);
+    const auto session = state / "session.json";
+    {
+      std::ofstream output(session);
+      output << nlohmann::json{{"token", a}};
+    }
+    chmod(session.c_str(), 0600);
+    const auto config = temp.path() / "mcp.json";
+    std::ofstream output(config);
+    output << nlohmann::json{
+        {"endpoint", address},          {"session_file", session.string()},
+        {"state_dir", state.string()},  {"tls_ca_file", (temp.path() / "certificate.pem").string()},
+        {"read_area_ids", {"RU.TEST"}}, {"post_area_ids", {"RU.TEST"}}};
+    return config;
+  }
+};
+}  // namespace
+TEST_F(McpGrpcTest, StdioResearchPrepareSendAndRestartPreserveSourcesAndIdempotency) {
+  const auto config = ConfigureMcp();
+  std::string draft_id, saved_id;
+  {
+    test::McpProcess mcp(config.string());
+    mcp.Initialize();
+    auto prepare = mcp.Call(2, "ffido_prepare_message",
+                            {{"area_id", "RU.TEST"}, {"subject", "Тема"}, {"body", "Новый TLS ответ"}});
+    ASSERT_FALSE(prepare.at("isError").get<bool>()) << prepare.dump();
+    const auto preview = prepare.at("structuredContent").at("data");
+    EXPECT_TRUE(preview.at("preview").at("public_message"));
+    EXPECT_EQ(preview.at("preview").at("from_address"), "2:5015/1.1");
+    draft_id = preview.at("draft_id");
+    auto unconfirmed = mcp.Call(3, "ffido_send_message", {{"draft_id", draft_id}, {"confirm", false}});
+    EXPECT_TRUE(unconfirmed.at("isError"));
+    auto sent = mcp.Call(4, "ffido_send_message", {{"draft_id", draft_id}, {"confirm", true}});
+    ASSERT_FALSE(sent.at("isError").get<bool>()) << sent.dump();
+    EXPECT_EQ(sent.at("structuredContent").at("data").at("status"), "saved_locally");
+    saved_id = sent.at("structuredContent").at("data").at("message").at("message_id");
+    auto search = mcp.Call(5, "ffido_search_messages", {{"area_ids", {"RU.TEST"}}, {"query", "TLS"}});
+    ASSERT_FALSE(search.at("isError").get<bool>()) << search.dump();
+    auto found = search.at("structuredContent").at("data");
+    EXPECT_TRUE(found.at("complete"));
+    ASSERT_EQ(found.at("results").size(), 1u);
+    const auto reference = found.at("results")[0].at("message").at("reference");
+    EXPECT_EQ(reference.at("message_id"), saved_id);
+    EXPECT_NE(found.dump().find("ffido://message/"), std::string::npos);
+    auto read = mcp.Call(6, "ffido_get_message", {{"reference", reference}});
+    ASSERT_FALSE(read.at("isError").get<bool>()) << read.dump();
+    EXPECT_EQ(read.at("structuredContent").at("data").at("message").at("body"), preview.at("preview").at("body"));
+    auto thread = mcp.Call(7, "ffido_get_thread", {{"reference", reference}});
+    EXPECT_FALSE(thread.at("isError").get<bool>());
+    auto technical = mcp.Call(8, "ffido_get_message_technical_data", {{"reference", reference}});
+    EXPECT_FALSE(technical.at("isError").get<bool>());
+    auto forbidden =
+        mcp.Call(9, "ffido_get_message", {{"reference", {{"conference_id", "SECRET"}, {"message_id", saved_id}}}});
+    EXPECT_TRUE(forbidden.at("isError"));
+  }
+  {
+    test::McpProcess restarted(config.string());
+    restarted.Initialize();
+    auto repeat = restarted.Call(2, "ffido_send_message", {{"draft_id", draft_id}, {"confirm", true}});
+    ASSERT_FALSE(repeat.at("isError").get<bool>()) << repeat.dump();
+    EXPECT_EQ(repeat.at("structuredContent").at("data").at("message").at("message_id"), saved_id);
+  }
+  service::ConferenceService areas(catalog, metadata, AccessPolicy());
+  auto count = areas.GetConference("RU.TEST", "A");
+  ASSERT_TRUE(count);
+  EXPECT_EQ(count->total_count, 1);
+  EXPECT_EQ(count->unread_count, 1);
+  auto history = metadata->GetHistory("A");
+  ASSERT_TRUE(history);
+  EXPECT_TRUE(history->empty());
+}
+TEST_F(McpGrpcTest, StdioLifecycleSchemasPromptsAndLimitsAreControlled) {
+  const auto config = ConfigureMcp();
+  test::McpProcess mcp(config.string());
+  mcp.Raw("not json\n");
+  EXPECT_EQ(mcp.Read().at("error").at("code"), -32700);
+  mcp.Send({{"jsonrpc", "2.0"}, {"id", 0}, {"method", "tools/list"}});
+  EXPECT_TRUE(mcp.Read().contains("error"));
+  mcp.Initialize();
+  mcp.Send({{"jsonrpc", "2.0"}, {"id", 2}, {"method", "tools/list"}});
+  const auto tools = mcp.Read().at("result").at("tools");
+  EXPECT_EQ(tools.size(), 7u);
+  for (const auto& tool : tools) {
+    EXPECT_TRUE(tool.contains("inputSchema"));
+    EXPECT_TRUE(tool.contains("outputSchema"));
+  }
+  mcp.Send({{"jsonrpc", "2.0"}, {"id", 3}, {"method", "prompts/list"}});
+  EXPECT_EQ(mcp.Read().at("result").at("prompts").size(), 3u);
+  mcp.Send(
+      {{"jsonrpc", "2.0"},
+       {"id", 4},
+       {"method", "prompts/get"},
+       {"params",
+        {{"name", "digest_period"},
+         {"arguments", {{"area_ids", "RU.TEST"}, {"from", "2026-01-01T00:00:00Z"}, {"to", "2026-02-01T00:00:00Z"}}}}}});
+  const auto prompt = mcp.Read();
+  EXPECT_NE(prompt.dump().find("неполноту"), std::string::npos);
+  mcp.Raw(std::string(1024 * 1024 + 1, 'x') + "\n");
+  EXPECT_EQ(mcp.Read().at("error").at("code"), -32700);
+  auto invalid = mcp.Call(5, "ffido_get_message",
+                          {{"reference", {{"conference_id", "RU.TEST"}, {"message_id", "x"}}}, {"token", "forbidden"}});
+  EXPECT_TRUE(invalid.at("isError"));
+  mcp.Send({{"jsonrpc", "2.0"}, {"id", 6}, {"method", "ping"}});
+  EXPECT_TRUE(mcp.Read().at("result").empty());
+}
+
+namespace {
+class LossyMcpService : public wire::Ffido::Service {
+public:
+  explicit LossyMcpService(service::GrpcService& backend) : backend_(backend) {
+  }
+  grpc::Status RestoreSession(grpc::ServerContext* context, const google::protobuf::Empty* input,
+                              wire::SessionInfo* output) override {
+    return backend_.RestoreSession(context, input, output);
+  }
+  grpc::Status PreviewMessage(grpc::ServerContext* context, const wire::CreateMessageRequest* input,
+                              wire::MessagePreview* output) override {
+    const auto status = backend_.PreviewMessage(context, input, output);
+    std::unique_lock lock(mutex_);
+    if (pause_preview_) {
+      preview_ready_ = true;
+      wake_.notify_all();
+      while (!context->IsCancelled())
+        wake_.wait_for(lock, std::chrono::milliseconds(5));
+      return {grpc::StatusCode::CANCELLED, "cancelled"};
+    }
+    return status;
+  }
+  grpc::Status CreateMessage(grpc::ServerContext* context, const wire::CreateMessageRequest* input,
+                             wire::CreateMessageResponse* output) override {
+    const auto status = backend_.CreateMessage(context, input, output);
+    if (status.ok() && !lost_.exchange(true))
+      return {grpc::StatusCode::UNAVAILABLE, "simulated response loss after durable append"};
+    return status;
+  }
+  grpc::Status ReadArchiveMessage(grpc::ServerContext* context, const wire::ReadArchiveMessageRequest*,
+                                  wire::ReadArchiveMessageResponse*) override {
+    {
+      std::lock_guard lock(mutex_);
+      reading_ = true;
+    }
+    wake_.notify_all();
+    std::unique_lock lock(mutex_);
+    while (!context->IsCancelled())
+      wake_.wait_for(lock, std::chrono::milliseconds(5));
+    return {grpc::StatusCode::CANCELLED, "cancelled"};
+  }
+  void PausePreview() {
+    std::lock_guard lock(mutex_);
+    pause_preview_ = true;
+  }
+  bool WaitForPreview() {
+    std::unique_lock lock(mutex_);
+    return wake_.wait_for(lock, std::chrono::seconds(5), [&] { return preview_ready_; });
+  }
+  bool WaitForReading() {
+    std::unique_lock lock(mutex_);
+    return wake_.wait_for(lock, std::chrono::seconds(5), [&] { return reading_; });
+  }
+
+private:
+  service::GrpcService& backend_;
+  std::atomic<bool> lost_ = false;
+  std::mutex mutex_;
+  std::condition_variable wake_;
+  bool reading_ = false, pause_preview_ = false, preview_ready_ = false;
+};
+class LossyMcpGrpcTest : public McpGrpcTest {
+protected:
+  std::unique_ptr<LossyMcpService> proxy;
+  grpc::Service* RegisteredService() override {
+    proxy = std::make_unique<LossyMcpService>(*service);
+    return proxy.get();
+  }
+};
+}  // namespace
+TEST_F(LossyMcpGrpcTest, LostSendResponseThenRestartRepeatsTheSameDurableOperation) {
+  const auto config = ConfigureMcp();
+  std::string draft;
+  {
+    test::McpProcess mcp(config.string());
+    mcp.Initialize();
+    auto prepared =
+        mcp.Call(2, "ffido_prepare_message", {{"area_id", "RU.TEST"}, {"subject", "Тема"}, {"body", "Reply"}});
+    ASSERT_FALSE(prepared.at("isError").get<bool>());
+    draft = prepared.at("structuredContent").at("data").at("draft_id");
+    auto lost = mcp.Call(3, "ffido_send_message", {{"draft_id", draft}, {"confirm", true}});
+    ASSERT_TRUE(lost.at("isError").get<bool>());
+    EXPECT_NE(lost.dump().find("OUTCOME_UNKNOWN"), std::string::npos);
+  }
+  std::string first_id;
+  {
+    service::MessageService messages(catalog, metadata, AccessPolicy());
+    auto before = messages.GetMessages("RU.TEST", {}, "oldest", "A");
+    ASSERT_TRUE(before);
+    ASSERT_EQ(before->messages.size(), 1u);
+    first_id = before->messages[0].ftn_message_id;
+  }
+  {
+    test::McpProcess restarted(config.string());
+    restarted.Initialize();
+    auto repeated = restarted.Call(2, "ffido_send_message", {{"draft_id", draft}, {"confirm", true}});
+    ASSERT_FALSE(repeated.at("isError").get<bool>()) << repeated.dump();
+    EXPECT_EQ(repeated.at("structuredContent").at("data").at("ftn_message_id"), first_id);
+  }
+  service::MessageService messages(catalog, metadata, AccessPolicy());
+  auto after = messages.GetMessages("RU.TEST", {}, "oldest", "A");
+  ASSERT_TRUE(after);
+  EXPECT_EQ(after->total, 1);
+}
+TEST_F(LossyMcpGrpcTest, PingAndCancellationWorkDuringAnActiveGrpcCall) {
+  const auto config = ConfigureMcp();
+  test::McpProcess mcp(config.string());
+  mcp.Initialize();
+  mcp.Send({{"jsonrpc", "2.0"},
+            {"id", 2},
+            {"method", "tools/call"},
+            {"params",
+             {{"name", "ffido_get_message"},
+              {"arguments", {{"reference", {{"conference_id", "RU.TEST"}, {"message_id", "g#42"}}}}}}}});
+  ASSERT_TRUE(proxy->WaitForReading());
+  mcp.Send({{"jsonrpc", "2.0"}, {"id", 3}, {"method", "ping"}});
+  EXPECT_EQ(mcp.Read().at("id"), 3);
+  mcp.Send({{"jsonrpc", "2.0"}, {"method", "notifications/cancelled"}, {"params", {{"requestId", 2}}}});
+  const auto cancelled = mcp.Read();
+  EXPECT_EQ(cancelled.at("id"), 2);
+  EXPECT_TRUE(cancelled.at("result").at("isError"));
+}
+TEST_F(McpGrpcTest, PrivateStateAndDraftExpiryAndProfileBindingAreEnforced) {
+  const auto config = ConfigureMcp();
+  std::string id;
+  {
+    test::McpProcess mcp(config.string());
+    mcp.Initialize();
+    auto prepared =
+        mcp.Call(2, "ffido_prepare_message", {{"area_id", "RU.TEST"}, {"subject", "Тема"}, {"body", "Text"}});
+    ASSERT_FALSE(prepared.at("isError").get<bool>());
+    id = prepared.at("structuredContent").at("data").at("draft_id");
+  }
+  const auto path = temp.path() / "mcp-state" / (id + ".json");
+  struct stat info{};
+  ASSERT_EQ(stat(path.c_str(), &info), 0);
+  EXPECT_EQ(info.st_mode & 0777, 0600);
+  auto draft = nlohmann::json::parse(test::ReadFile(path));
+  const auto original = draft;
+  draft["expires_at"] = 0;
+  {
+    std::ofstream file(path);
+    file << draft;
+  }
+  {
+    test::McpProcess mcp(config.string());
+    mcp.Initialize();
+    auto expired = mcp.Call(2, "ffido_send_message", {{"draft_id", id}, {"confirm", true}});
+    EXPECT_TRUE(expired.at("isError"));
+    EXPECT_NE(expired.dump().find("expired"), std::string::npos);
+  }
+  draft = original;
+  draft["profile"] = "different";
+  {
+    std::ofstream file(path);
+    file << draft;
+  }
+  {
+    test::McpProcess mcp(config.string());
+    mcp.Initialize();
+    auto foreign = mcp.Call(2, "ffido_send_message", {{"draft_id", id}, {"confirm", true}});
+    EXPECT_TRUE(foreign.at("isError"));
+    EXPECT_NE(foreign.dump().find("PERMISSION_DENIED"), std::string::npos);
+  }
+  chmod((temp.path() / "mcp-state" / "session.json").c_str(), 0644);
+  test::McpProcess unsafe(config.string());
+  EXPECT_THROW(unsafe.Initialize(), std::runtime_error);
+}
+
+TEST_F(McpGrpcTest, LocalInteractiveLoginSavesAnIndependentSessionWithoutEchoingPassword) {
+  ASSERT_TRUE(service->ConfigureAuth({{"2:5015/1.1", "mcp-fixture-password"}}, std::string(32, 'k')));
+  wire::LoginRequest login;
+  login.set_name("Fixture");
+  login.set_address("2:5015/1.1");
+  login.set_password("mcp-fixture-password");
+  wire::LoginResponse previous;
+  {
+    grpc::ClientContext context;
+    ASSERT_TRUE(client->Login(&context, login, &previous).ok());
+  }
+  const auto config = ConfigureMcp();
+  pid_t pid = -1;
+  const auto file = config.string();
+  char* argv[]{const_cast<char*>(FFIDO_PYTHON), const_cast<char*>(FFIDO_MCP_LOGIN_TEST),
+               const_cast<char*>(FFIDO_MCP_BINARY), const_cast<char*>(file.c_str()), nullptr};
+  ASSERT_EQ(posix_spawn(&pid, argv[0], nullptr, nullptr, argv, environ), 0);
+  int status = 0;
+  ASSERT_EQ(waitpid(pid, &status, 0), pid);
+  ASSERT_TRUE(WIFEXITED(status));
+  ASSERT_EQ(WEXITSTATUS(status), 0);
+  const auto stored = nlohmann::json::parse(test::ReadFile(temp.path() / "mcp-state" / "session.json"));
+  EXPECT_NE(stored.at("token"), previous.session_secret());
+  {
+    grpc::ClientContext context;
+    Auth(context, previous.session_secret());
+    google::protobuf::Empty input;
+    wire::SessionInfo result;
+    EXPECT_TRUE(client->RestoreSession(&context, input, &result).ok());
+  }
+  test::McpProcess mcp(file);
+  mcp.Initialize();
+  auto areas = mcp.Call(2, "ffido_list_areas", nlohmann::json::object());
+  EXPECT_FALSE(areas.at("isError").get<bool>()) << areas.dump();
+  mcp.Finish();
+}
+TEST_F(McpGrpcTest, EmptyAllowlistsAndUntrustedTlsNeverExposeData) {
+  const auto config = ConfigureMcp();
+  auto value = nlohmann::json::parse(test::ReadFile(config));
+  value["read_area_ids"] = nlohmann::json::array();
+  value["post_area_ids"] = nlohmann::json::array();
+  {
+    std::ofstream output(config);
+    output << value;
+  }
+  {
+    test::McpProcess mcp(config.string());
+    mcp.Initialize();
+    auto list = mcp.Call(2, "ffido_list_areas", nlohmann::json::object());
+    ASSERT_FALSE(list.at("isError").get<bool>());
+    EXPECT_EQ(list.at("structuredContent").at("data").at("total"), 0);
+    auto denied =
+        mcp.Call(3, "ffido_prepare_message", {{"area_id", "RU.TEST"}, {"subject", "Subject"}, {"body", "Body"}});
+    EXPECT_TRUE(denied.at("isError"));
+    mcp.Finish();
+  }
+  std::filesystem::create_directory(temp.path() / "other-ca");
+  test::GenerateTlsCertificate(temp.path() / "other-ca");
+  value["tls_ca_file"] = (temp.path() / "other-ca" / "certificate.pem").string();
+  {
+    std::ofstream output(config);
+    output << value;
+  }
+  test::McpProcess mcp(config.string());
+  mcp.Initialize();
+  auto rejected = mcp.Call(2, "ffido_list_areas", nlohmann::json::object());
+  EXPECT_TRUE(rejected.at("isError"));
+}
+TEST_F(LossyMcpGrpcTest, FifthConcurrentCallIsRejectedAndUnsupportedRpcRequiresUpgrade) {
+  const auto config = ConfigureMcp();
+  test::McpProcess mcp(config.string());
+  mcp.Initialize();
+  auto unsupported =
+      mcp.Call(2, "ffido_get_thread", {{"reference", {{"conference_id", "RU.TEST"}, {"message_id", "g#42"}}}});
+  EXPECT_TRUE(unsupported.at("isError"));
+  EXPECT_NE(unsupported.dump().find("GRPC_12"), std::string::npos);
+  for (int id = 3; id < 7; ++id)
+    mcp.Send({{"jsonrpc", "2.0"},
+              {"id", id},
+              {"method", "tools/call"},
+              {"params",
+               {{"name", "ffido_get_message"},
+                {"arguments", {{"reference", {{"conference_id", "RU.TEST"}, {"message_id", "g#42"}}}}}}}});
+  ASSERT_TRUE(proxy->WaitForReading());
+  mcp.Send({{"jsonrpc", "2.0"}, {"id", 7}, {"method", "tools/call"}, {"params", {{"name", "ffido_list_areas"}}}});
+  const auto limited = mcp.Read();
+  EXPECT_EQ(limited.at("id"), 7);
+  EXPECT_TRUE(limited.at("result").at("isError"));
+  for (int id = 3; id < 7; ++id)
+    mcp.Send({{"jsonrpc", "2.0"}, {"method", "notifications/cancelled"}, {"params", {{"requestId", id}}}});
+  for (int i = 0; i < 4; ++i)
+    EXPECT_TRUE(mcp.Read().at("result").at("isError"));
+}
+
+TEST_F(McpGrpcTest, RawTechnicalBytesAndLargeBodiesHaveExplicitRepresentationsAndLimits) {
+  std::string id;
+  {
+    auto lease =
+        storage::JamAccess::Open(*catalog, "RU.TEST", true, std::chrono::steady_clock::now() + std::chrono::seconds(2));
+    ASSERT_TRUE(lease);
+    msgapi::JamMessage raw;
+    raw.SetSenderName("Source");
+    raw.SetSubject("Large");
+    raw.SetText(std::string(100000, '\2'));
+    raw.AddRawSubField(msgapi::JamSubFieldType::kFtsKludge, std::string("\0\xff", 2), 7);
+    ASSERT_EQ((*lease)->messages().AddMessage(raw), msgapi::JamError::kSuccess);
+    id = (*lease)->generation() + "#42";
+  }
+  const auto config = ConfigureMcp();
+  test::McpProcess mcp(config.string());
+  mcp.Initialize();
+  nlohmann::json reference{{"conference_id", "RU.TEST"}, {"message_id", id}};
+  auto technical = mcp.Call(2, "ffido_get_message_technical_data", {{"reference", reference}});
+  ASSERT_FALSE(technical.at("isError").get<bool>());
+  bool found = false;
+  for (const auto& field : technical.at("structuredContent").at("data").at("subfields"))
+    if (field.at("high_id") == 7) {
+      found = true;
+      EXPECT_EQ(field.at("value"), "AP8=");
+    }
+  EXPECT_TRUE(found);
+  auto large = mcp.Call(3, "ffido_get_message", {{"reference", reference}});
+  EXPECT_TRUE(large.at("isError"));
+  EXPECT_NE(large.dump().find("RESOURCE_EXHAUSTED"), std::string::npos);
+  auto block = mcp.Call(4, "ffido_get_message", {{"reference", reference}, {"body_limit", 1024}});
+  ASSERT_FALSE(block.at("isError").get<bool>());
+  const auto data = block.at("structuredContent").at("data");
+  EXPECT_FALSE(data.at("complete").get<bool>());
+  EXPECT_EQ(data.at("next_offset"), "1024");
+  EXPECT_NE(data.at("message").at("source_uri").get<std::string>().find("%23"), std::string::npos);
+  mcp.Finish();
+}
+
+TEST_F(McpGrpcTest, ConcurrentSendUsesOneOperationAndRevokedLocalPostPermissionBlocksReplay) {
+  const auto config = ConfigureMcp();
+  std::string draft;
+  {
+    test::McpProcess mcp(config.string());
+    mcp.Initialize();
+    auto prepared =
+        mcp.Call(2, "ffido_prepare_message", {{"area_id", "RU.TEST"}, {"subject", "Тема"}, {"body", "Text"}});
+    ASSERT_FALSE(prepared.at("isError").get<bool>());
+    draft = prepared.at("structuredContent").at("data").at("draft_id");
+    for (int id : {3, 4})
+      mcp.Send({{"jsonrpc", "2.0"},
+                {"id", id},
+                {"method", "tools/call"},
+                {"params", {{"name", "ffido_send_message"}, {"arguments", {{"draft_id", draft}, {"confirm", true}}}}}});
+    const auto first = mcp.Read().at("result"), second = mcp.Read().at("result");
+    ASSERT_FALSE(first.at("isError").get<bool>());
+    ASSERT_FALSE(second.at("isError").get<bool>());
+    EXPECT_EQ(first.at("structuredContent").at("data").at("message"),
+              second.at("structuredContent").at("data").at("message"));
+    mcp.Finish();
+  }
+  auto value = nlohmann::json::parse(test::ReadFile(config));
+  value["post_area_ids"] = nlohmann::json::array();
+  {
+    std::ofstream output(config);
+    output << value;
+  }
+  test::McpProcess restarted(config.string());
+  restarted.Initialize();
+  auto denied = restarted.Call(2, "ffido_send_message", {{"draft_id", draft}, {"confirm", true}});
+  EXPECT_TRUE(denied.at("isError"));
+  service::ConferenceService areas(catalog, metadata, AccessPolicy());
+  auto count = areas.GetConference("RU.TEST", "A");
+  ASSERT_TRUE(count);
+  EXPECT_EQ(count->total_count, 1);
+}
+
+TEST_F(LossyMcpGrpcTest, ProcessTerminationBeforeDraftIdDoesNotCreateAWriteIntent) {
+  const auto config = ConfigureMcp();
+  proxy->PausePreview();
+  {
+    test::McpProcess mcp(config.string());
+    mcp.Initialize();
+    mcp.Send({{"jsonrpc", "2.0"},
+              {"id", 2},
+              {"method", "tools/call"},
+              {"params",
+               {{"name", "ffido_prepare_message"},
+                {"arguments", {{"area_id", "RU.TEST"}, {"subject", "Subject"}, {"body", "Body"}}}}}});
+    ASSERT_TRUE(proxy->WaitForPreview());
+  }
+  for (const auto& entry : std::filesystem::directory_iterator(temp.path() / "mcp-state"))
+    EXPECT_EQ(entry.path().filename(), "session.json");
+  service::ConferenceService areas(catalog, metadata, AccessPolicy());
+  auto count = areas.GetConference("RU.TEST", "A");
+  ASSERT_TRUE(count);
+  EXPECT_EQ(count->total_count, 0);
+}
+TEST_F(McpGrpcTest, RevokedSessionCannotUseAnyBusinessTool) {
+  const auto config = ConfigureMcp();
+  test::McpProcess mcp(config.string());
+  mcp.Initialize();
+  service::AuthService auth(metadata);
+  ASSERT_TRUE(auth.Revoke(a));
+  auto denied = mcp.Call(2, "ffido_list_areas", nlohmann::json::object());
+  EXPECT_TRUE(denied.at("isError"));
+  EXPECT_NE(denied.dump().find("GRPC_16"), std::string::npos);
 }
