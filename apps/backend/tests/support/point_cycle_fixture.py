@@ -3,6 +3,7 @@ import fcntl
 import json
 import os
 import pathlib
+import resource
 import sqlite3
 import struct
 import subprocess
@@ -48,6 +49,18 @@ def main():
                                    'points': [{'address': f'2:1/2.{p}', 'jam_base': f'points/p{p}'} for p in (1, 2)]}}
         if mapped:
             document['ftn']['path_mappings'] = [{'from': str(root), 'to': str(root)}]
+        # Exercise the real admin/HPT cycle with a large catalog and the production soft limit.
+        large = []
+        for number in range(1000):
+            name = f'fixture{number}'
+            empty_jam(root / name)
+            large.append(f'EchoArea {name} {root}/{name} -b JAM')
+        (root / 'areas.cfg').write_text('\n'.join(large) + '\n')
+        if not mapped:
+            with (root / 'hpt.cfg').open('a') as output:
+                output.write(f'Include {root}/areas.cfg\n')
+        saved_limit = resource.getrlimit(resource.RLIMIT_NOFILE)
+        resource.setrlimit(resource.RLIMIT_NOFILE, (min(1024, saved_limit[0]), saved_limit[1]))
         path = root / 'config.json'
         path.write_text(json.dumps(document))
         result = subprocess.run([admin, 'provision-mailboxes', str(path)], capture_output=True, timeout=15)
@@ -69,6 +82,18 @@ def main():
             assert b'Marker p1' not in outbound and b'Marker p2' not in outbound
             assert outbound.count(b'Marker ordinary') == outbound.count(b'Marker transit') == 1
             assert b'Marker boss' not in outbound
+        # A local catalog-open failure identifies stage, area and errno before HPT runs.
+        companion = root / 'fixture0.jdx'
+        hidden = root / 'fixture0.saved'
+        companion.rename(hidden)
+        try:
+            result = subprocess.run(command, capture_output=True, timeout=15)
+            assert result.returncode != 0
+            assert b'stage=recover' in result.stderr and b'area=fixture0' in result.stderr, result.stderr
+            assert b'errno=2' in result.stderr, result.stderr
+            assert b'fixture3' not in result.stderr  # HPT password is not diagnostic output.
+        finally:
+            hidden.rename(companion)
         # Raw HPT commands cannot bypass dispatch, including aliases/default commands.
         for tail in ([hpt, '-c', str(root / 'hpt.cfg'), 'pack'], [hpt], [hpt, 'scan']):
             result = subprocess.run([sys.executable, wrapper, '--config', str(path), '--', *tail], capture_output=True, timeout=5)

@@ -152,7 +152,8 @@ enum class JamError {
   kReadError,
   kWriteError,
   kCorruptedData,
-  kMessageDeleted
+  kMessageDeleted,
+  kResourceLimit
 };
 
 // Вспомогательные функции
@@ -294,7 +295,8 @@ inline std::expected<uint64_t, JamError> Size(JamFile& file) {
 inline bool Fits(uint64_t offset, uint64_t length, uint64_t size) {
   return offset <= size && length <= size - offset;
 }
-constexpr uint32_t kMaxBody = 1024 * 1024;
+constexpr uint32_t kMaxBody = 1024 * 1024;  // New publications only.
+constexpr uint32_t kMaxReadBody = 10 * 1024 * 1024;
 constexpr uint32_t kMaxSubfields = 64 * 1024;
 }  // namespace jam_wire
 
@@ -840,7 +842,6 @@ inline std::expected<JamMessageHeader, JamError> JamMessageBase::ReadHeader(uint
   }
 
   if (msg_header.revision != kJamRevision || msg_header.message_number != msg_num ||
-      msg_header.subfield_len > jam_wire::kMaxSubfields || msg_header.txt_len > jam_wire::kMaxBody ||
       !jam_wire::Fits(uint64_t{index_record.header_offset} + 76, msg_header.subfield_len, *header_size) ||
       !jam_wire::Fits(msg_header.offset, msg_header.txt_len, *text_size))
     return std::unexpected(JamError::kCorruptedData);
@@ -852,22 +853,27 @@ inline std::expected<JamMessageHeader, JamError> JamMessageBase::ReadHeader(uint
 // Metadata diagnostics must not depend on decoding the body, names or subject.
 inline std::expected<JamMessage, JamError> JamMessageBase::ReadRawMetadata(uint32_t number) const {
   auto header = ReadHeader(number);
-  if (!header) return std::unexpected(header.error());
+  if (!header)
+    return std::unexpected(header.error());
   JamMessage result;
   result.attributes_ = header->attribute;
   result.set_attributes2(header->attribute2);
   const auto& index = index_structure_[number - base_header_.base_msg_num];
   auto fields = ReadSubFields(index.header_offset + 76, header->subfield_len);
-  if (!fields) return std::unexpected(fields.error());
+  if (!fields)
+    return std::unexpected(fields.error());
   result.subfields_ = std::move(*fields);
   return result;
 }
 
-[[nodiscard]] inline std::expected<JamMessage, JamError> JamMessageBase::ReadMessage(uint32_t msg_num, bool include_body) const {
+[[nodiscard]] inline std::expected<JamMessage, JamError> JamMessageBase::ReadMessage(uint32_t msg_num,
+                                                                                     bool include_body) const {
   auto header = ReadHeader(msg_num);
   if (!header)
     return std::unexpected(header.error());
   const auto& msg_header = *header;
+  if (include_body && msg_header.txt_len > jam_wire::kMaxReadBody)
+    return std::unexpected(JamError::kResourceLimit);
   const auto& index_record = index_structure_[msg_num - base_header_.base_msg_num];
   JamMessage message;
   message.attributes_ = msg_header.attribute;
@@ -903,9 +909,10 @@ inline std::expected<JamMessage, JamError> JamMessageBase::ReadRawMetadata(uint3
   auto encoding = MessageEncoding(message, default_encoding_, force_encoding_);
   if (!encoding)
     return std::unexpected(encoding.error());
-  auto decoded = fidoback::storage::ConvertText(message.text_, *encoding, "UTF-8");
+  auto decoded = fidoback::storage::ConvertText(message.text_, *encoding, "UTF-8", 32 * 1024 * 1024);
   if (!decoded)
-    return std::unexpected(JamError::kCorruptedData);
+    return std::unexpected(decoded.error() == fidoback::storage::TextError::kLimit ? JamError::kResourceLimit
+                                                                                 : JamError::kCorruptedData);
   message.text_ = std::move(*decoded);
   for (auto& field : message.subfields_) {
     if (field.high_id() != 0 ||
@@ -1236,8 +1243,10 @@ inline std::expected<std::vector<JamSubField>, JamError> JamMessageBase::ReadSub
   auto size = jam_wire::Size(jhr_file_);
   if (!size)
     return std::unexpected(size.error());
-  if (length > jam_wire::kMaxSubfields || !jam_wire::Fits(offset, length, *size))
+  if (!jam_wire::Fits(offset, length, *size))
     return std::unexpected(JamError::kCorruptedData);
+  if (length > jam_wire::kMaxSubfields)
+    return std::unexpected(JamError::kResourceLimit);
   jhr_file_.seekg(offset, std::ios::beg);
 
   std::vector<uint8_t> subfield_data(length);

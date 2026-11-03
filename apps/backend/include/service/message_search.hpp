@@ -21,8 +21,12 @@ struct SearchText {
   std::vector<uint32_t> utf16;
 };
 inline std::expected<SearchText, domain::ApiError> FoldSearch(std::string_view text, bool cp866) {
-  if (!storage::ConvertText(text, "UTF-8", "UTF-8"))
+  auto valid = storage::ConvertText(text, "UTF-8", "UTF-8");
+  if (!valid) {
+    if (valid.error() == storage::TextError::kLimit)
+      return std::unexpected(domain::ApiError{domain::ErrorCode::kResource, "Search text exceeds resource limit", {}});
     return std::unexpected(domain::ApiError::Validation("Invalid UTF-8 search text"));
+  }
   SearchText result;
   uint32_t units = 0;
   for (size_t i = 0; i < text.size();) {

@@ -161,7 +161,7 @@ Client::Client(Config config, bool login) : config_(std::move(config)) {
   grpc::SslCredentialsOptions tls;
   tls.pem_root_certs = config_.certificate;
   grpc::ChannelArguments arguments;
-  arguments.SetMaxReceiveMessageSize(4 * 1024 * 1024);
+  arguments.SetMaxReceiveMessageSize(32 * 1024 * 1024);
   stub_ = wire::Ffido::NewStub(grpc::CreateCustomChannel(config_.endpoint, grpc::SslCredentials(tls), arguments));
   if (!login) {
     token_ = Json::parse(ReadSecret(config_.session_file)).at("token").get<std::string>();

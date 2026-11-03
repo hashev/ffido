@@ -1,9 +1,11 @@
 #include <gtest/gtest.h>
 #include <spawn.h>
+#include <sys/resource.h>
 #include <sys/wait.h>
 
 #include <condition_variable>
 #include <future>
+#include <thread>
 
 #include "../support/echo_access.hpp"
 #include "../support/jam_wire_record.hpp"
@@ -102,7 +104,7 @@ protected:
     int port = 0;
     builder.AddListeningPort("127.0.0.1:0", grpc::SslServerCredentials(tls), &port);
     builder.SetMaxReceiveMessageSize(2 * 1024 * 1024);
-    builder.SetMaxSendMessageSize(4 * 1024 * 1024);
+    builder.SetMaxSendMessageSize(32 * 1024 * 1024);
     builder.RegisterService(RegisteredService());
     server = builder.BuildAndStart();
     ASSERT_TRUE(server);
@@ -2605,4 +2607,210 @@ TEST_F(McpGrpcTest, RevokedSessionCannotUseAnyBusinessTool) {
   auto denied = mcp.Call(2, "ffido_list_areas", nlohmann::json::object());
   EXPECT_TRUE(denied.at("isError"));
   EXPECT_NE(denied.dump().find("GRPC_16"), std::string::npos);
+}
+
+namespace {
+void ExistingBody(const std::filesystem::path& base, uint32_t size, char byte) {
+  const auto index = test::ReadFile(base.string() + ".jdx");
+  const auto headers = test::ReadFile(base.string() + ".jhr");
+  const auto offset = test::Wire32(index, 4);
+  const auto body_offset = test::Wire32(headers, offset + 60);
+  std::array<uint8_t, 4> length{};
+  msgapi::jam_wire::Put32(length.data(), size);
+  std::fstream output(base.string() + ".jhr", std::ios::in | std::ios::out | std::ios::binary);
+  output.seekp(offset + 64);
+  output.write(reinterpret_cast<const char*>(length.data()), 4);
+  std::ofstream text(base.string() + ".jdt", std::ios::binary);
+  text << std::string(body_offset, 'x') << std::string(size, byte);
+}
+class GrpcKoiLargeTest : public GrpcTest {
+  std::string Encoding() const override {
+    return "KOI8-R";
+  }
+};
+}  // namespace
+
+TEST_F(GrpcKoiLargeTest, LargeExistingBodySurvivesUtf8ExpansionAndTransport) {
+  wire::CreateMessageResponse created;
+  grpc::ClientContext create;
+  Auth(create, a);
+  ASSERT_TRUE(client->CreateMessage(&create, Request(), &created).ok());
+  grpc::SslCredentialsOptions roots;
+  roots.pem_root_certs = test::ReadFile(temp.path() / "certificate.pem");
+  grpc::ChannelArguments args;
+  args.SetMaxReceiveMessageSize(32 * 1024 * 1024);
+  auto large = wire::Ffido::NewStub(grpc::CreateCustomChannel(address, grpc::SslCredentials(roots), args));
+  for (const auto [size, byte] :
+       {std::pair{7150806u, 'a'}, {10485760u, 'a'}, {10485760u, char(0x80)}, {10485761u, 'a'}}) {
+    ExistingBody(temp.path() / "file", size, byte);
+    grpc::ClientContext context;
+    Auth(context, b);
+    context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(30));
+    wire::Message message;
+    const auto status = large->GetMessage(&context, created.message(), &message);
+    if (size > 10485760u) {
+      EXPECT_EQ(status.error_code(), grpc::StatusCode::RESOURCE_EXHAUSTED);
+    } else {
+      ASSERT_TRUE(status.ok()) << status.error_message();
+      EXPECT_EQ(message.body().size(), uint64_t(size) * (byte == 'a' ? 1 : 3));
+      EXPECT_EQ(message.body().substr(0, byte == 'a' ? 1 : 3), byte == 'a' ? "a" : "─");
+    }
+  }
+}
+
+TEST_F(McpGrpcTest, TenMiBExistingBodyStillUsesSmallArchiveBlocks) {
+  wire::CreateMessageResponse created;
+  grpc::ClientContext create;
+  Auth(create, a);
+  ASSERT_TRUE(client->CreateMessage(&create, Request(), &created).ok());
+  ExistingBody(temp.path() / "file", 10 * 1024 * 1024, 'a');
+  const auto config = ConfigureMcp();
+  test::McpProcess mcp(config.string());
+  mcp.Initialize();
+  auto block = mcp.Call(2, "ffido_get_message",
+                        {{"reference", {{"conference_id", "RU.TEST"}, {"message_id", created.message().message_id()}}},
+                         {"body_limit", 1024}});
+  ASSERT_FALSE(block.at("isError").get<bool>()) << block.dump();
+  EXPECT_EQ(block.at("structuredContent").at("data").at("next_offset"), "1024");
+  EXPECT_FALSE(block.at("structuredContent").at("data").at("complete").get<bool>());
+  mcp.Finish();
+}
+
+namespace {
+class GrpcParallelLargeTest : public GrpcTest {
+  int AreaCount() const override {
+    return 16;
+  }
+};
+}  // namespace
+TEST_F(GrpcParallelLargeTest, SixteenConcurrentLargeReadsReleaseTheirLeases) {
+  std::vector<wire::MessageReference> references;
+  for (int i = 0; i < 16; ++i) {
+    auto request = Request("large" + std::to_string(i));
+    request.set_conference_id(i == 0 ? "RU.TEST" : "RU.EXTRA" + std::to_string(i));
+    grpc::ClientContext context;
+    Auth(context, a);
+    wire::CreateMessageResponse created;
+    ASSERT_TRUE(client->CreateMessage(&context, request, &created).ok());
+    references.push_back(created.message());
+    ExistingBody(temp.path() / (i == 0 ? "file" : "extra" + std::to_string(i)), 10 * 1024 * 1024, char(0xb0));
+  }
+  grpc::SslCredentialsOptions roots;
+  roots.pem_root_certs = test::ReadFile(temp.path() / "certificate.pem");
+  grpc::ChannelArguments args;
+  args.SetMaxReceiveMessageSize(32 * 1024 * 1024);
+  auto large = wire::Ffido::NewStub(grpc::CreateCustomChannel(address, grpc::SslCredentials(roots), args));
+  for (int repetition = 0; repetition < 2; ++repetition) {
+    std::vector<std::future<void>> readers;
+    for (const auto& reference : references)
+      readers.push_back(std::async(std::launch::async, [&, reference] {
+        grpc::ClientContext context;
+        Auth(context, b);
+        context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(60));
+        wire::Message result;
+        const auto status = large->GetMessage(&context, reference, &result);
+        EXPECT_TRUE(status.ok()) << status.error_message();
+        if (status.ok())
+          EXPECT_EQ(result.body().size(), 30u * 1024 * 1024);
+      }));
+    for (auto& reader : readers)
+      reader.get();
+    for (const auto& [id, area] : catalog->areas())
+      EXPECT_EQ(area.files->descriptors[0], -1);
+  }
+}
+
+TEST_F(CrosspostGrpcTest, BrokenAreaStatisticsDoNotAbortTheRpcCatalog) {
+  std::ofstream(temp.path() / "file.jdx", std::ios::binary).put('x');
+  wire::ListConferencesRequest request;
+  request.mutable_page()->set_limit(100);
+  request.set_sort(wire::CONFERENCE_SORT_NAME);
+  grpc::ClientContext context;
+  Auth(context, a);
+  wire::ListConferencesResponse result;
+  ASSERT_TRUE(client->ListConferences(&context, request, &result).ok());
+  ASSERT_GT(result.conferences_size(), 1);
+  for (const auto& area : result.conferences()) {
+    if (area.id() == "RU.TEST") {
+      EXPECT_FALSE(area.statistics_known());
+      EXPECT_EQ(area.availability(), wire::AREA_AVAILABILITY_AVAILABLE);
+    } else
+      EXPECT_TRUE(area.statistics_known());
+  }
+}
+
+namespace {
+class GrpcThousandAreaTest : public GrpcTest {
+  struct rlimit saved{};
+  int AreaCount() const override {
+    return 1000;
+  }
+  void SetUp() override {
+    ASSERT_EQ(getrlimit(RLIMIT_NOFILE, &saved), 0);
+    auto limit = saved;
+    limit.rlim_cur = std::min<rlim_t>(1024, saved.rlim_cur);
+    ASSERT_EQ(setrlimit(RLIMIT_NOFILE, &limit), 0);
+    GrpcTest::SetUp();
+  }
+  void TearDown() override {
+    GrpcTest::TearDown();
+    EXPECT_EQ(setrlimit(RLIMIT_NOFILE, &saved), 0);
+  }
+};
+}  // namespace
+TEST_F(GrpcThousandAreaTest, ServerListsAllPagesWithUnchangedLowNofile) {
+  std::set<std::string> seen;
+  for (int offset = 0; offset < 1000; offset += 100) {
+    wire::ListConferencesRequest request;
+    request.mutable_page()->set_offset(offset);
+    request.mutable_page()->set_limit(100);
+    request.set_sort(wire::CONFERENCE_SORT_NAME);
+    grpc::ClientContext context;
+    Auth(context, a);
+    wire::ListConferencesResponse result;
+    ASSERT_TRUE(client->ListConferences(&context, request, &result).ok());
+    EXPECT_EQ(result.total(), 1000);
+    for (const auto& area : result.conferences())
+      EXPECT_TRUE(seen.insert(area.id()).second);
+  }
+  EXPECT_EQ(seen.size(), 1000u);
+  for (const auto& [id, area] : catalog->areas())
+    EXPECT_EQ(area.files->descriptors[0], -1);
+}
+
+TEST_F(GrpcKoiLargeTest, CancellationDuringLargeReadReleasesTheFileLease) {
+  wire::CreateMessageResponse created;
+  grpc::ClientContext create;
+  Auth(create, a);
+  ASSERT_TRUE(client->CreateMessage(&create, Request(), &created).ok());
+  ExistingBody(temp.path() / "file", 10 * 1024 * 1024, char(0x80));
+  auto owner = catalog->areas().at("RU.TEST").files;
+  for (int attempt = 0; attempt < 2; ++attempt) {
+    grpc::ClientContext context;
+    Auth(context, b);
+    context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(30));
+    auto reading = std::async(std::launch::async, [&] {
+      wire::Message result;
+      return client->GetMessage(&context, created.message(), &result);
+    });
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    bool active = false;
+    while (std::chrono::steady_clock::now() < until) {
+      if (!owner->mutex.try_lock()) {
+        active = true;
+        break;
+      }
+      owner->mutex.unlock();
+      std::this_thread::yield();
+    }
+    context.TryCancel();
+    EXPECT_TRUE(active);
+    EXPECT_EQ(reading.get().error_code(), grpc::StatusCode::CANCELLED);
+    {
+      auto lease =
+          storage::JamLease::Acquire(owner, false, std::chrono::steady_clock::now() + std::chrono::seconds(10));
+      ASSERT_TRUE(lease);
+    }
+    EXPECT_EQ(owner->descriptors[0], -1);
+  }
 }

@@ -17,18 +17,21 @@
 namespace fidoback::storage {
 class CoordinationLock;
 
-enum class CatalogError { kInvalidConfiguration, kNotFound, kChangedBase, kIo, kUnsupportedFormat };
+enum class CatalogError { kInvalidConfiguration, kNotFound, kChangedBase, kIo, kResource, kUnsupportedFormat };
 
-// Дескрипторы принадлежат одному объекту на физическую базу. Resolve не открывает
-// и не закрывает .jhr: закрытие другого fd того же inode снимает POSIX locks.
+// One physical owner serializes open/lock/unlock/close, including aliases and catalogs.
+// Descriptors are borrowed only while a JamLease holds mutex.
 struct JamFiles {
   std::array<int, 3> descriptors{-1, -1, -1};
   std::array<struct stat, 3> identities{};
-  std::string forced_encoding;
+  std::filesystem::path root_path, relative_path;
+  struct stat root_identity{};
+  std::expected<void, CatalogError> Open();  // Requires mutex.
+  void Close();                              // Requires mutex; unlock byte lock first.
   bool private_area = false;
   bool personal_mailbox = false;
   bool local_area = false;
-  bool role_read_only = false;
+  std::atomic<bool> role_read_only{false};
   std::atomic<bool> writable{true};
   std::atomic<bool> needs_recovery{false};
   std::mutex mutex;
@@ -42,6 +45,12 @@ struct JamArea {
   EchoAreaConfig config;
   std::filesystem::path relative_filename;
   std::shared_ptr<JamFiles> files;
+  std::string forced_encoding;
+};
+
+struct CatalogDiagnostic {
+  std::string area;
+  int system_error = 0;
 };
 
 class JamCatalog {
@@ -49,7 +58,7 @@ public:
   static std::expected<std::unique_ptr<JamCatalog>, CatalogError> Build(
       const std::filesystem::path& root, const std::vector<EchoAreaConfig>& areas,
       std::shared_ptr<CoordinationLock> coordination = {},
-      const std::map<std::string, std::string>& encoding_overrides = {});
+      const std::map<std::string, std::string>& encoding_overrides = {}, CatalogDiagnostic* diagnostic = nullptr);
   ~JamCatalog();
   JamCatalog(const JamCatalog&) = delete;
   JamCatalog& operator=(const JamCatalog&) = delete;

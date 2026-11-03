@@ -1,11 +1,17 @@
 #include "service/conference_service.hpp"
 
+#include <spdlog/spdlog.h>
+
 #include "service/jam_mapping.hpp"
 #include "service/request_context.hpp"
 
 namespace fidoback::service {
 std::expected<domain::Conference, domain::ApiError> ConferenceService::GetConference(std::string_view id,
                                                                                      std::string_view user) {
+  return Describe(id, user, false);
+}
+std::expected<domain::Conference, domain::ApiError> ConferenceService::Describe(std::string_view id,
+                                                                                std::string_view user, bool tolerant) {
   auto permission = access_->Permissions(*metadata_, user, id);
   if (!permission)
     return std::unexpected(permission.error());
@@ -26,24 +32,42 @@ std::expected<domain::Conference, domain::ApiError> ConferenceService::GetConfer
   result.statistics_known = permission->read && !result.unsupported_format;
   result.can_read = permission->read;
   result.can_post = permission->post;
-  if (!permission->read)
+  if (!permission->read || result.unsupported_format)
     return result;
-  auto access = storage::JamAccess::Open(*catalog_, id, false, RequestDeadline(), RequestCancellation(), encoding_);
-  if (!access)
-    return std::unexpected(JamError(access.error()));
-  auto numbers = (*access)->messages().GetMessageNumbers();
-  if (!numbers)
-    return std::unexpected(domain::ApiError::Server("Message storage operation failed"));
   auto bookmarked = metadata_->IsBookmarked(user, id);
   if (!bookmarked)
     return std::unexpected(bookmarked.error());
   result.is_bookmarked = *bookmarked;
+  const auto storage_failure =
+      [&](const storage::JamAccessError& error) -> std::expected<domain::Conference, domain::ApiError> {
+    if (!RequestActive())
+      return std::unexpected(domain::ApiError{
+          RequestCancellation().stop_requested() ? domain::ErrorCode::kCancelled : domain::ErrorCode::kDeadline,
+          "Request no longer active",
+          {}});
+    auto mapped = JamError(error);
+    if (!tolerant || std::holds_alternative<storage::CoordinationError>(error) ||
+        mapped.code == domain::ErrorCode::kResource || mapped.code == domain::ErrorCode::kDeadline ||
+        mapped.code == domain::ErrorCode::kCancelled)
+      return std::unexpected(mapped);
+    spdlog::warn("Conference statistics unavailable: area={} category={}", id, error.index());
+    result.statistics_known = false;
+    result.total_count = result.unread_count = 0;
+    result.last_message_date.clear();
+    return result;
+  };
+  auto access = storage::JamAccess::Open(*catalog_, id, false, RequestDeadline(), RequestCancellation(), encoding_);
+  if (!access)
+    return storage_failure(access.error());
+  auto numbers = (*access)->messages().GetMessageNumbers();
+  if (!numbers)
+    return storage_failure(storage::JamAccessError{numbers.error()});
   result.total_count = static_cast<int64_t>(numbers->size());
   uint32_t latest = 0;
   for (auto number : *numbers) {
     auto message = (*access)->messages().GetHeader(number);
     if (!message)
-      return std::unexpected(domain::ApiError::Server("Message storage operation failed"));
+      return storage_failure(storage::JamAccessError{message.error()});
     const auto key_number = std::to_string(number);
     auto read = metadata_->IsMessageRead(user, {id, (*access)->generation(), key_number});
     if (!read)
@@ -86,12 +110,14 @@ std::expected<domain::ConferenceListResponse, domain::ApiError> ConferenceServic
   std::vector<domain::Conference> sorted;
   if (sort != "name") {
     for (auto id : ids) {
-      auto item = GetConference(id, user);
+      auto item = Describe(id, user, true);
       if (!item)
         return std::unexpected(item.error());
       sorted.push_back(std::move(*item));
     }
     std::sort(sorted.begin(), sorted.end(), [&](const auto& a, const auto& b) {
+      if (a.statistics_known != b.statistics_known)
+        return a.statistics_known;
       if (sort == "date" && a.last_message_date != b.last_message_date)
         return a.last_message_date > b.last_message_date;
       if (sort == "unread" && a.unread_count != b.unread_count)
@@ -115,13 +141,18 @@ std::expected<domain::ConferenceListResponse, domain::ApiError> ConferenceServic
     if (sort != "name")
       result.conferences.push_back(std::move(sorted.at(i)));
     else {
-      auto conference = GetConference(ids.at(i), user);
+      auto conference = Describe(ids.at(i), user, true);
       if (!conference)
         return std::unexpected(conference.error());
       result.conferences.push_back(std::move(*conference));
     }
   }
   result.has_more = end < ids.size();
+  if (!RequestActive())
+    return std::unexpected(domain::ApiError{
+        RequestCancellation().stop_requested() ? domain::ErrorCode::kCancelled : domain::ErrorCode::kDeadline,
+        "Request no longer active",
+        {}});
   return result;
 }
 }  // namespace fidoback::service

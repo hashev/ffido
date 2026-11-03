@@ -103,7 +103,7 @@ std::expected<domain::MessageDetail, domain::ApiError> MessageService::Detail(st
     if (message.error() == msgapi::JamError::kInvalidMessageNumber ||
         message.error() == msgapi::JamError::kMessageDeleted)
       return std::unexpected(domain::ApiError::NotFound("Message not found"));
-    return std::unexpected(domain::ApiError::Server("Message storage operation failed"));
+    return std::unexpected(JamError(storage::JamAccessError{message.error()}));
   }
   const auto key_number = std::to_string(number);
   auto read = metadata_->IsMessageRead(user, {conference, access.generation(), key_number});
@@ -417,7 +417,7 @@ std::expected<domain::MessageListResponse, domain::ApiError> MessageService::Get
     if (!query.empty()) {
       auto message = (*access)->messages().ReadMessage(number);
       if (!message)
-        return std::unexpected(domain::ApiError::Server("Message storage operation failed"));
+        return std::unexpected(JamError(storage::JamAccessError{message.error()}));
       if (message->subject().find(query) == std::string::npos &&
           message->sender_name().find(query) == std::string::npos && message->text().find(query) == std::string::npos)
         continue;
@@ -448,7 +448,11 @@ std::expected<domain::MessageListResponse, domain::ApiError> MessageService::Get
   result.actual_offset = static_cast<int64_t>(start);
   const auto end = std::min<uint64_t>(start + page.limit, numbers->size());
   for (auto i = start; i < end; ++i) {
-    auto detail = FilteredDetail(**access, conference, numbers->at(i), user, respect_filters ? &*filters : nullptr);
+    auto header = (*access)->messages().GetHeader(numbers->at(i));
+    if (!header)
+      return std::unexpected(JamError(storage::JamAccessError{header.error()}));
+    auto detail = FilteredDetail(**access, conference, numbers->at(i), user, respect_filters ? &*filters : nullptr,
+                                 header->txt_len <= msgapi::jam_wire::kMaxReadBody);
     if (!detail)
       return std::unexpected(detail.error());
     auto preview = storage::Utf8Preview(detail->body, 200);
@@ -593,7 +597,7 @@ std::expected<domain::FindMessageResponse, domain::ApiError> MessageService::Fin
     }
     auto original = (*access)->messages().ReadMessage(number, false);
     if (!original)
-      return std::unexpected(domain::ApiError::Server("Cannot read search encoding"));
+      return std::unexpected(JamError(storage::JamAccessError{original.error()}));
     auto encoding = (*access)->messages().EffectiveEncoding(*original);
     if (!encoding)
       return std::unexpected(domain::ApiError::Server("Invalid search encoding"));
@@ -863,8 +867,11 @@ std::expected<domain::CreateMessageResponse, domain::ApiError> MessageService::C
     if (!parent_number)
       return std::unexpected(parent_number.error());
     auto parent = (*access)->messages().ReadMessage(*parent_number);
-    if (!parent)
+    if (!parent) {
+      if (parent.error() == msgapi::JamError::kResourceLimit)
+        return std::unexpected(JamError(storage::JamAccessError{parent.error()}));
       return std::unexpected(domain::ApiError::NotFound("Reply parent not found"));
+    }
     auto parent_address = OriginAddress(*parent);
     auto parent_name = parent->sender_name();
     if (!area.mailbox_address.empty()) {
@@ -1282,13 +1289,13 @@ std::expected<domain::ThreadListResponse, domain::ApiError> MessageService::GetT
         msgid_crc.contains(header.reply_crc)) {
       auto message = (*access)->messages().ReadMessage(number, false);
       if (!message)
-        return std::unexpected(domain::ApiError::Server("Message storage operation failed"));
+        return std::unexpected(JamError(storage::JamAccessError{message.error()}));
       uint32_t matched = 0;
       bool ambiguous = false;
       for (auto candidate_number : msgid_crc.at(header.reply_crc)) {
         auto candidate = (*access)->messages().ReadMessage(candidate_number, false);
         if (!candidate)
-          return std::unexpected(domain::ApiError::Server("Message storage operation failed"));
+          return std::unexpected(JamError(storage::JamAccessError{candidate.error()}));
         if (!message->reply_id().empty() && candidate->msg_id() == message->reply_id()) {
           if (matched != 0)
             ambiguous = true;

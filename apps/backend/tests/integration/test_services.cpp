@@ -1,11 +1,13 @@
 #include <fcntl.h>
 #include <gtest/gtest.h>
 #include <sys/file.h>
+#include <sys/resource.h>
 
 #include <fstream>
 #include <future>
 
 #include "../support/echo_access.hpp"
+#include "../support/jam_wire_record.hpp"
 #include "../support/temp_directory.hpp"
 #include "../support/tls_certificate.hpp"
 #include "ftn/uue.hpp"
@@ -1406,7 +1408,10 @@ TEST_F(ServicesTest, CrosspostRevocationBeforeAndDuringPublicationDoesNotLeakRes
 TEST_F(ServicesTest, CrosspostGenerationChangeStopsRemainingCopy) {
   auto io = std::make_shared<UueFaultIo>();
   io->after_first = [&] {
-    const int fd = catalog->areas().at("echo.two").files->descriptors[0];
+    auto lease = storage::JamLease::Acquire(catalog->areas().at("echo.two").files, true,
+                                            std::chrono::steady_clock::now() + std::chrono::seconds(1));
+    ASSERT_TRUE(lease);
+    const int fd = (*lease)->files().descriptors[0];
     std::array<uint8_t, 4> changed{};
     msgapi::jam_wire::Put32(changed.data(), 124);
     ASSERT_EQ(pwrite(fd, changed.data(), changed.size(), 4), 4);
@@ -1984,4 +1989,174 @@ TEST_F(ServicesTest, PreviewRejectsChangedFtnReplyIdentityEvenWhenRecipientIsUnc
   auto count = conferences->GetConference("echo.one", "A");
   ASSERT_TRUE(count);
   EXPECT_EQ(count->total_count, 1);
+}
+
+TEST_F(ServicesTest, LargeExistingBodiesKeepExactStatisticsAndSeparateReadAndWriteBudgets) {
+  auto original = messages->CreateMessage("echo.one", Request("large-existing"), "A");
+  ASSERT_TRUE(original);
+  const auto reference = original->id;
+  const auto headers = test::ReadFile(temp.path() / "different-file.jhr");
+  const auto index = test::ReadFile(temp.path() / "different-file.jdx");
+  const auto offset = test::Wire32(index, 4);
+  const auto text_offset = test::Wire32(headers, offset + 60);
+  for (const uint32_t size : {1048576u, 1048577u, 7150806u, 10485760u, 10485761u}) {
+    {
+      std::fstream output(temp.path() / "different-file.jhr", std::ios::binary | std::ios::in | std::ios::out);
+      std::array<uint8_t, 4> length{};
+      msgapi::jam_wire::Put32(length.data(), size);
+      output.seekp(offset + 64);
+      output.write(reinterpret_cast<const char*>(length.data()), 4);
+    }
+    {
+      std::ofstream output(temp.path() / "different-file.jdt", std::ios::binary);
+      output << std::string(text_offset, 'x') << std::string(size, 'a');
+    }
+    auto conference = conferences->GetConference("echo.one", "B");
+    ASSERT_TRUE(conference) << size;
+    EXPECT_EQ(conference->total_count, 1);
+    EXPECT_EQ(conference->unread_count, 1);
+    auto list = messages->GetMessages("echo.one", {}, "oldest", "B");
+    ASSERT_TRUE(list) << size;
+    EXPECT_EQ(list->total, 1);
+    if (size > 4u * 1024 * 1024) {
+      auto search = messages->FindMessage("echo.one", "missing", 2, "oldest", "", false, "B");
+      ASSERT_FALSE(search);
+      EXPECT_EQ(search.error().code, domain::ErrorCode::kResource);
+      domain::ArchiveSearchRequest archive;
+      archive.conferences = {"echo.one"};
+      archive.query = "missing";
+      auto archived = messages->SearchArchive(archive, "B");
+      ASSERT_FALSE(archived);
+      EXPECT_EQ(archived.error().code, domain::ErrorCode::kResource);
+      service::UueService uue(catalog, metadata, test::EchoAccess(*catalog, temp.path()));
+      if (size > 10u * 1024 * 1024) {
+        auto parts = uue.Search("echo.one", "", 0, 20, "B");
+        ASSERT_FALSE(parts);
+        EXPECT_EQ(parts.error().code, domain::ErrorCode::kResource);
+      }
+    }
+    auto detail = messages->GetMessage("echo.one", reference, "B");
+    if (size <= 10u * 1024 * 1024) {
+      ASSERT_TRUE(detail) << size;
+      EXPECT_EQ(detail->body.size(), size);
+      ASSERT_TRUE(messages->MarkAsUnread("echo.one", reference, "B"));
+    } else {
+      ASSERT_FALSE(detail);
+      EXPECT_EQ(detail.error().code, domain::ErrorCode::kResource);
+      EXPECT_EQ(conferences->GetConference("echo.one", "B")->unread_count, 1);
+    }
+  }
+  auto too_large = Request("still-bounded-publication");
+  too_large.body.assign(1048577, 'x');
+  EXPECT_FALSE(messages->CreateMessage("echo.two", too_large, "A"));
+}
+
+TEST_F(ServicesTest, CatalogRetainsBrokenAreaWithoutInventingStatistics) {
+  ASSERT_TRUE(messages->CreateMessage("echo.two", Request("healthy"), "A"));
+  ASSERT_TRUE(metadata->AddBookmark("A", "echo.one"));
+  std::ofstream(temp.path() / "different-file.jdx", std::ios::binary).put('x');
+  EXPECT_FALSE(conferences->GetConference("echo.one", "A"));
+  for (auto sort : {"name", "date", "unread"}) {
+    auto page = conferences->GetConferences({0, 100}, {}, "A", sort);
+    ASSERT_TRUE(page);
+    EXPECT_EQ(page->total, 2);
+    ASSERT_EQ(page->conferences.size(), 2u);
+    for (const auto& area : page->conferences) {
+      if (area.id == "echo.one") {
+        EXPECT_FALSE(area.statistics_known);
+        EXPECT_FALSE(area.unsupported_format);
+        EXPECT_TRUE(area.is_bookmarked);
+        EXPECT_TRUE(area.last_message_date.empty());
+      } else {
+        EXPECT_TRUE(area.statistics_known);
+        EXPECT_EQ(area.total_count, 1);
+      }
+    }
+    if (std::string_view(sort) != "name")
+      EXPECT_EQ(page->conferences.front().id, "echo.two");
+    auto first = conferences->GetConferences({0, 1}, {}, "A", sort);
+    auto second = conferences->GetConferences({1, 1}, {}, "A", sort);
+    ASSERT_TRUE(first);
+    ASSERT_TRUE(second);
+    EXPECT_TRUE(first->has_more);
+    EXPECT_FALSE(second->has_more);
+    EXPECT_NE(first->conferences.front().id, second->conferences.front().id);
+  }
+}
+
+TEST_F(ServicesTest, ThousandAreaCatalogAndArchiveSearchHaveBoundedDescriptors) {
+  ASSERT_TRUE(messages->CreateMessage("echo.one", Request("source"), "A"));
+  std::vector<EchoAreaConfig> areas;
+  for (int i = 0; i < 1000; ++i) {
+    const auto name = "area" + std::to_string(i);
+    for (auto extension : {".jhr", ".jdt", ".jdx"})
+      std::filesystem::copy_file(temp.path() / (std::string("different-file") + extension),
+                                 temp.path() / (name + extension));
+    auto area = catalog->areas().at("echo.one").config;
+    area.name = area.filename = name;
+    areas.push_back(area);
+  }
+  struct rlimit saved{};
+  ASSERT_EQ(getrlimit(RLIMIT_NOFILE, &saved), 0);
+  struct Restore {
+    struct rlimit value;
+    ~Restore() {
+      setrlimit(RLIMIT_NOFILE, &value);
+    }
+  } restore{saved};
+  auto limit = saved;
+  limit.rlim_cur = std::min<rlim_t>(1024, saved.rlim_cur);
+  ASSERT_EQ(setrlimit(RLIMIT_NOFILE, &limit), 0);
+  auto count_fds = [] {
+    int count = 0;
+    for (int fd = 0; fd < 1024; ++fd)
+      if (fcntl(fd, F_GETFD) >= 0)
+        ++count;
+    return count;
+  };
+  const int before = count_fds();
+  auto begin = std::chrono::steady_clock::now();
+  auto built = storage::JamCatalog::Build(temp.path(), areas);
+  ASSERT_TRUE(built);
+  auto many = std::shared_ptr<storage::JamCatalog>(std::move(*built));
+  const auto policy = test::EchoAccess(*many, temp.path());
+  service::ConferenceService listing(many, metadata, policy);
+  service::MessageService archive(many, metadata, policy);
+  size_t count = 0;
+  for (int offset = 0; offset < 1000; offset += 100) {
+    auto page = listing.GetConferences({offset, 100}, {}, "B");
+    ASSERT_TRUE(page);
+    count += page->conferences.size();
+    EXPECT_EQ(page->total, 1000);
+    EXPECT_EQ(count_fds(), before + 1);
+  }
+  EXPECT_EQ(count, 1000u);
+  const auto catalog_ms =
+      std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - begin).count();
+  begin = std::chrono::steady_clock::now();
+  count = 0;
+  for (int offset = 0; offset < 1000; offset += 20) {
+    domain::ArchiveSearchRequest request;
+    request.query = "Тема";
+    request.scope = 1;
+    request.limit = 10;
+    for (int i = offset; i < offset + 20; ++i)
+      request.conferences.push_back("area" + std::to_string(i));
+    for (;;) {
+      auto page = archive.SearchArchive(request, "B");
+      ASSERT_TRUE(page);
+      count += page->results.size();
+      EXPECT_EQ(count_fds(), before + 1);
+      if (page->complete)
+        break;
+      request.cursor = page->next_cursor;
+    }
+  }
+  EXPECT_EQ(count, 1000u);
+  const auto search_ms =
+      std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - begin).count();
+  std::cout << "1000 areas: catalog_ms=" << catalog_ms << " archive_ms=" << search_ms
+            << " idle_fd_delta=" << count_fds() - before << '\n';
+  for (const auto& [id, area] : many->areas())
+    EXPECT_EQ(area.files->descriptors[0], -1);
 }

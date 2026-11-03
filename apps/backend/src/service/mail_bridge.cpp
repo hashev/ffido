@@ -67,7 +67,7 @@ Snapshot Take(JamIo& io, JamAccess& access, uint32_t number) {
   std::array<uint8_t, 76> wire{};
   Read(io, access.files().descriptors[0], wire, offset);
   auto header = msgapi::jam_wire::Decode(wire);
-  if (header.subfield_len > 65536 || header.txt_len > 1048576 || header.message_number != number)
+  if (header.subfield_len > 65536 || header.txt_len > msgapi::jam_wire::kMaxReadBody || header.message_number != number)
     throw std::runtime_error("Invalid mail source limits");
   std::vector<uint8_t> fields(header.subfield_len), body(header.txt_len);
   Read(io, access.files().descriptors[0], fields, uint64_t(offset) + 76);

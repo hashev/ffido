@@ -69,7 +69,7 @@ public:
 #undef FFIDO_RPC
 private:
   grpc::Status Dispatch(
-      grpc::ServerContext* context,
+      grpc::ServerContext* context, google::protobuf::MessageLite* response,
       const std::function<std::expected<void, domain::ApiError>(const storage::AuthenticatedUser&)>& operation);
   std::shared_ptr<storage::IMetadataStore> metadata_;
   AuthService auth_;

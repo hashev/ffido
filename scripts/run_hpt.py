@@ -39,9 +39,15 @@ def cycle(args, config, fd):
     if not hpt_config.is_absolute():
         hpt_config = root / hpt_config
     def admin(stage):
-        return run_stage([args.admin, 'mail-cycle', str(args.config.absolute()), stage, str(fd)], fd, args.timeout)
+        result = run_stage([args.admin, 'mail-cycle', str(args.config.absolute()), stage, str(fd)], fd, args.timeout)
+        if result:
+            print(f'Mail cycle failed: stage={stage} exit={result}', file=sys.stderr)
+        return result
     def hpt(*commands):
-        return run_stage([args.hpt, '-c', str(hpt_config), *commands], fd, args.timeout)
+        result = run_stage([args.hpt, '-c', str(hpt_config), *commands], fd, args.timeout)
+        if result:
+            print(f'Mail cycle failed: stage=hpt-{commands[0]} exit={result}', file=sys.stderr)
+        return result
     def interrupted(signum, frame):
         raise CycleInterrupted()
     signal.signal(signal.SIGTERM, interrupted)

@@ -1,11 +1,13 @@
 #include <fcntl.h>
 #include <gtest/gtest.h>
+#include <sys/resource.h>
 #include <unistd.h>
 
 #include <fstream>
 
 #include "../support/temp_directory.hpp"
 #include "storage/jam_catalog.hpp"
+#include "storage/jam_lock.hpp"
 
 using namespace fidoback::storage;
 namespace fs = std::filesystem;
@@ -36,6 +38,8 @@ TEST(JamCatalog, MapsIdToFilenameAndOpenedInode) {
   struct stat actual{};
   ASSERT_EQ(stat((temporary.path() / "nested/file.jhr").c_str(), &actual), 0);
   EXPECT_EQ((*area)->files->identities[0].st_ino, actual.st_ino);
+  auto lease = JamLease::Acquire((*area)->files, false, std::chrono::steady_clock::now() + std::chrono::seconds(1));
+  ASSERT_TRUE(lease);
   char bytes[7];
   EXPECT_EQ(pread((*area)->files->descriptors[0], bytes, sizeof(bytes), 0), 7);
   EXPECT_EQ(std::string(bytes, sizeof(bytes)), "fixture");
@@ -205,8 +209,8 @@ TEST(JamCatalog, EncodingOverridesBindToRelativeJamAndRequireMatchingAreas) {
   auto catalog = JamCatalog::Build(temporary.path(), {Area("ECHO", "nested/base"), Area("UTF", "utf-8")}, {},
                                    {{"nested/base", "KOI8-R"}, {"utf-8", "UTF-8"}});
   ASSERT_TRUE(catalog);
-  EXPECT_EQ((*(*catalog)->Resolve("ECHO"))->files->forced_encoding, "KOI8-R");
-  EXPECT_EQ((*(*catalog)->Resolve("UTF"))->files->forced_encoding, "UTF-8");
+  EXPECT_EQ((*(*catalog)->Resolve("ECHO"))->forced_encoding, "KOI8-R");
+  EXPECT_EQ((*(*catalog)->Resolve("UTF"))->forced_encoding, "UTF-8");
   EXPECT_FALSE(JamCatalog::Build(temporary.path(), {Area("ECHO", "nested/base")}, {}, {{"ECHO", "KOI8-R"}}));
   EXPECT_FALSE(JamCatalog::Build(temporary.path(), {Area("ECHO", "nested/base")}, {}, {{"missing", "KOI8-R"}}));
   EXPECT_FALSE(JamCatalog::Build(temporary.path(), {Area("SQUISH", "unused", "Squish")}, {}, {{"unused", "KOI8-R"}}));
@@ -224,4 +228,36 @@ TEST(JamCatalog, PhysicalAliasesCannotHaveDifferentEncodingPolicies) {
   auto catalog = JamCatalog::Build(temporary.path(), areas, {}, {{"base", "KOI8-R"}, {"alias", "KOI8-R"}});
   ASSERT_TRUE(catalog);
   EXPECT_EQ((*(*catalog)->Resolve("A"))->files, (*(*catalog)->Resolve("B"))->files);
+}
+
+TEST(JamCatalog, ThousandBasesFitLowNofileAndCloseBetweenLeases) {
+  fidoback::test::TempDirectory temp;
+  std::vector<EchoAreaConfig> areas;
+  for (int i = 0; i < 1000; ++i) {
+    auto name = "base" + std::to_string(i);
+    Files(temp.path() / name);
+    areas.push_back(Area(name, name));
+  }
+  struct rlimit saved{};
+  ASSERT_EQ(getrlimit(RLIMIT_NOFILE, &saved), 0);
+  struct Restore {
+    struct rlimit saved;
+    ~Restore() {
+      setrlimit(RLIMIT_NOFILE, &saved);
+    }
+  } restore{saved};
+  auto limited = saved;
+  limited.rlim_cur = std::min<rlim_t>(1024, saved.rlim_cur);
+  ASSERT_EQ(setrlimit(RLIMIT_NOFILE, &limited), 0);
+  auto catalog = JamCatalog::Build(temp.path(), areas);
+  ASSERT_TRUE(catalog);
+  for (const auto& [id, area] : (*catalog)->areas()) {
+    EXPECT_EQ(area.files->descriptors[0], -1);
+    {
+      auto lease = JamLease::Acquire(area.files, false, std::chrono::steady_clock::now() + std::chrono::seconds(1));
+      ASSERT_TRUE(lease);
+      EXPECT_GE(area.files->descriptors[0], 0);
+    }
+    EXPECT_EQ(area.files->descriptors[0], -1);
+  }
 }
