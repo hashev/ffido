@@ -46,6 +46,7 @@ COPY CMakeLists.txt LICENSE THIRD_PARTY_NOTICES.md README.md CONTRIBUTING.md AGE
 COPY cmake/ cmake/
 COPY contracts/ contracts/
 COPY apps/backend/ apps/backend/
+COPY docs/mcp.md docs/mcp.md
 COPY scripts/ scripts/
 COPY tools/ tools/
 RUN cmake -S . -B build/backend -C build/release-deps/prefix/ffido-cache.cmake -DCMAKE_BUILD_TYPE=Release \
