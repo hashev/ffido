@@ -9,9 +9,9 @@
 #include "storage/jam_catalog.hpp"
 
 namespace fidoback::storage {
-enum class JamLockError { kTimeout, kCancelled, kIo, kReadOnly };
+enum class JamLockError { kTimeout, kCancelled, kIo, kReadOnly, kResource, kChangedBase };
 
-// Holds the physical owner through unlock; no JAM descriptor is opened/closed here.
+// Opens files under the physical mutex and closes them after byte unlock.
 class JamLease {
 public:
   static std::expected<std::unique_ptr<JamLease>, JamLockError> Acquire(std::shared_ptr<JamFiles> owner, bool write,

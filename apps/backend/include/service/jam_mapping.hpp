@@ -1,4 +1,6 @@
 #pragma once
+#include <spdlog/spdlog.h>
+
 #include <charconv>
 #include <ctime>
 
@@ -7,6 +9,11 @@
 #include "storage/jam_access.hpp"
 namespace fidoback::service {
 inline domain::ApiError JamError(const storage::JamAccessError& error) {
+  if (auto* jam = std::get_if<msgapi::JamError>(&error); jam && *jam == msgapi::JamError::kResourceLimit)
+    return {domain::ErrorCode::kResource, "Message exceeds read resource limit", {}};
+  if (auto* catalog_resource = std::get_if<storage::CatalogError>(&error);
+      catalog_resource && *catalog_resource == storage::CatalogError::kResource)
+    return {domain::ErrorCode::kResource, "Message storage file limit exceeded", {}};
   if (auto* catalog = std::get_if<storage::CatalogError>(&error);
       catalog && *catalog == storage::CatalogError::kNotFound)
     return domain::ApiError::NotFound("Conference not found");
@@ -18,6 +25,8 @@ inline domain::ApiError JamError(const storage::JamAccessError& error) {
     return {domain::ErrorCode::kPrecondition, "Coordination lock unavailable", {}};
   }
   if (auto* lock = std::get_if<storage::JamLockError>(&error)) {
+    if (*lock == storage::JamLockError::kResource)
+      return {domain::ErrorCode::kResource, "Message storage file limit exceeded", {}};
     if (*lock == storage::JamLockError::kTimeout)
       return {domain::ErrorCode::kDeadline, "Request deadline exceeded", {}};
     if (*lock == storage::JamLockError::kCancelled)
@@ -25,6 +34,8 @@ inline domain::ApiError JamError(const storage::JamAccessError& error) {
     if (*lock == storage::JamLockError::kReadOnly)
       return {domain::ErrorCode::kPrecondition, "Message base is read-only", {}};
   }
+  if (auto* jam = std::get_if<msgapi::JamError>(&error))
+    spdlog::warn("JAM read failed: category={}", static_cast<int>(*jam));
   return domain::ApiError::Server("Message storage operation failed");
 }
 inline std::string MessageId(const storage::JamAccess& access, uint32_t number) {

@@ -190,7 +190,7 @@ int RunBackend(int argc, char** argv) {
   builder.SetResourceQuota(quota);
   builder.AddChannelArgument(GRPC_ARG_ALLOW_REUSEPORT, 0);
   builder.SetMaxReceiveMessageSize(2 * 1024 * 1024);
-  builder.SetMaxSendMessageSize(4 * 1024 * 1024);
+  builder.SetMaxSendMessageSize(32 * 1024 * 1024);
   builder.AddChannelArgument(GRPC_ARG_MAX_METADATA_SIZE, 8192);
   builder.SetSyncServerOption(grpc::ServerBuilder::SyncServerOption::NUM_CQS, 1);
   builder.SetSyncServerOption(grpc::ServerBuilder::SyncServerOption::MAX_POLLERS,

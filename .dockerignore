@@ -16,6 +16,8 @@
 !contracts/**
 !apps/
 !apps/backend/**
+!docs/
+!docs/mcp.md
 !scripts/**
 !tools/**
 **/.git

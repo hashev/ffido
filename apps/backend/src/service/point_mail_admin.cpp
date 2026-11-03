@@ -91,10 +91,14 @@ int RunMailStage(const std::filesystem::path& configuration, const std::filesyst
   if (!mailboxes)
     return 1;
   areas->insert(areas->end(), mailboxes->begin(), mailboxes->end());
-  auto opened =
-      storage::JamCatalog::Build(config->ftn.jam_base_path, *areas, *coordination, config->ftn.jam_encoding_overrides);
-  if (!opened)
+  storage::CatalogDiagnostic diagnostic;
+  auto opened = storage::JamCatalog::Build(config->ftn.jam_base_path, *areas, *coordination,
+                                           config->ftn.jam_encoding_overrides, &diagnostic);
+  if (!opened) {
+    std::cerr << "Mail cycle catalog failed: stage=" << stage << " area=" << diagnostic.area
+              << " category=" << static_cast<int>(opened.error()) << " errno=" << diagnostic.system_error << '\n';
     return 1;
+  }
   auto catalog = std::shared_ptr<storage::JamCatalog>(std::move(*opened));
   MailBridge bridge(*config, *hpt, catalog, metadata);
   if (stage == "recover" || stage == "dispatch") {

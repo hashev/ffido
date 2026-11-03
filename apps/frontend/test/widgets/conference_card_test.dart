@@ -67,6 +67,26 @@ void main() {
       expect(find.text('0'), findsNothing);
     });
 
+    testWidgets('неизвестная статистика не выглядит нулевой', (tester) async {
+      final conference = FidoConference(
+        name: 'broken.conf',
+        description: '',
+        unreadCount: 0,
+        icon: Icons.forum,
+        statisticsKnown: false,
+      );
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: ConferenceCard(conference: conference, onTap: () {}),
+          ),
+        ),
+      );
+      expect(find.text('Статистика недоступна'), findsOneWidget);
+      expect(find.text('0'), findsNothing);
+      expect(tester.widget<ListTile>(find.byType(ListTile)).onTap, isNotNull);
+    });
+
     testWidgets('onTap вызывается при нажатии', (tester) async {
       var tapped = false;
 

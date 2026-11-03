@@ -1191,6 +1191,7 @@ class CreateMessageRequest extends $pb.GeneratedMessage {
     $core.String? body,
     $core.String? inReplyTo,
     MessageFooter? footer,
+    $core.String? expectedPreviewDigest,
   }) {
     final result = CreateMessageRequest._();
     if (conferenceId != null) result.conferenceId = conferenceId;
@@ -1201,6 +1202,8 @@ class CreateMessageRequest extends $pb.GeneratedMessage {
     if (body != null) result.body = body;
     if (inReplyTo != null) result.inReplyTo = inReplyTo;
     if (footer != null) result.footer = footer;
+    if (expectedPreviewDigest != null)
+      result.expectedPreviewDigest = expectedPreviewDigest;
     return result;
   }
 
@@ -1226,6 +1229,7 @@ class CreateMessageRequest extends $pb.GeneratedMessage {
     ..aOS(7, _omitFieldNames ? '' : 'inReplyTo')
     ..aOM<MessageFooter>(8, _omitFieldNames ? '' : 'footer',
         subBuilder: MessageFooter.$_createMessage)
+    ..aOS(9, _omitFieldNames ? '' : 'expectedPreviewDigest')
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -1325,6 +1329,15 @@ class CreateMessageRequest extends $pb.GeneratedMessage {
   void clearFooter() => $_clearField(8);
   @$pb.TagNumber(8)
   MessageFooter ensureFooter() => $_ensure(7);
+
+  @$pb.TagNumber(9)
+  $core.String get expectedPreviewDigest => $_getSZ(8);
+  @$pb.TagNumber(9)
+  set expectedPreviewDigest($core.String value) => $_setString(8, value);
+  @$pb.TagNumber(9)
+  $core.bool hasExpectedPreviewDigest() => $_has(8);
+  @$pb.TagNumber(9)
+  void clearExpectedPreviewDigest() => $_clearField(9);
 }
 
 /// Text-only group; conference_id is the mandatory original area.
@@ -5419,6 +5432,832 @@ class MessagePresentation extends $pb.GeneratedMessage {
 
   @$pb.TagNumber(5)
   $pb.PbList<SearchMatch> get matches => $_getList(4);
+}
+
+/// Архивные RPC не изменяют прочитанность, историю или позицию чтения.
+class SearchArchiveMessagesRequest extends $pb.GeneratedMessage {
+  factory SearchArchiveMessagesRequest({
+    $core.Iterable<$core.String>? conferenceIds,
+    $core.String? query,
+    MessageSearchScope? scope,
+    $2.Timestamp? from,
+    $2.Timestamp? to,
+    MessageSort? sort,
+    $core.int? limit,
+    $core.String? cursor,
+  }) {
+    final result = SearchArchiveMessagesRequest._();
+    if (conferenceIds != null) result.conferenceIds.addAll(conferenceIds);
+    if (query != null) result.query = query;
+    if (scope != null) result.scope = scope;
+    if (from != null) result.from = from;
+    if (to != null) result.to = to;
+    if (sort != null) result.sort = sort;
+    if (limit != null) result.limit = limit;
+    if (cursor != null) result.cursor = cursor;
+    return result;
+  }
+
+  SearchArchiveMessagesRequest._();
+
+  factory SearchArchiveMessagesRequest.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      SearchArchiveMessagesRequest()..mergeFromBuffer(data, registry);
+  factory SearchArchiveMessagesRequest.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      SearchArchiveMessagesRequest()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'SearchArchiveMessagesRequest',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'ffido.v1'),
+      createEmptyInstance: SearchArchiveMessagesRequest.$_createMessage)
+    ..pPS(1, _omitFieldNames ? '' : 'conferenceIds')
+    ..aOS(2, _omitFieldNames ? '' : 'query')
+    ..aE<MessageSearchScope>(3, _omitFieldNames ? '' : 'scope',
+        enumValues: MessageSearchScope.values)
+    ..aOM<$2.Timestamp>(4, _omitFieldNames ? '' : 'from',
+        subBuilder: $2.Timestamp.$_createMessage)
+    ..aOM<$2.Timestamp>(5, _omitFieldNames ? '' : 'to',
+        subBuilder: $2.Timestamp.$_createMessage)
+    ..aE<MessageSort>(6, _omitFieldNames ? '' : 'sort',
+        enumValues: MessageSort.values)
+    ..aI(7, _omitFieldNames ? '' : 'limit')
+    ..aOS(8, _omitFieldNames ? '' : 'cursor')
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  SearchArchiveMessagesRequest clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  SearchArchiveMessagesRequest copyWith(
+          void Function(SearchArchiveMessagesRequest) updates) =>
+      super.copyWith(
+              (message) => updates(message as SearchArchiveMessagesRequest))
+          as SearchArchiveMessagesRequest;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  @$core.Deprecated(
+      'Use SearchArchiveMessagesRequest() / SearchArchiveMessagesRequest.new instead')
+  static SearchArchiveMessagesRequest create() =>
+      SearchArchiveMessagesRequest._();
+  static $pb.GeneratedMessage $_createMessage() =>
+      SearchArchiveMessagesRequest._();
+  @$core.override
+  SearchArchiveMessagesRequest createEmptyInstance() =>
+      SearchArchiveMessagesRequest._();
+  @$core.pragma('dart2js:noInline')
+  static SearchArchiveMessagesRequest getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<SearchArchiveMessagesRequest>(
+          SearchArchiveMessagesRequest.$_createMessage);
+  static SearchArchiveMessagesRequest? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $pb.PbList<$core.String> get conferenceIds => $_getList(0);
+
+  @$pb.TagNumber(2)
+  $core.String get query => $_getSZ(1);
+  @$pb.TagNumber(2)
+  set query($core.String value) => $_setString(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasQuery() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearQuery() => $_clearField(2);
+
+  @$pb.TagNumber(3)
+  MessageSearchScope get scope => $_getN(2);
+  @$pb.TagNumber(3)
+  set scope(MessageSearchScope value) => $_setField(3, value);
+  @$pb.TagNumber(3)
+  $core.bool hasScope() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearScope() => $_clearField(3);
+
+  @$pb.TagNumber(4)
+  $2.Timestamp get from => $_getN(3);
+  @$pb.TagNumber(4)
+  set from($2.Timestamp value) => $_setField(4, value);
+  @$pb.TagNumber(4)
+  $core.bool hasFrom() => $_has(3);
+  @$pb.TagNumber(4)
+  void clearFrom() => $_clearField(4);
+  @$pb.TagNumber(4)
+  $2.Timestamp ensureFrom() => $_ensure(3);
+
+  @$pb.TagNumber(5)
+  $2.Timestamp get to => $_getN(4);
+  @$pb.TagNumber(5)
+  set to($2.Timestamp value) => $_setField(5, value);
+  @$pb.TagNumber(5)
+  $core.bool hasTo() => $_has(4);
+  @$pb.TagNumber(5)
+  void clearTo() => $_clearField(5);
+  @$pb.TagNumber(5)
+  $2.Timestamp ensureTo() => $_ensure(4);
+
+  @$pb.TagNumber(6)
+  MessageSort get sort => $_getN(5);
+  @$pb.TagNumber(6)
+  set sort(MessageSort value) => $_setField(6, value);
+  @$pb.TagNumber(6)
+  $core.bool hasSort() => $_has(5);
+  @$pb.TagNumber(6)
+  void clearSort() => $_clearField(6);
+
+  @$pb.TagNumber(7)
+  $core.int get limit => $_getIZ(6);
+  @$pb.TagNumber(7)
+  set limit($core.int value) => $_setSignedInt32(6, value);
+  @$pb.TagNumber(7)
+  $core.bool hasLimit() => $_has(6);
+  @$pb.TagNumber(7)
+  void clearLimit() => $_clearField(7);
+
+  @$pb.TagNumber(8)
+  $core.String get cursor => $_getSZ(7);
+  @$pb.TagNumber(8)
+  set cursor($core.String value) => $_setString(7, value);
+  @$pb.TagNumber(8)
+  $core.bool hasCursor() => $_has(7);
+  @$pb.TagNumber(8)
+  void clearCursor() => $_clearField(8);
+}
+
+class ArchiveSearchResult extends $pb.GeneratedMessage {
+  factory ArchiveSearchResult({
+    Message? message,
+    $core.String? snippet,
+    $core.Iterable<SearchMatch>? matches,
+  }) {
+    final result = ArchiveSearchResult._();
+    if (message != null) result.message = message;
+    if (snippet != null) result.snippet = snippet;
+    if (matches != null) result.matches.addAll(matches);
+    return result;
+  }
+
+  ArchiveSearchResult._();
+
+  factory ArchiveSearchResult.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      ArchiveSearchResult()..mergeFromBuffer(data, registry);
+  factory ArchiveSearchResult.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      ArchiveSearchResult()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'ArchiveSearchResult',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'ffido.v1'),
+      createEmptyInstance: ArchiveSearchResult.$_createMessage)
+    ..aOM<Message>(1, _omitFieldNames ? '' : 'message',
+        subBuilder: Message.$_createMessage)
+    ..aOS(2, _omitFieldNames ? '' : 'snippet')
+    ..pPM<SearchMatch>(3, _omitFieldNames ? '' : 'matches',
+        subBuilder: SearchMatch.$_createMessage)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  ArchiveSearchResult clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  ArchiveSearchResult copyWith(void Function(ArchiveSearchResult) updates) =>
+      super.copyWith((message) => updates(message as ArchiveSearchResult))
+          as ArchiveSearchResult;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  @$core
+      .Deprecated('Use ArchiveSearchResult() / ArchiveSearchResult.new instead')
+  static ArchiveSearchResult create() => ArchiveSearchResult._();
+  static $pb.GeneratedMessage $_createMessage() => ArchiveSearchResult._();
+  @$core.override
+  ArchiveSearchResult createEmptyInstance() => ArchiveSearchResult._();
+  @$core.pragma('dart2js:noInline')
+  static ArchiveSearchResult getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<ArchiveSearchResult>(
+          ArchiveSearchResult.$_createMessage);
+  static ArchiveSearchResult? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  Message get message => $_getN(0);
+  @$pb.TagNumber(1)
+  set message(Message value) => $_setField(1, value);
+  @$pb.TagNumber(1)
+  $core.bool hasMessage() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearMessage() => $_clearField(1);
+  @$pb.TagNumber(1)
+  Message ensureMessage() => $_ensure(0);
+
+  @$pb.TagNumber(2)
+  $core.String get snippet => $_getSZ(1);
+  @$pb.TagNumber(2)
+  set snippet($core.String value) => $_setString(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasSnippet() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearSnippet() => $_clearField(2);
+
+  @$pb.TagNumber(3)
+  $pb.PbList<SearchMatch> get matches => $_getList(2);
+}
+
+class SearchArchiveMessagesResponse extends $pb.GeneratedMessage {
+  factory SearchArchiveMessagesResponse({
+    $core.Iterable<ArchiveSearchResult>? results,
+    $core.bool? complete,
+    $core.String? incompleteReason,
+    $core.String? nextCursor,
+  }) {
+    final result = SearchArchiveMessagesResponse._();
+    if (results != null) result.results.addAll(results);
+    if (complete != null) result.complete = complete;
+    if (incompleteReason != null) result.incompleteReason = incompleteReason;
+    if (nextCursor != null) result.nextCursor = nextCursor;
+    return result;
+  }
+
+  SearchArchiveMessagesResponse._();
+
+  factory SearchArchiveMessagesResponse.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      SearchArchiveMessagesResponse()..mergeFromBuffer(data, registry);
+  factory SearchArchiveMessagesResponse.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      SearchArchiveMessagesResponse()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'SearchArchiveMessagesResponse',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'ffido.v1'),
+      createEmptyInstance: SearchArchiveMessagesResponse.$_createMessage)
+    ..pPM<ArchiveSearchResult>(1, _omitFieldNames ? '' : 'results',
+        subBuilder: ArchiveSearchResult.$_createMessage)
+    ..aOB(2, _omitFieldNames ? '' : 'complete')
+    ..aOS(3, _omitFieldNames ? '' : 'incompleteReason')
+    ..aOS(4, _omitFieldNames ? '' : 'nextCursor')
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  SearchArchiveMessagesResponse clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  SearchArchiveMessagesResponse copyWith(
+          void Function(SearchArchiveMessagesResponse) updates) =>
+      super.copyWith(
+              (message) => updates(message as SearchArchiveMessagesResponse))
+          as SearchArchiveMessagesResponse;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  @$core.Deprecated(
+      'Use SearchArchiveMessagesResponse() / SearchArchiveMessagesResponse.new instead')
+  static SearchArchiveMessagesResponse create() =>
+      SearchArchiveMessagesResponse._();
+  static $pb.GeneratedMessage $_createMessage() =>
+      SearchArchiveMessagesResponse._();
+  @$core.override
+  SearchArchiveMessagesResponse createEmptyInstance() =>
+      SearchArchiveMessagesResponse._();
+  @$core.pragma('dart2js:noInline')
+  static SearchArchiveMessagesResponse getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<SearchArchiveMessagesResponse>(
+          SearchArchiveMessagesResponse.$_createMessage);
+  static SearchArchiveMessagesResponse? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $pb.PbList<ArchiveSearchResult> get results => $_getList(0);
+
+  @$pb.TagNumber(2)
+  $core.bool get complete => $_getBF(1);
+  @$pb.TagNumber(2)
+  set complete($core.bool value) => $_setBool(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasComplete() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearComplete() => $_clearField(2);
+
+  @$pb.TagNumber(3)
+  $core.String get incompleteReason => $_getSZ(2);
+  @$pb.TagNumber(3)
+  set incompleteReason($core.String value) => $_setString(2, value);
+  @$pb.TagNumber(3)
+  $core.bool hasIncompleteReason() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearIncompleteReason() => $_clearField(3);
+
+  @$pb.TagNumber(4)
+  $core.String get nextCursor => $_getSZ(3);
+  @$pb.TagNumber(4)
+  set nextCursor($core.String value) => $_setString(3, value);
+  @$pb.TagNumber(4)
+  $core.bool hasNextCursor() => $_has(3);
+  @$pb.TagNumber(4)
+  void clearNextCursor() => $_clearField(4);
+}
+
+class ReadArchiveMessageRequest extends $pb.GeneratedMessage {
+  factory ReadArchiveMessageRequest({
+    MessageReference? message,
+    $fixnum.Int64? bodyOffset,
+    $core.int? bodyLimit,
+    $core.bool? reveal,
+  }) {
+    final result = ReadArchiveMessageRequest._();
+    if (message != null) result.message = message;
+    if (bodyOffset != null) result.bodyOffset = bodyOffset;
+    if (bodyLimit != null) result.bodyLimit = bodyLimit;
+    if (reveal != null) result.reveal = reveal;
+    return result;
+  }
+
+  ReadArchiveMessageRequest._();
+
+  factory ReadArchiveMessageRequest.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      ReadArchiveMessageRequest()..mergeFromBuffer(data, registry);
+  factory ReadArchiveMessageRequest.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      ReadArchiveMessageRequest()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'ReadArchiveMessageRequest',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'ffido.v1'),
+      createEmptyInstance: ReadArchiveMessageRequest.$_createMessage)
+    ..aOM<MessageReference>(1, _omitFieldNames ? '' : 'message',
+        subBuilder: MessageReference.$_createMessage)
+    ..a<$fixnum.Int64>(
+        2, _omitFieldNames ? '' : 'bodyOffset', $pb.PbFieldType.OU6,
+        defaultOrMaker: $fixnum.Int64.ZERO)
+    ..aI(3, _omitFieldNames ? '' : 'bodyLimit', fieldType: $pb.PbFieldType.OU3)
+    ..aOB(4, _omitFieldNames ? '' : 'reveal')
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  ReadArchiveMessageRequest clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  ReadArchiveMessageRequest copyWith(
+          void Function(ReadArchiveMessageRequest) updates) =>
+      super.copyWith((message) => updates(message as ReadArchiveMessageRequest))
+          as ReadArchiveMessageRequest;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  @$core.Deprecated(
+      'Use ReadArchiveMessageRequest() / ReadArchiveMessageRequest.new instead')
+  static ReadArchiveMessageRequest create() => ReadArchiveMessageRequest._();
+  static $pb.GeneratedMessage $_createMessage() =>
+      ReadArchiveMessageRequest._();
+  @$core.override
+  ReadArchiveMessageRequest createEmptyInstance() =>
+      ReadArchiveMessageRequest._();
+  @$core.pragma('dart2js:noInline')
+  static ReadArchiveMessageRequest getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<ReadArchiveMessageRequest>(
+          ReadArchiveMessageRequest.$_createMessage);
+  static ReadArchiveMessageRequest? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  MessageReference get message => $_getN(0);
+  @$pb.TagNumber(1)
+  set message(MessageReference value) => $_setField(1, value);
+  @$pb.TagNumber(1)
+  $core.bool hasMessage() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearMessage() => $_clearField(1);
+  @$pb.TagNumber(1)
+  MessageReference ensureMessage() => $_ensure(0);
+
+  @$pb.TagNumber(2)
+  $fixnum.Int64 get bodyOffset => $_getI64(1);
+  @$pb.TagNumber(2)
+  set bodyOffset($fixnum.Int64 value) => $_setInt64(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasBodyOffset() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearBodyOffset() => $_clearField(2);
+
+  /// 1–65536 UTF-8 bytes; граница блока не разрывает символ.
+  @$pb.TagNumber(3)
+  $core.int get bodyLimit => $_getIZ(2);
+  @$pb.TagNumber(3)
+  set bodyLimit($core.int value) => $_setUnsignedInt32(2, value);
+  @$pb.TagNumber(3)
+  $core.bool hasBodyLimit() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearBodyLimit() => $_clearField(3);
+
+  @$pb.TagNumber(4)
+  $core.bool get reveal => $_getBF(3);
+  @$pb.TagNumber(4)
+  set reveal($core.bool value) => $_setBool(3, value);
+  @$pb.TagNumber(4)
+  $core.bool hasReveal() => $_has(3);
+  @$pb.TagNumber(4)
+  void clearReveal() => $_clearField(4);
+}
+
+class ReadArchiveMessageResponse extends $pb.GeneratedMessage {
+  factory ReadArchiveMessageResponse({
+    Message? message,
+    $fixnum.Int64? bodyOffset,
+    $fixnum.Int64? nextOffset,
+    $core.bool? complete,
+    $core.bool? collapsed,
+  }) {
+    final result = ReadArchiveMessageResponse._();
+    if (message != null) result.message = message;
+    if (bodyOffset != null) result.bodyOffset = bodyOffset;
+    if (nextOffset != null) result.nextOffset = nextOffset;
+    if (complete != null) result.complete = complete;
+    if (collapsed != null) result.collapsed = collapsed;
+    return result;
+  }
+
+  ReadArchiveMessageResponse._();
+
+  factory ReadArchiveMessageResponse.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      ReadArchiveMessageResponse()..mergeFromBuffer(data, registry);
+  factory ReadArchiveMessageResponse.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      ReadArchiveMessageResponse()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'ReadArchiveMessageResponse',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'ffido.v1'),
+      createEmptyInstance: ReadArchiveMessageResponse.$_createMessage)
+    ..aOM<Message>(1, _omitFieldNames ? '' : 'message',
+        subBuilder: Message.$_createMessage)
+    ..a<$fixnum.Int64>(
+        2, _omitFieldNames ? '' : 'bodyOffset', $pb.PbFieldType.OU6,
+        defaultOrMaker: $fixnum.Int64.ZERO)
+    ..a<$fixnum.Int64>(
+        3, _omitFieldNames ? '' : 'nextOffset', $pb.PbFieldType.OU6,
+        defaultOrMaker: $fixnum.Int64.ZERO)
+    ..aOB(4, _omitFieldNames ? '' : 'complete')
+    ..aOB(5, _omitFieldNames ? '' : 'collapsed')
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  ReadArchiveMessageResponse clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  ReadArchiveMessageResponse copyWith(
+          void Function(ReadArchiveMessageResponse) updates) =>
+      super.copyWith(
+              (message) => updates(message as ReadArchiveMessageResponse))
+          as ReadArchiveMessageResponse;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  @$core.Deprecated(
+      'Use ReadArchiveMessageResponse() / ReadArchiveMessageResponse.new instead')
+  static ReadArchiveMessageResponse create() => ReadArchiveMessageResponse._();
+  static $pb.GeneratedMessage $_createMessage() =>
+      ReadArchiveMessageResponse._();
+  @$core.override
+  ReadArchiveMessageResponse createEmptyInstance() =>
+      ReadArchiveMessageResponse._();
+  @$core.pragma('dart2js:noInline')
+  static ReadArchiveMessageResponse getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<ReadArchiveMessageResponse>(
+          ReadArchiveMessageResponse.$_createMessage);
+  static ReadArchiveMessageResponse? _defaultInstance;
+
+  /// body содержит только запрошенный блок, остальные поля — заголовки.
+  @$pb.TagNumber(1)
+  Message get message => $_getN(0);
+  @$pb.TagNumber(1)
+  set message(Message value) => $_setField(1, value);
+  @$pb.TagNumber(1)
+  $core.bool hasMessage() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearMessage() => $_clearField(1);
+  @$pb.TagNumber(1)
+  Message ensureMessage() => $_ensure(0);
+
+  @$pb.TagNumber(2)
+  $fixnum.Int64 get bodyOffset => $_getI64(1);
+  @$pb.TagNumber(2)
+  set bodyOffset($fixnum.Int64 value) => $_setInt64(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasBodyOffset() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearBodyOffset() => $_clearField(2);
+
+  @$pb.TagNumber(3)
+  $fixnum.Int64 get nextOffset => $_getI64(2);
+  @$pb.TagNumber(3)
+  set nextOffset($fixnum.Int64 value) => $_setInt64(2, value);
+  @$pb.TagNumber(3)
+  $core.bool hasNextOffset() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearNextOffset() => $_clearField(3);
+
+  @$pb.TagNumber(4)
+  $core.bool get complete => $_getBF(3);
+  @$pb.TagNumber(4)
+  set complete($core.bool value) => $_setBool(3, value);
+  @$pb.TagNumber(4)
+  $core.bool hasComplete() => $_has(3);
+  @$pb.TagNumber(4)
+  void clearComplete() => $_clearField(4);
+
+  @$pb.TagNumber(5)
+  $core.bool get collapsed => $_getBF(4);
+  @$pb.TagNumber(5)
+  set collapsed($core.bool value) => $_setBool(4, value);
+  @$pb.TagNumber(5)
+  $core.bool hasCollapsed() => $_has(4);
+  @$pb.TagNumber(5)
+  void clearCollapsed() => $_clearField(5);
+}
+
+class GetArchiveThreadRequest extends $pb.GeneratedMessage {
+  factory GetArchiveThreadRequest({
+    MessageReference? message,
+    PageRequest? page,
+  }) {
+    final result = GetArchiveThreadRequest._();
+    if (message != null) result.message = message;
+    if (page != null) result.page = page;
+    return result;
+  }
+
+  GetArchiveThreadRequest._();
+
+  factory GetArchiveThreadRequest.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      GetArchiveThreadRequest()..mergeFromBuffer(data, registry);
+  factory GetArchiveThreadRequest.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      GetArchiveThreadRequest()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'GetArchiveThreadRequest',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'ffido.v1'),
+      createEmptyInstance: GetArchiveThreadRequest.$_createMessage)
+    ..aOM<MessageReference>(1, _omitFieldNames ? '' : 'message',
+        subBuilder: MessageReference.$_createMessage)
+    ..aOM<PageRequest>(2, _omitFieldNames ? '' : 'page',
+        subBuilder: PageRequest.$_createMessage)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  GetArchiveThreadRequest clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  GetArchiveThreadRequest copyWith(
+          void Function(GetArchiveThreadRequest) updates) =>
+      super.copyWith((message) => updates(message as GetArchiveThreadRequest))
+          as GetArchiveThreadRequest;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  @$core.Deprecated(
+      'Use GetArchiveThreadRequest() / GetArchiveThreadRequest.new instead')
+  static GetArchiveThreadRequest create() => GetArchiveThreadRequest._();
+  static $pb.GeneratedMessage $_createMessage() => GetArchiveThreadRequest._();
+  @$core.override
+  GetArchiveThreadRequest createEmptyInstance() => GetArchiveThreadRequest._();
+  @$core.pragma('dart2js:noInline')
+  static GetArchiveThreadRequest getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<GetArchiveThreadRequest>(
+          GetArchiveThreadRequest.$_createMessage);
+  static GetArchiveThreadRequest? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  MessageReference get message => $_getN(0);
+  @$pb.TagNumber(1)
+  set message(MessageReference value) => $_setField(1, value);
+  @$pb.TagNumber(1)
+  $core.bool hasMessage() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearMessage() => $_clearField(1);
+  @$pb.TagNumber(1)
+  MessageReference ensureMessage() => $_ensure(0);
+
+  @$pb.TagNumber(2)
+  PageRequest get page => $_getN(1);
+  @$pb.TagNumber(2)
+  set page(PageRequest value) => $_setField(2, value);
+  @$pb.TagNumber(2)
+  $core.bool hasPage() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearPage() => $_clearField(2);
+  @$pb.TagNumber(2)
+  PageRequest ensurePage() => $_ensure(1);
+}
+
+class MessagePreview extends $pb.GeneratedMessage {
+  factory MessagePreview({
+    $core.String? conferenceId,
+    $core.String? fromName,
+    $core.String? fromAddress,
+    $core.String? toName,
+    $core.String? toAddress,
+    $core.String? subject,
+    $core.String? body,
+    $core.String? effectiveEncoding,
+    $fixnum.Int64? wireBodyBytes,
+    $core.String? previewDigest,
+    AreaKind? kind,
+    $core.bool? publicMessage,
+    $core.String? inReplyTo,
+  }) {
+    final result = MessagePreview._();
+    if (conferenceId != null) result.conferenceId = conferenceId;
+    if (fromName != null) result.fromName = fromName;
+    if (fromAddress != null) result.fromAddress = fromAddress;
+    if (toName != null) result.toName = toName;
+    if (toAddress != null) result.toAddress = toAddress;
+    if (subject != null) result.subject = subject;
+    if (body != null) result.body = body;
+    if (effectiveEncoding != null) result.effectiveEncoding = effectiveEncoding;
+    if (wireBodyBytes != null) result.wireBodyBytes = wireBodyBytes;
+    if (previewDigest != null) result.previewDigest = previewDigest;
+    if (kind != null) result.kind = kind;
+    if (publicMessage != null) result.publicMessage = publicMessage;
+    if (inReplyTo != null) result.inReplyTo = inReplyTo;
+    return result;
+  }
+
+  MessagePreview._();
+
+  factory MessagePreview.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      MessagePreview()..mergeFromBuffer(data, registry);
+  factory MessagePreview.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      MessagePreview()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'MessagePreview',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'ffido.v1'),
+      createEmptyInstance: MessagePreview.$_createMessage)
+    ..aOS(1, _omitFieldNames ? '' : 'conferenceId')
+    ..aOS(2, _omitFieldNames ? '' : 'fromName')
+    ..aOS(3, _omitFieldNames ? '' : 'fromAddress')
+    ..aOS(4, _omitFieldNames ? '' : 'toName')
+    ..aOS(5, _omitFieldNames ? '' : 'toAddress')
+    ..aOS(6, _omitFieldNames ? '' : 'subject')
+    ..aOS(7, _omitFieldNames ? '' : 'body')
+    ..aOS(8, _omitFieldNames ? '' : 'effectiveEncoding')
+    ..a<$fixnum.Int64>(
+        9, _omitFieldNames ? '' : 'wireBodyBytes', $pb.PbFieldType.OU6,
+        defaultOrMaker: $fixnum.Int64.ZERO)
+    ..aOS(10, _omitFieldNames ? '' : 'previewDigest')
+    ..aE<AreaKind>(11, _omitFieldNames ? '' : 'kind',
+        enumValues: AreaKind.values)
+    ..aOB(12, _omitFieldNames ? '' : 'publicMessage')
+    ..aOS(13, _omitFieldNames ? '' : 'inReplyTo')
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  MessagePreview clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  MessagePreview copyWith(void Function(MessagePreview) updates) =>
+      super.copyWith((message) => updates(message as MessagePreview))
+          as MessagePreview;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  @$core.Deprecated('Use MessagePreview() / MessagePreview.new instead')
+  static MessagePreview create() => MessagePreview._();
+  static $pb.GeneratedMessage $_createMessage() => MessagePreview._();
+  @$core.override
+  MessagePreview createEmptyInstance() => MessagePreview._();
+  @$core.pragma('dart2js:noInline')
+  static MessagePreview getDefault() =>
+      _defaultInstance ??= $pb.GeneratedMessage.$_defaultFor<MessagePreview>(
+          MessagePreview.$_createMessage);
+  static MessagePreview? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $core.String get conferenceId => $_getSZ(0);
+  @$pb.TagNumber(1)
+  set conferenceId($core.String value) => $_setString(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasConferenceId() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearConferenceId() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  $core.String get fromName => $_getSZ(1);
+  @$pb.TagNumber(2)
+  set fromName($core.String value) => $_setString(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasFromName() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearFromName() => $_clearField(2);
+
+  @$pb.TagNumber(3)
+  $core.String get fromAddress => $_getSZ(2);
+  @$pb.TagNumber(3)
+  set fromAddress($core.String value) => $_setString(2, value);
+  @$pb.TagNumber(3)
+  $core.bool hasFromAddress() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearFromAddress() => $_clearField(3);
+
+  @$pb.TagNumber(4)
+  $core.String get toName => $_getSZ(3);
+  @$pb.TagNumber(4)
+  set toName($core.String value) => $_setString(3, value);
+  @$pb.TagNumber(4)
+  $core.bool hasToName() => $_has(3);
+  @$pb.TagNumber(4)
+  void clearToName() => $_clearField(4);
+
+  @$pb.TagNumber(5)
+  $core.String get toAddress => $_getSZ(4);
+  @$pb.TagNumber(5)
+  set toAddress($core.String value) => $_setString(4, value);
+  @$pb.TagNumber(5)
+  $core.bool hasToAddress() => $_has(4);
+  @$pb.TagNumber(5)
+  void clearToAddress() => $_clearField(5);
+
+  @$pb.TagNumber(6)
+  $core.String get subject => $_getSZ(5);
+  @$pb.TagNumber(6)
+  set subject($core.String value) => $_setString(5, value);
+  @$pb.TagNumber(6)
+  $core.bool hasSubject() => $_has(5);
+  @$pb.TagNumber(6)
+  void clearSubject() => $_clearField(6);
+
+  @$pb.TagNumber(7)
+  $core.String get body => $_getSZ(6);
+  @$pb.TagNumber(7)
+  set body($core.String value) => $_setString(6, value);
+  @$pb.TagNumber(7)
+  $core.bool hasBody() => $_has(6);
+  @$pb.TagNumber(7)
+  void clearBody() => $_clearField(7);
+
+  @$pb.TagNumber(8)
+  $core.String get effectiveEncoding => $_getSZ(7);
+  @$pb.TagNumber(8)
+  set effectiveEncoding($core.String value) => $_setString(7, value);
+  @$pb.TagNumber(8)
+  $core.bool hasEffectiveEncoding() => $_has(7);
+  @$pb.TagNumber(8)
+  void clearEffectiveEncoding() => $_clearField(8);
+
+  @$pb.TagNumber(9)
+  $fixnum.Int64 get wireBodyBytes => $_getI64(8);
+  @$pb.TagNumber(9)
+  set wireBodyBytes($fixnum.Int64 value) => $_setInt64(8, value);
+  @$pb.TagNumber(9)
+  $core.bool hasWireBodyBytes() => $_has(8);
+  @$pb.TagNumber(9)
+  void clearWireBodyBytes() => $_clearField(9);
+
+  @$pb.TagNumber(10)
+  $core.String get previewDigest => $_getSZ(9);
+  @$pb.TagNumber(10)
+  set previewDigest($core.String value) => $_setString(9, value);
+  @$pb.TagNumber(10)
+  $core.bool hasPreviewDigest() => $_has(9);
+  @$pb.TagNumber(10)
+  void clearPreviewDigest() => $_clearField(10);
+
+  @$pb.TagNumber(11)
+  AreaKind get kind => $_getN(10);
+  @$pb.TagNumber(11)
+  set kind(AreaKind value) => $_setField(11, value);
+  @$pb.TagNumber(11)
+  $core.bool hasKind() => $_has(10);
+  @$pb.TagNumber(11)
+  void clearKind() => $_clearField(11);
+
+  @$pb.TagNumber(12)
+  $core.bool get publicMessage => $_getBF(11);
+  @$pb.TagNumber(12)
+  set publicMessage($core.bool value) => $_setBool(11, value);
+  @$pb.TagNumber(12)
+  $core.bool hasPublicMessage() => $_has(11);
+  @$pb.TagNumber(12)
+  void clearPublicMessage() => $_clearField(12);
+
+  @$pb.TagNumber(13)
+  $core.String get inReplyTo => $_getSZ(12);
+  @$pb.TagNumber(13)
+  set inReplyTo($core.String value) => $_setString(12, value);
+  @$pb.TagNumber(13)
+  $core.bool hasInReplyTo() => $_has(12);
+  @$pb.TagNumber(13)
+  void clearInReplyTo() => $_clearField(13);
 }
 
 const $core.bool _omitFieldNames =

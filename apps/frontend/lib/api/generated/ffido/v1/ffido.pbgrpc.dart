@@ -76,6 +76,27 @@ class FfidoClient extends $grpc.Client {
     return $createUnaryCall(_$listMessages, request, options: options);
   }
 
+  $grpc.ResponseFuture<$0.SearchArchiveMessagesResponse> searchArchiveMessages(
+    $0.SearchArchiveMessagesRequest request, {
+    $grpc.CallOptions? options,
+  }) {
+    return $createUnaryCall(_$searchArchiveMessages, request, options: options);
+  }
+
+  $grpc.ResponseFuture<$0.ReadArchiveMessageResponse> readArchiveMessage(
+    $0.ReadArchiveMessageRequest request, {
+    $grpc.CallOptions? options,
+  }) {
+    return $createUnaryCall(_$readArchiveMessage, request, options: options);
+  }
+
+  $grpc.ResponseFuture<$0.ListMessagesResponse> getArchiveThread(
+    $0.GetArchiveThreadRequest request, {
+    $grpc.CallOptions? options,
+  }) {
+    return $createUnaryCall(_$getArchiveThread, request, options: options);
+  }
+
   $grpc.ResponseFuture<$0.FindMessageResponse> findMessage(
     $0.FindMessageRequest request, {
     $grpc.CallOptions? options,
@@ -121,6 +142,13 @@ class FfidoClient extends $grpc.Client {
   }) {
     return $createUnaryCall(_$getMessageTechnicalData, request,
         options: options);
+  }
+
+  $grpc.ResponseFuture<$0.MessagePreview> previewMessage(
+    $0.CreateMessageRequest request, {
+    $grpc.CallOptions? options,
+  }) {
+    return $createUnaryCall(_$previewMessage, request, options: options);
   }
 
   $grpc.ResponseFuture<$0.CreateMessageResponse> createMessage(
@@ -285,6 +313,21 @@ class FfidoClient extends $grpc.Client {
           '/ffido.v1.Ffido/ListMessages',
           ($0.ListMessagesRequest value) => value.writeToBuffer(),
           $0.ListMessagesResponse.fromBuffer);
+  static final _$searchArchiveMessages = $grpc.ClientMethod<
+          $0.SearchArchiveMessagesRequest, $0.SearchArchiveMessagesResponse>(
+      '/ffido.v1.Ffido/SearchArchiveMessages',
+      ($0.SearchArchiveMessagesRequest value) => value.writeToBuffer(),
+      $0.SearchArchiveMessagesResponse.fromBuffer);
+  static final _$readArchiveMessage = $grpc.ClientMethod<
+          $0.ReadArchiveMessageRequest, $0.ReadArchiveMessageResponse>(
+      '/ffido.v1.Ffido/ReadArchiveMessage',
+      ($0.ReadArchiveMessageRequest value) => value.writeToBuffer(),
+      $0.ReadArchiveMessageResponse.fromBuffer);
+  static final _$getArchiveThread =
+      $grpc.ClientMethod<$0.GetArchiveThreadRequest, $0.ListMessagesResponse>(
+          '/ffido.v1.Ffido/GetArchiveThread',
+          ($0.GetArchiveThreadRequest value) => value.writeToBuffer(),
+          $0.ListMessagesResponse.fromBuffer);
   static final _$findMessage =
       $grpc.ClientMethod<$0.FindMessageRequest, $0.FindMessageResponse>(
           '/ffido.v1.Ffido/FindMessage',
@@ -316,6 +359,11 @@ class FfidoClient extends $grpc.Client {
           '/ffido.v1.Ffido/GetMessageTechnicalData',
           ($0.MessageReference value) => value.writeToBuffer(),
           $0.MessageTechnicalData.fromBuffer);
+  static final _$previewMessage =
+      $grpc.ClientMethod<$0.CreateMessageRequest, $0.MessagePreview>(
+          '/ffido.v1.Ffido/PreviewMessage',
+          ($0.CreateMessageRequest value) => value.writeToBuffer(),
+          $0.MessagePreview.fromBuffer);
   static final _$createMessage =
       $grpc.ClientMethod<$0.CreateMessageRequest, $0.CreateMessageResponse>(
           '/ffido.v1.Ffido/CreateMessage',
@@ -460,6 +508,33 @@ abstract class FfidoServiceBase extends $grpc.Service {
             ($core.List<$core.int> value) =>
                 $0.ListMessagesRequest.fromBuffer(value),
             ($0.ListMessagesResponse value) => value.writeToBuffer()));
+    $addMethod($grpc.ServiceMethod<$0.SearchArchiveMessagesRequest,
+            $0.SearchArchiveMessagesResponse>(
+        'SearchArchiveMessages',
+        searchArchiveMessages_Pre,
+        false,
+        false,
+        ($core.List<$core.int> value) =>
+            $0.SearchArchiveMessagesRequest.fromBuffer(value),
+        ($0.SearchArchiveMessagesResponse value) => value.writeToBuffer()));
+    $addMethod($grpc.ServiceMethod<$0.ReadArchiveMessageRequest,
+            $0.ReadArchiveMessageResponse>(
+        'ReadArchiveMessage',
+        readArchiveMessage_Pre,
+        false,
+        false,
+        ($core.List<$core.int> value) =>
+            $0.ReadArchiveMessageRequest.fromBuffer(value),
+        ($0.ReadArchiveMessageResponse value) => value.writeToBuffer()));
+    $addMethod($grpc.ServiceMethod<$0.GetArchiveThreadRequest,
+            $0.ListMessagesResponse>(
+        'GetArchiveThread',
+        getArchiveThread_Pre,
+        false,
+        false,
+        ($core.List<$core.int> value) =>
+            $0.GetArchiveThreadRequest.fromBuffer(value),
+        ($0.ListMessagesResponse value) => value.writeToBuffer()));
     $addMethod(
         $grpc.ServiceMethod<$0.FindMessageRequest, $0.FindMessageResponse>(
             'FindMessage',
@@ -511,6 +586,14 @@ abstract class FfidoServiceBase extends $grpc.Service {
             ($core.List<$core.int> value) =>
                 $0.MessageReference.fromBuffer(value),
             ($0.MessageTechnicalData value) => value.writeToBuffer()));
+    $addMethod($grpc.ServiceMethod<$0.CreateMessageRequest, $0.MessagePreview>(
+        'PreviewMessage',
+        previewMessage_Pre,
+        false,
+        false,
+        ($core.List<$core.int> value) =>
+            $0.CreateMessageRequest.fromBuffer(value),
+        ($0.MessagePreview value) => value.writeToBuffer()));
     $addMethod(
         $grpc.ServiceMethod<$0.CreateMessageRequest, $0.CreateMessageResponse>(
             'CreateMessage',
@@ -712,6 +795,33 @@ abstract class FfidoServiceBase extends $grpc.Service {
   $async.Future<$0.ListMessagesResponse> listMessages(
       $grpc.ServiceCall call, $0.ListMessagesRequest request);
 
+  $async.Future<$0.SearchArchiveMessagesResponse> searchArchiveMessages_Pre(
+      $grpc.ServiceCall $call,
+      $async.Future<$0.SearchArchiveMessagesRequest> $request) async {
+    return searchArchiveMessages($call, await $request);
+  }
+
+  $async.Future<$0.SearchArchiveMessagesResponse> searchArchiveMessages(
+      $grpc.ServiceCall call, $0.SearchArchiveMessagesRequest request);
+
+  $async.Future<$0.ReadArchiveMessageResponse> readArchiveMessage_Pre(
+      $grpc.ServiceCall $call,
+      $async.Future<$0.ReadArchiveMessageRequest> $request) async {
+    return readArchiveMessage($call, await $request);
+  }
+
+  $async.Future<$0.ReadArchiveMessageResponse> readArchiveMessage(
+      $grpc.ServiceCall call, $0.ReadArchiveMessageRequest request);
+
+  $async.Future<$0.ListMessagesResponse> getArchiveThread_Pre(
+      $grpc.ServiceCall $call,
+      $async.Future<$0.GetArchiveThreadRequest> $request) async {
+    return getArchiveThread($call, await $request);
+  }
+
+  $async.Future<$0.ListMessagesResponse> getArchiveThread(
+      $grpc.ServiceCall call, $0.GetArchiveThreadRequest request);
+
   $async.Future<$0.FindMessageResponse> findMessage_Pre($grpc.ServiceCall $call,
       $async.Future<$0.FindMessageRequest> $request) async {
     return findMessage($call, await $request);
@@ -765,6 +875,14 @@ abstract class FfidoServiceBase extends $grpc.Service {
 
   $async.Future<$0.MessageTechnicalData> getMessageTechnicalData(
       $grpc.ServiceCall call, $0.MessageReference request);
+
+  $async.Future<$0.MessagePreview> previewMessage_Pre($grpc.ServiceCall $call,
+      $async.Future<$0.CreateMessageRequest> $request) async {
+    return previewMessage($call, await $request);
+  }
+
+  $async.Future<$0.MessagePreview> previewMessage(
+      $grpc.ServiceCall call, $0.CreateMessageRequest request);
 
   $async.Future<$0.CreateMessageResponse> createMessage_Pre(
       $grpc.ServiceCall $call,

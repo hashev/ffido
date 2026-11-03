@@ -94,7 +94,7 @@ TEST(Contract, RpcSurfaceAndTrustedIdentity) {
   const auto* service =
       google::protobuf::DescriptorPool::generated_pool()->FindServiceByName("ffido.v1.Ffido");
   ASSERT_NE(service, nullptr);
-  EXPECT_EQ(service->method_count(), 31);
+  EXPECT_EQ(service->method_count(), 35);
   ASSERT_NE(service->FindMethodByName("FindMessage"), nullptr);
   EXPECT_EQ(service->FindMethodByName("FindMessage")->input_type(),
             ffido::v1::FindMessageRequest::descriptor());
@@ -213,4 +213,57 @@ TEST(Contract, PersonalFiltersAreAdditiveAndPresentationIsExplicit) {
     EXPECT_EQ(descriptor->FindFieldByName("user_id"), nullptr);
     EXPECT_EQ(descriptor->FindFieldByName("profile"), nullptr);
   }
+}
+
+TEST(Contract, ArchiveMessagesPreserveUnicodeOffsetsAndReferences) {
+  using namespace ffido::v1;
+  ReadArchiveMessageResponse value;
+  value.mutable_message()->set_id("generation#42");
+  value.mutable_message()->set_conference_id("RU.TEST");
+  value.mutable_message()->set_body("Архив 🌍");
+  value.set_body_offset(4);
+  value.set_next_offset(18);
+  value.set_complete(false);
+  ReadArchiveMessageResponse decoded;
+  ASSERT_TRUE(decoded.ParseFromString(value.SerializeAsString()));
+  EXPECT_EQ(decoded.SerializeAsString(), value.SerializeAsString());
+  EXPECT_EQ(decoded.message().body(), "Архив 🌍");
+  EXPECT_EQ(decoded.next_offset(), 18u);
+  EXPECT_FALSE(ReadArchiveMessageRequest{}.reveal());
+  SearchArchiveMessagesRequest search;
+  search.add_conference_ids("RU.TEST");
+  search.set_query("ёжик");
+  search.mutable_from()->set_seconds(-1);
+  search.mutable_to()->set_seconds(42);
+  search.set_cursor("opaque-cursor");
+  SearchArchiveMessagesRequest restored;
+  ASSERT_TRUE(restored.ParseFromString(search.SerializeAsString()));
+  EXPECT_EQ(restored.SerializeAsString(), search.SerializeAsString());
+  EXPECT_TRUE(restored.has_from());
+  EXPECT_EQ(restored.from().seconds(), -1);
+  const auto* service = google::protobuf::DescriptorPool::generated_pool()->FindServiceByName("ffido.v1.Ffido");
+  for (const auto* name : {"SearchArchiveMessages", "ReadArchiveMessage", "GetArchiveThread"}) {
+    const auto* method = service->FindMethodByName(name);
+    ASSERT_NE(method, nullptr);
+    EXPECT_EQ(method->input_type()->FindFieldByName("user_id"), nullptr);
+    EXPECT_EQ(method->input_type()->FindFieldByName("record_view"), nullptr);
+  }
+  EXPECT_EQ(Message::descriptor()->FindFieldByName("body")->number(), 9);
+  EXPECT_EQ(MessageReference::descriptor()->field_count(), 2);
+}
+
+TEST(Contract, PublicationPreviewIsAdditiveAndOldRequestsRemainValid) {
+  using namespace ffido::v1;
+  CreateMessageRequest old;
+  old.set_conference_id("RU.TEST"); old.set_operation_id("old"); old.set_body("Текст");
+  CreateMessageRequest restored;
+  ASSERT_TRUE(restored.ParseFromString(old.SerializeAsString()));
+  EXPECT_FALSE(restored.has_expected_preview_digest());
+  EXPECT_EQ(CreateMessageRequest::descriptor()->FindFieldByName("footer")->number(), 8);
+  EXPECT_EQ(CreateMessageRequest::descriptor()->FindFieldByName("expected_preview_digest")->number(), 9);
+  MessagePreview preview;
+  preview.set_body("Итоговый текст"); preview.set_preview_digest("digest"); preview.set_public_message(true);
+  MessagePreview decoded;
+  ASSERT_TRUE(decoded.ParseFromString(preview.SerializeAsString()));
+  EXPECT_EQ(decoded.SerializeAsString(), preview.SerializeAsString());
 }

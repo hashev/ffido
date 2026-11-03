@@ -50,6 +50,7 @@ set(FIDOBACK_LIB_SOURCES
   src/storage/point_mailbox.cpp
   src/storage/text_codec.cpp
   src/service/conference_service.cpp
+  src/service/archive_search.cpp
   src/service/message_service.cpp
   src/service/uue_service.cpp
   src/service/auth_service.cpp
@@ -200,3 +201,17 @@ add_test(NAME ReleaseSchemaCompatibility
   ${Python3_EXECUTABLE} -m unittest discover
   -s ${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/release -p test_schema_compatibility.py)
 set_tests_properties(ReleaseSchemaCompatibility PROPERTIES TIMEOUT 60)
+
+add_executable(ffido-mcp src/mcp/main.cpp src/mcp/config.cpp src/mcp/tools.cpp src/mcp/server.cpp src/service/grpc_runtime.cpp)
+target_include_directories(ffido-mcp PRIVATE src/mcp include)
+target_link_libraries(ffido-mcp PRIVATE ffido_contracts nlohmann_json::nlohmann_json OpenSSL::Crypto ffido_backend_checks)
+install(TARGETS ffido-mcp RUNTIME DESTINATION bin COMPONENT ffido)
+
+target_compile_definitions(fidoback_tests PRIVATE FFIDO_MCP_BINARY="$<TARGET_FILE:ffido-mcp>")
+add_dependencies(fidoback_tests ffido-mcp)
+
+install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/../../docs/mcp.md DESTINATION share/ffido COMPONENT ffido)
+
+target_compile_definitions(fidoback_tests PRIVATE FFIDO_MCP_LOGIN_TEST="${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/test_mcp_login.py")
+
+add_test(NAME McpInstall COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/test_mcp_install.py ${CMAKE_COMMAND} ${CMAKE_BINARY_DIR})

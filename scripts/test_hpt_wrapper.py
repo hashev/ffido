@@ -145,7 +145,9 @@ def main():
                 fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
         # An unknown prior export outcome never starts another toss.
         events.write_text('')
-        assert subprocess.run(command, capture_output=True, timeout=5).returncode != 0
+        failed = subprocess.run(command, capture_output=True, timeout=5)
+        assert failed.returncode != 0
+        assert b'stage=recover exit=1' in failed.stderr
         assert events.read_text().splitlines() == ['recover']
     print('HPT lifecycle wrapper checks passed')
 

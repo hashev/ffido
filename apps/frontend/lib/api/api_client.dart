@@ -13,6 +13,7 @@ import 'channel_native.dart'
     as channels;
 import 'generated/ffido/v1/ffido.pbgrpc.dart' as wire;
 import 'api_transport.dart';
+import 'response_budget.dart';
 import 'api_exceptions.dart';
 
 class ApiClient implements ApiTransport, MessageFooterSupport {
@@ -131,14 +132,15 @@ class ApiClient implements ApiTransport, MessageFooterSupport {
     final version = ++_loginVersion;
     final captured = epoch;
     final channel = _factory(target);
-    final call = wire.FfidoClient(channel).login(
-      wire.LoginRequest(
-        name: name.trim(),
-        address: address.trim(),
-        password: password,
-      ),
-      options: rpc.CallOptions(timeout: timeout),
-    );
+    final call = wire.FfidoClient(channel, interceptors: [ResponseBudget()])
+        .login(
+          wire.LoginRequest(
+            name: name.trim(),
+            address: address.trim(),
+            password: password,
+          ),
+          options: rpc.CallOptions(timeout: timeout),
+        );
     final cancel = call.cancel;
     _active.add(cancel);
     try {
@@ -202,7 +204,10 @@ class ApiClient implements ApiTransport, MessageFooterSupport {
       configure(endpoint: endpoint.toString(), token: token);
   wire.FfidoClient get _client {
     _channel ??= _factory(_endpoint);
-    return _stub ??= wire.FfidoClient(_channel!);
+    return _stub ??= wire.FfidoClient(
+      _channel!,
+      interceptors: [ResponseBudget()],
+    );
   }
 
   void _check(

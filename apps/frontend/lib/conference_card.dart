@@ -34,6 +34,8 @@ class ConferenceCard extends StatelessWidget {
         subtitle: Text(
           conference.unsupportedFormat
               ? 'Формат ${conference.storageFormat} не поддерживается. Статистика неизвестна.'
+              : !conference.statisticsKnown
+              ? 'Статистика недоступна'
               : conference.description,
           style: Theme.of(context).textTheme.bodyMedium,
         ),

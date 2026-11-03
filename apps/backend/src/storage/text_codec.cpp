@@ -6,8 +6,9 @@
 #include <cerrno>
 
 namespace fidoback::storage {
-std::expected<std::string, TextError> ConvertText(std::string_view text, std::string_view from, std::string_view to) {
-  if (text.size() > 4 * 1024 * 1024)
+std::expected<std::string, TextError> ConvertText(std::string_view text, std::string_view from, std::string_view to,
+                                                  size_t max_bytes) {
+  if (text.size() > max_bytes)
     return std::unexpected(TextError::kLimit);
   if (from.empty() || to.empty() || from.find('\0') != std::string_view::npos ||
       to.find('\0') != std::string_view::npos || from.size() > 64 || to.size() > 64 ||
@@ -32,12 +33,14 @@ std::expected<std::string, TextError> ConvertText(std::string_view text, std::st
     size_t space = buffer.size();
     const size_t previous = left;
     auto result = iconv(converter, flushing ? nullptr : &input, flushing ? nullptr : &left, &cursor, &space);
+    // String growth can change errno even when it succeeds; retain iconv's result.
+    const int conversion_error = errno;
     const size_t produced = buffer.size() - space;
-    if (output.size() + produced > 4 * 1024 * 1024)
+    if (output.size() + produced > max_bytes)
       return std::unexpected(TextError::kLimit);
     output.append(buffer.data(), produced);
     if (result == static_cast<size_t>(-1)) {
-      if (errno != E2BIG || (produced == 0 && previous == left))
+      if (conversion_error != E2BIG || (produced == 0 && previous == left))
         return std::unexpected(TextError::kInvalidText);
     } else if (result != 0)
       return std::unexpected(TextError::kInvalidText);
@@ -50,7 +53,7 @@ std::expected<std::string, TextError> ConvertText(std::string_view text, std::st
 }
 
 std::expected<std::string, TextError> Utf8Preview(std::string_view text, size_t codepoints) {
-  if (!ConvertText(text, "UTF-8", "UTF-8"))
+  if (!ConvertText(text, "UTF-8", "UTF-8", 32 * 1024 * 1024))
     return std::unexpected(TextError::kInvalidText);
   size_t count = 0;
   size_t end = 0;

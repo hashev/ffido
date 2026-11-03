@@ -26,6 +26,8 @@ public:
   std::expected<domain::Conference, domain::ApiError> GetConference(std::string_view id, std::string_view user);
 
 private:
+  std::expected<domain::Conference, domain::ApiError> Describe(std::string_view id, std::string_view user,
+                                                               bool tolerant);
   std::shared_ptr<storage::JamCatalog> catalog_;
   std::shared_ptr<storage::IMetadataStore> metadata_;
   std::shared_ptr<const EchoAccess> access_;

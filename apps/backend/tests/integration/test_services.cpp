@@ -1,11 +1,13 @@
 #include <fcntl.h>
 #include <gtest/gtest.h>
 #include <sys/file.h>
+#include <sys/resource.h>
 
 #include <fstream>
 #include <future>
 
 #include "../support/echo_access.hpp"
+#include "../support/jam_wire_record.hpp"
 #include "../support/temp_directory.hpp"
 #include "../support/tls_certificate.hpp"
 #include "ftn/uue.hpp"
@@ -355,7 +357,23 @@ TEST_F(ServicesTest, SearchCountsDatesAndConferenceSortsAreConsistent) {
   EXPECT_EQ(sorted->conferences.front().id, "echo.one");
   EXPECT_FALSE(conferences->GetConferences({}, {}, "A", "invalid"));
 }
-TEST_F(ServicesTest, ThreadBranchPaginationMissingParentCyclesAndDeletedNodes) {
+namespace {
+class ThreadServicesTest : public ServicesTest, public ::testing::WithParamInterface<bool> {
+protected:
+  std::expected<domain::ThreadListResponse, domain::ApiError> Thread(std::string_view conference, std::string_view id,
+                                                                     std::string_view user,
+                                                                     const domain::PaginationRequest& page = {}) {
+    auto result = GetParam() ? messages->GetArchiveThread(conference, id, user, page)
+                             : messages->GetThread(conference, id, user, page);
+    if (result && GetParam())
+      for (const auto& message : result->messages)
+        EXPECT_TRUE(message.body.empty());
+    return result;
+  }
+};
+INSTANTIATE_TEST_SUITE_P(OrdinaryAndArchive, ThreadServicesTest, ::testing::Bool());
+}  // namespace
+TEST_P(ThreadServicesTest, ThreadBranchPaginationMissingParentCyclesAndDeletedNodes) {
   auto root = messages->CreateMessage("echo.one", Request("root"), "A");
   ASSERT_TRUE(root);
   auto request = Request("child-one");
@@ -365,13 +383,13 @@ TEST_F(ServicesTest, ThreadBranchPaginationMissingParentCyclesAndDeletedNodes) {
   request.operation_id = "child-two";
   auto two = messages->CreateMessage("echo.one", request, "B");
   ASSERT_TRUE(two);
-  auto page = messages->GetThread("echo.one", two->id, "A", {1, 1});
+  auto page = Thread("echo.one", two->id, "A", {1, 1});
   ASSERT_TRUE(page);
   EXPECT_EQ(page->total, 3);
   EXPECT_TRUE(page->has_more);
   ASSERT_EQ(page->messages.size(), 1);
   EXPECT_EQ(page->messages.front().id, one->id);
-  page = messages->GetThread("echo.one", root->id, "A", {INT64_MAX, 20});
+  page = Thread("echo.one", root->id, "A", {INT64_MAX, 20});
   ASSERT_TRUE(page);
   EXPECT_TRUE(page->messages.empty());
   EXPECT_FALSE(page->has_more);
@@ -386,7 +404,7 @@ TEST_F(ServicesTest, ThreadBranchPaginationMissingParentCyclesAndDeletedNodes) {
     ASSERT_EQ(pwrite((*access)->files().descriptors[0], bytes.data(), bytes.size(), root_offset + 24),
               4);  // cycle 42 -> 43 -> 42
   }
-  page = messages->GetThread("echo.one", one->id, "A");
+  page = Thread("echo.one", one->id, "A");
   ASSERT_TRUE(page);
   EXPECT_EQ(page->total, 3);
   {
@@ -395,11 +413,11 @@ TEST_F(ServicesTest, ThreadBranchPaginationMissingParentCyclesAndDeletedNodes) {
     ASSERT_TRUE(access);
     ASSERT_EQ((*access)->messages().DeleteMessage(42), msgapi::JamError::kSuccess);
   }
-  EXPECT_FALSE(messages->GetThread("echo.one", root->id, "A"));
-  page = messages->GetThread("echo.one", one->id, "A");
+  EXPECT_FALSE(Thread("echo.one", root->id, "A"));
+  page = Thread("echo.one", one->id, "A");
   ASSERT_TRUE(page);
   EXPECT_EQ(page->total, 1);  // absent/deleted parent leaves a readable subtree
-  EXPECT_FALSE(messages->GetThread("echo.one", one->id, "A", {-1, 20}));
+  EXPECT_FALSE(Thread("echo.one", one->id, "A", {-1, 20}));
 }
 TEST_F(ServicesTest, IdempotencySurvivesActualMetadataReopen) {
   auto created = messages->CreateMessage("echo.one", Request(), "A");
@@ -416,7 +434,7 @@ TEST_F(ServicesTest, IdempotencySurvivesActualMetadataReopen) {
   EXPECT_EQ(retry->ftn_message_id, created->ftn_message_id);
 }
 
-TEST_F(ServicesTest, ThreadUsesExactFtnReplyWhenNumericLinksAreMissing) {
+TEST_P(ThreadServicesTest, ThreadUsesExactFtnReplyWhenNumericLinksAreMissing) {
   auto root = messages->CreateMessage("echo.one", Request("root"), "A");
   ASSERT_TRUE(root);
   auto request = Request("child");
@@ -432,7 +450,7 @@ TEST_F(ServicesTest, ThreadUsesExactFtnReplyWhenNumericLinksAreMissing) {
     std::array<uint8_t, 4> bytes{};
     ASSERT_EQ(pwrite((*access)->files().descriptors[0], bytes.data(), bytes.size(), offset + 24), 4);
   }
-  auto thread = messages->GetThread("echo.one", root->id, "A");
+  auto thread = Thread("echo.one", root->id, "A");
   ASSERT_TRUE(thread);
   EXPECT_EQ(thread->total, 2);
 }
@@ -1390,7 +1408,10 @@ TEST_F(ServicesTest, CrosspostRevocationBeforeAndDuringPublicationDoesNotLeakRes
 TEST_F(ServicesTest, CrosspostGenerationChangeStopsRemainingCopy) {
   auto io = std::make_shared<UueFaultIo>();
   io->after_first = [&] {
-    const int fd = catalog->areas().at("echo.two").files->descriptors[0];
+    auto lease = storage::JamLease::Acquire(catalog->areas().at("echo.two").files, true,
+                                            std::chrono::steady_clock::now() + std::chrono::seconds(1));
+    ASSERT_TRUE(lease);
+    const int fd = (*lease)->files().descriptors[0];
     std::array<uint8_t, 4> changed{};
     msgapi::jam_wire::Put32(changed.data(), 124);
     ASSERT_EQ(pwrite(fd, changed.data(), changed.size(), 4), 4);
@@ -1557,4 +1578,585 @@ TEST_F(ServicesTest, FindMessageCancelledScanReleasesLeaseWithoutReadState) {
   ASSERT_TRUE(view);
   EXPECT_EQ(*metadata->GetReadCount("B", "echo.one", (*view)->generation()), 0);
   EXPECT_TRUE(metadata->GetHistory("B")->empty());
+}
+
+TEST_F(ServicesTest, ArchiveReadChunksPreserveStateAndRequireUtf8Boundaries) {
+  auto request = Request();
+  request.body = "АБВГД";
+  auto created = messages->CreateMessage("echo.one", request, "A");
+  ASSERT_TRUE(created);
+  const auto before_header = test::ReadFile(temp.path() / "different-file.jhr");
+  const auto before_body = test::ReadFile(temp.path() / "different-file.jdt");
+  const auto before_index = test::ReadFile(temp.path() / "different-file.jdx");
+  auto position = metadata->LastOpened("A", "echo.one");
+  ASSERT_TRUE(position);
+  std::string body;
+  uint64_t offset = 0;
+  for (;;) {
+    auto block = messages->ReadArchiveMessage("echo.one", created->id, "A", offset, 3);
+    ASSERT_TRUE(block);
+    EXPECT_FALSE(block->message.is_read);
+    EXPECT_EQ(block->body_offset, offset);
+    EXPECT_LE(block->message.body.size(), 3u);
+    EXPECT_TRUE(storage::ConvertText(block->message.body, "UTF-8", "UTF-8"));
+    body += block->message.body;
+    offset = block->next_offset;
+    if (block->complete)
+      break;
+    ASSERT_LT(body.size(), 1024u);
+  }
+  auto expected = messages->PeekMessage("echo.one", created->id, "A");
+  ASSERT_TRUE(expected);
+  EXPECT_EQ(body, expected->body);
+  EXPECT_FALSE(messages->ReadArchiveMessage("echo.one", created->id, "A", 1, 10));
+  EXPECT_FALSE(messages->ReadArchiveMessage("echo.one", created->id, "A", 0, 1));
+  EXPECT_FALSE(messages->ReadArchiveMessage("echo.one", created->id, "A", UINT64_MAX, 10));
+  EXPECT_FALSE(messages->ReadArchiveMessage("echo.one", created->id, "A", 0, 0));
+  EXPECT_FALSE(messages->ReadArchiveMessage("echo.one", created->id, "A", 0, 65537));
+  auto eof = messages->ReadArchiveMessage("echo.one", created->id, "A", body.size(), 10);
+  ASSERT_TRUE(eof);
+  EXPECT_TRUE(eof->complete);
+  EXPECT_TRUE(eof->message.body.empty());
+  auto after = metadata->LastOpened("A", "echo.one");
+  ASSERT_TRUE(after);
+  EXPECT_EQ(after->revision, position->revision);
+  EXPECT_EQ(after->message, position->message);
+  EXPECT_EQ(after->generation, position->generation);
+  auto history = metadata->GetHistory("A");
+  auto bookmarks = metadata->GetBookmarks("A");
+  ASSERT_TRUE(history);
+  ASSERT_TRUE(bookmarks);
+  EXPECT_TRUE(history->empty());
+  EXPECT_TRUE(bookmarks->empty());
+  EXPECT_EQ(test::ReadFile(temp.path() / "different-file.jhr"), before_header);
+  EXPECT_EQ(test::ReadFile(temp.path() / "different-file.jdt"), before_body);
+  EXPECT_EQ(test::ReadFile(temp.path() / "different-file.jdx"), before_index);
+  auto count = conferences->GetConference("echo.one", "A");
+  ASSERT_TRUE(count);
+  EXPECT_EQ(count->unread_count, 1);
+  ASSERT_TRUE(messages->GetMessage("echo.one", created->id, "A"));
+  count = conferences->GetConference("echo.one", "A");
+  ASSERT_TRUE(count);
+  EXPECT_EQ(count->unread_count, 0);
+}
+TEST_F(ServicesTest, ArchiveReadRespectsFiltersAndRevealsOnlyTheExactMessage) {
+  auto created = messages->CreateMessage("echo.one", Request(), "A");
+  ASSERT_TRUE(created);
+  domain::PersonalMessageFilter filter;
+  filter.id = "00000000-0000-0000-0000-000000000001";
+  filter.subject = "Тема";
+  auto revision = messages->ReplacePersonalFilters("A", 0, "filter", {filter});
+  ASSERT_TRUE(revision);
+  auto hidden = messages->ReadArchiveMessage("echo.one", created->id, "A", 0, 65536);
+  ASSERT_TRUE(hidden);
+  EXPECT_TRUE(hidden->collapsed);
+  EXPECT_TRUE(hidden->message.body.empty());
+  EXPECT_TRUE(hidden->message.ftn_kludges.empty());
+  auto shown = messages->ReadArchiveMessage("echo.one", created->id, "A", 0, 65536, true);
+  ASSERT_TRUE(shown);
+  EXPECT_FALSE(shown->collapsed);
+  EXPECT_FALSE(shown->message.body.empty());
+  EXPECT_FALSE(shown->message.is_read);
+  auto still_hidden = messages->ReadArchiveMessage("echo.one", created->id, "A", 0, 65536);
+  ASSERT_TRUE(still_hidden);
+  EXPECT_TRUE(still_hidden->collapsed);
+  auto filters = messages->GetPersonalFilters("A");
+  ASSERT_TRUE(filters);
+  EXPECT_EQ(filters->revision, *revision);
+  EXPECT_FALSE(messages->ReadArchiveMessage("echo.two", created->id, "A", 0, 65536, true));
+  EXPECT_FALSE(messages->ReadArchiveMessage("echo.one", "old-generation#42", "A", 0, 65536, true));
+}
+
+TEST_F(ServicesTest, ArchiveThreadDoesNotInferAmbiguousParentsAndKeepsFilteredHeaders) {
+  auto root = messages->CreateMessage("echo.one", Request("root"), "A");
+  ASSERT_TRUE(root);
+  auto request = Request("reply");
+  request.in_reply_to = root->id;
+  auto child = messages->CreateMessage("echo.one", request, "B");
+  ASSERT_TRUE(child);
+  {
+    auto access = storage::JamAccess::Open(*catalog, "echo.one", true,
+                                           std::chrono::steady_clock::now() + std::chrono::seconds(1));
+    ASSERT_TRUE(access);
+    msgapi::JamMessage duplicate;
+    duplicate.SetMsgId(root->ftn_message_id);
+    duplicate.SetSenderName("Duplicate");
+    duplicate.SetText("Unrelated content");
+    ASSERT_EQ((*access)->messages().AddMessage(duplicate), msgapi::JamError::kSuccess);
+    const auto index = test::ReadFile(temp.path() / "different-file.jdx");
+    const auto offset = msgapi::jam_wire::Get32(reinterpret_cast<const uint8_t*>(index.data()) + 12);
+    std::array<uint8_t, 4> bytes{};
+    ASSERT_EQ(pwrite((*access)->files().descriptors[0], bytes.data(), bytes.size(), offset + 24), 4);
+  }
+  domain::PersonalMessageFilter filter;
+  filter.id = "00000000-0000-0000-0000-000000000001";
+  filter.subject = "Тема";
+  ASSERT_TRUE(messages->ReplacePersonalFilters("A", 0, "hide", {filter}));
+  auto thread = messages->GetArchiveThread("echo.one", child->id, "A");
+  ASSERT_TRUE(thread);
+  EXPECT_EQ(thread->total, 1);
+  ASSERT_EQ(thread->messages.size(), 1);
+  EXPECT_EQ(thread->messages[0].id, child->id);
+  EXPECT_TRUE(thread->messages[0].body.empty());
+  ASSERT_TRUE(thread->messages[0].personal_collapse);
+  EXPECT_EQ(thread->messages[0].personal_collapse->rules.size(), 1u);
+  EXPECT_FALSE(thread->messages[0].is_read);
+  auto history = metadata->GetHistory("A");
+  ASSERT_TRUE(history);
+  EXPECT_TRUE(history->empty());
+}
+
+TEST_F(ServicesTest, ArchiveSearchContinuesAcrossAreasAndPreservesReadingState) {
+  for (auto area : {"echo.one", "echo.two"})
+    for (int i = 0; i < 3; ++i) {
+      auto request = Request(std::string(area) == "echo.one" ? "one" + std::to_string(i) : "two" + std::to_string(i));
+      request.body = "before " + std::string(400, 'x') + " Ёжик Hовый .*[a] after";
+      ASSERT_TRUE(messages->CreateMessage(area, request, "A"));
+    }
+  messages->SetArchiveScanBudgetForTesting(2);
+  domain::ArchiveSearchRequest request;
+  request.conferences = {"echo.two", "echo.one"};
+  request.query = "ёжик";
+  request.limit = 2;
+  std::set<std::pair<std::string, std::string>> seen;
+  int scans = 0;
+  for (;;) {
+    auto result = messages->SearchArchive(request, "A");
+    ASSERT_TRUE(result) << result.error().message;
+    if (result->incomplete_reason == "scan_budget") {
+      EXPECT_TRUE(result->results.empty());
+      ++scans;
+    }
+    for (const auto& item : result->results) {
+      EXPECT_TRUE(seen.emplace(item.conference, item.message.id).second);
+      EXPECT_NE(item.snippet.find("Ёжик"), std::string::npos);
+      EXPECT_TRUE(item.message.body.empty());
+      EXPECT_FALSE(item.message.is_read);
+      auto source = messages->ReadArchiveMessage(item.conference, item.message.id, "A", 0, 65536);
+      ASSERT_TRUE(source);
+      EXPECT_NE(source->message.body.find("Ёжик"), std::string::npos);
+    }
+    if (result->complete)
+      break;
+    ASSERT_FALSE(result->next_cursor.empty());
+    request.cursor = result->next_cursor;
+  }
+  EXPECT_GT(scans, 0);
+  EXPECT_EQ(seen.size(), 6u);
+  for (auto area : request.conferences) {
+    auto count = conferences->GetConference(area, "A");
+    ASSERT_TRUE(count);
+    EXPECT_EQ(count->unread_count, 3);
+  }
+  auto history = metadata->GetHistory("A");
+  ASSERT_TRUE(history);
+  EXPECT_TRUE(history->empty());
+  request.cursor.clear();
+  request.query = "Новый";
+  messages->SetArchiveScanBudgetForTesting(100000);
+  auto cp866 = messages->SearchArchive(request, "A");
+  ASSERT_TRUE(cp866);
+  EXPECT_EQ(cp866->results.size(), 2u);
+  request.query = ".*[a]";
+  auto literal = messages->SearchArchive(request, "A");
+  ASSERT_TRUE(literal);
+  EXPECT_EQ(literal->results.size(), 2u);
+  request.scope = 1;
+  auto headers = messages->SearchArchive(request, "A");
+  ASSERT_TRUE(headers);
+  EXPECT_TRUE(headers->results.empty());
+  EXPECT_TRUE(headers->complete);
+}
+TEST_F(ServicesTest, ArchiveSearchRejectsStaleForeignAndChangedParameterCursors) {
+  for (int i = 0; i < 3; ++i)
+    ASSERT_TRUE(messages->CreateMessage("echo.one", Request(std::to_string(i)), "A"));
+  messages->SetArchiveScanBudgetForTesting(1);
+  domain::ArchiveSearchRequest request;
+  request.conferences = {"echo.one"};
+  request.query = "Привет";
+  auto first = messages->SearchArchive(request, "A");
+  ASSERT_TRUE(first);
+  request.cursor = first->next_cursor;
+  auto foreign = messages->SearchArchive(request, "B");
+  ASSERT_FALSE(foreign);
+  EXPECT_EQ(foreign.error().code, domain::ErrorCode::kPrecondition);
+  auto changed = request;
+  changed.query = "other";
+  EXPECT_FALSE(messages->SearchArchive(changed, "A"));
+  ASSERT_TRUE(messages->CreateMessage("echo.one", Request("append"), "A"));
+  auto stale = messages->SearchArchive(request, "A");
+  ASSERT_FALSE(stale);
+  EXPECT_EQ(stale.error().code, domain::ErrorCode::kPrecondition);
+  request.cursor.clear();
+  first = messages->SearchArchive(request, "A");
+  ASSERT_TRUE(first);
+  request.cursor = first->next_cursor;
+  domain::PersonalMessageFilter filter;
+  filter.id = "00000000-0000-0000-0000-000000000001";
+  filter.subject = "Тема";
+  ASSERT_TRUE(messages->ReplacePersonalFilters("A", 0, "change-filter", {filter}));
+  EXPECT_FALSE(messages->SearchArchive(request, "A"));
+  service::MessageService restarted(catalog, metadata, test::EchoAccess(*catalog, temp.path()));
+  EXPECT_FALSE(restarted.SearchArchive(request, "A"));
+}
+TEST_F(ServicesTest, ArchiveSearchPeriodFiltersLimitsAndHiddenSnippetsAreExplicit) {
+  auto created = messages->CreateMessage("echo.one", Request(), "A");
+  ASSERT_TRUE(created);
+  domain::ArchiveSearchRequest request;
+  request.conferences = {"echo.one"};
+  request.from = 0;
+  request.to = INT64_MAX;
+  auto all = messages->SearchArchive(request, "A");
+  ASSERT_TRUE(all);
+  EXPECT_EQ(all->results.size(), 1u);
+  const auto seconds = std::time(nullptr);
+  request.to = seconds - 10;
+  auto old = messages->SearchArchive(request, "A");
+  ASSERT_TRUE(old);
+  EXPECT_TRUE(old->results.empty());
+  request.from = 5;
+  request.to = 5;
+  EXPECT_FALSE(messages->SearchArchive(request, "A"));
+  request.from.reset();
+  request.to.reset();
+  EXPECT_FALSE(messages->SearchArchive(request, "A"));
+  request.query = "Привет";
+  domain::PersonalMessageFilter filter;
+  filter.id = "00000000-0000-0000-0000-000000000001";
+  filter.subject = "Тема";
+  ASSERT_TRUE(messages->ReplacePersonalFilters("A", 0, "hide", {filter}));
+  auto hidden = messages->SearchArchive(request, "A");
+  ASSERT_TRUE(hidden);
+  ASSERT_EQ(hidden->results.size(), 1u);
+  EXPECT_TRUE(hidden->results[0].snippet.empty());
+  EXPECT_TRUE(hidden->results[0].matches.empty());
+  EXPECT_TRUE(hidden->results[0].message.body.empty());
+  request.conferences.push_back("private");
+  auto denied = messages->SearchArchive(request, "A");
+  ASSERT_FALSE(denied);
+  EXPECT_EQ(denied.error().code, domain::ErrorCode::kForbidden);
+  request.conferences = {"echo.one"};
+  ASSERT_TRUE(messages->CreateMessage("echo.one", Request("second"), "A"));
+  messages->SetArchiveScanBudgetForTesting(100, 1);
+  auto limit = messages->SearchArchive(request, "A");
+  ASSERT_FALSE(limit);
+  EXPECT_EQ(limit.error().code, domain::ErrorCode::kResource);
+  messages->SetArchiveScanBudgetForTesting(1, 100000, 0);
+  auto partial = messages->SearchArchive(request, "A");
+  ASSERT_TRUE(partial);
+  request.cursor = partial->next_cursor;
+  auto expired = messages->SearchArchive(request, "A");
+  ASSERT_FALSE(expired);
+  EXPECT_EQ(expired.error().code, domain::ErrorCode::kPrecondition);
+}
+
+TEST_F(ServicesTest, ArchiveSearchChecksCancellationGenerationAndCurrentPermissions) {
+  for (int i = 0; i < 3; ++i)
+    ASSERT_TRUE(messages->CreateMessage("echo.one", Request(std::to_string(i)), "A"));
+  messages->SetArchiveScanBudgetForTesting(1);
+  domain::ArchiveSearchRequest request;
+  request.conferences = {"echo.one"};
+  request.query = "Привет";
+  auto first = messages->SearchArchive(request, "A");
+  ASSERT_TRUE(first);
+  request.cursor = first->next_cursor;
+  {
+    std::stop_source cancellation;
+    cancellation.request_stop();
+    service::RequestBudget budget{std::chrono::steady_clock::now() + std::chrono::seconds(1), cancellation.get_token()};
+    service::RequestScope scope(budget);
+    auto cancelled = messages->SearchArchive(request, "A");
+    ASSERT_FALSE(cancelled);
+    EXPECT_EQ(cancelled.error().code, domain::ErrorCode::kCancelled);
+  }
+  request.cursor.clear();
+  first = messages->SearchArchive(request, "A");
+  ASSERT_TRUE(first);
+  request.cursor = first->next_cursor;
+  {
+    auto access = storage::JamAccess::Open(*catalog, "echo.one", true,
+                                           std::chrono::steady_clock::now() + std::chrono::seconds(1));
+    ASSERT_TRUE(access);
+    std::array<uint8_t, 4> bytes{};
+    msgapi::jam_wire::Put32(bytes.data(), 124);
+    ASSERT_EQ(pwrite((*access)->files().descriptors[0], bytes.data(), bytes.size(), 4), 4);
+  }
+  auto packed = messages->SearchArchive(request, "A");
+  ASSERT_FALSE(packed);
+  EXPECT_EQ(packed.error().code, domain::ErrorCode::kPrecondition);
+  service::HptConfiguration configuration;
+  configuration.echoes = {{"echo.one", temp.path() / "different-file", {{"2:5015/1.1", {true, true}}}}};
+  auto policy = service::EchoAccess::Build(configuration, *catalog);
+  ASSERT_TRUE(policy);
+  service::MessageService restricted(catalog, metadata, *policy);
+  request.cursor.clear();
+  request.limit = 1;
+  first = restricted.SearchArchive(request, "A");
+  ASSERT_TRUE(first);
+  request.cursor = first->next_cursor;
+  ASSERT_TRUE(metadata->SaveProfile("A", domain::Profile{"Other", "2:5015/9.9", "", ""}));
+  auto denied = restricted.SearchArchive(request, "A");
+  ASSERT_FALSE(denied);
+  EXPECT_EQ(denied.error().code, domain::ErrorCode::kForbidden);
+}
+
+TEST_F(ServicesTest, PreviewHasNoWritesAndDigestBindsNormalizedPublication) {
+  auto request = Request();
+  request.body = "Новый текст";
+  const auto header = test::ReadFile(temp.path() / "different-file.jhr");
+  auto preview = messages->CreateMessage("echo.one", request, "A", nullptr, true);
+  ASSERT_TRUE(preview);
+  ASSERT_TRUE(preview->preview);
+  const auto& value = *preview->preview;
+  EXPECT_EQ(value.from_address, "2:5015/1.1");
+  EXPECT_EQ(value.to_name, "All");
+  EXPECT_TRUE(value.public_message);
+  EXPECT_NE(value.body.find("Hовый текст"), std::string::npos);
+  EXPECT_EQ(value.digest.size(), 64u);
+  EXPECT_EQ(test::ReadFile(temp.path() / "different-file.jhr"), header);
+  auto operation = metadata->FindOperation("A", request.operation_id);
+  ASSERT_TRUE(operation);
+  EXPECT_FALSE(*operation);
+  request.expected_preview_digest = value.digest;
+  auto changed = request;
+  changed.body = "Other";
+  auto rejected = messages->CreateMessage("echo.one", changed, "A");
+  ASSERT_FALSE(rejected);
+  EXPECT_EQ(rejected.error().code, domain::ErrorCode::kPrecondition);
+  EXPECT_EQ(test::ReadFile(temp.path() / "different-file.jhr"), header);
+  auto sent = messages->CreateMessage("echo.one", request, "A");
+  ASSERT_TRUE(sent);
+  auto read = messages->PeekMessage("echo.one", sent->id, "A");
+  ASSERT_TRUE(read);
+  EXPECT_EQ(read->body, value.body);
+  service::MessageService restarted(catalog, metadata, test::EchoAccess(*catalog, temp.path()));
+  auto repeated = restarted.CreateMessage("echo.one", request, "A");
+  ASSERT_TRUE(repeated);
+  EXPECT_EQ(repeated->id, sent->id);
+  auto reused_preview = messages->CreateMessage("echo.one", request, "A", nullptr, true);
+  ASSERT_FALSE(reused_preview);
+  EXPECT_EQ(reused_preview.error().code, domain::ErrorCode::kConflict);
+}
+TEST_F(ServicesTest, PreviewRejectsChangedProfileEncodingParentAndUnrepresentableText) {
+  auto root = messages->CreateMessage("echo.one", Request("root"), "A");
+  ASSERT_TRUE(root);
+  auto request = Request("reply");
+  request.in_reply_to = root->id;
+  auto preview = messages->CreateMessage("echo.one", request, "B", nullptr, true);
+  ASSERT_TRUE(preview);
+  ASSERT_TRUE(preview->preview);
+  EXPECT_EQ(preview->preview->to_name, "Алексей");
+  request.expected_preview_digest = preview->preview->digest;
+  ASSERT_TRUE(metadata->SaveProfile("B", domain::Profile{"New name", "2:5015/1.2", "", ""}));
+  auto changed = messages->CreateMessage("echo.one", request, "B");
+  ASSERT_FALSE(changed);
+  EXPECT_EQ(changed.error().code, domain::ErrorCode::kPrecondition);
+  auto invalid = Request("bad");
+  invalid.body = "🌍";
+  EXPECT_FALSE(messages->CreateMessage("echo.one", invalid, "A", nullptr, true));
+  auto plain = Request("encoding");
+  plain.body = "Русский";
+  preview = messages->CreateMessage("echo.one", plain, "A", nullptr, true);
+  ASSERT_TRUE(preview);
+  plain.expected_preview_digest = preview->preview->digest;
+  service::MessageService koi(catalog, metadata, test::EchoAccess(*catalog, temp.path()), "KOI8-R");
+  auto encoding_changed = koi.CreateMessage("echo.one", plain, "A");
+  ASSERT_FALSE(encoding_changed);
+  EXPECT_EQ(encoding_changed.error().code, domain::ErrorCode::kPrecondition);
+  {
+    auto access = storage::JamAccess::Open(*catalog, "echo.one", true,
+                                           std::chrono::steady_clock::now() + std::chrono::seconds(1));
+    ASSERT_TRUE(access);
+    ASSERT_EQ((*access)->messages().DeleteMessage(42), msgapi::JamError::kSuccess);
+  }
+  EXPECT_FALSE(messages->CreateMessage("echo.one", request, "B"));
+}
+
+TEST_F(ServicesTest, PreviewRejectsChangedFtnReplyIdentityEvenWhenRecipientIsUnchanged) {
+  auto root = messages->CreateMessage("echo.one", Request("root"), "A");
+  ASSERT_TRUE(root);
+  auto request = Request("reply");
+  request.in_reply_to = root->id;
+  auto preview = messages->CreateMessage("echo.one", request, "B", nullptr, true);
+  ASSERT_TRUE(preview);
+  ASSERT_TRUE(preview->preview);
+  request.expected_preview_digest = preview->preview->digest;
+  const char replacement = root->ftn_message_id.back() == '9' ? '8' : '9';
+  RewriteField(msgapi::JamSubFieldType::kMsgId, false, replacement);
+  auto changed = messages->CreateMessage("echo.one", request, "B");
+  ASSERT_FALSE(changed);
+  EXPECT_EQ(changed.error().code, domain::ErrorCode::kPrecondition);
+  auto count = conferences->GetConference("echo.one", "A");
+  ASSERT_TRUE(count);
+  EXPECT_EQ(count->total_count, 1);
+}
+
+TEST_F(ServicesTest, LargeExistingBodiesKeepExactStatisticsAndSeparateReadAndWriteBudgets) {
+  auto original = messages->CreateMessage("echo.one", Request("large-existing"), "A");
+  ASSERT_TRUE(original);
+  const auto reference = original->id;
+  const auto headers = test::ReadFile(temp.path() / "different-file.jhr");
+  const auto index = test::ReadFile(temp.path() / "different-file.jdx");
+  const auto offset = test::Wire32(index, 4);
+  const auto text_offset = test::Wire32(headers, offset + 60);
+  for (const uint32_t size : {1048576u, 1048577u, 7150806u, 10485760u, 10485761u}) {
+    {
+      std::fstream output(temp.path() / "different-file.jhr", std::ios::binary | std::ios::in | std::ios::out);
+      std::array<uint8_t, 4> length{};
+      msgapi::jam_wire::Put32(length.data(), size);
+      output.seekp(offset + 64);
+      output.write(reinterpret_cast<const char*>(length.data()), 4);
+    }
+    {
+      std::ofstream output(temp.path() / "different-file.jdt", std::ios::binary);
+      output << std::string(text_offset, 'x') << std::string(size, 'a');
+    }
+    auto conference = conferences->GetConference("echo.one", "B");
+    ASSERT_TRUE(conference) << size;
+    EXPECT_EQ(conference->total_count, 1);
+    EXPECT_EQ(conference->unread_count, 1);
+    auto list = messages->GetMessages("echo.one", {}, "oldest", "B");
+    ASSERT_TRUE(list) << size;
+    EXPECT_EQ(list->total, 1);
+    if (size > 4u * 1024 * 1024) {
+      auto search = messages->FindMessage("echo.one", "missing", 2, "oldest", "", false, "B");
+      ASSERT_FALSE(search);
+      EXPECT_EQ(search.error().code, domain::ErrorCode::kResource);
+      domain::ArchiveSearchRequest archive;
+      archive.conferences = {"echo.one"};
+      archive.query = "missing";
+      auto archived = messages->SearchArchive(archive, "B");
+      ASSERT_FALSE(archived);
+      EXPECT_EQ(archived.error().code, domain::ErrorCode::kResource);
+      service::UueService uue(catalog, metadata, test::EchoAccess(*catalog, temp.path()));
+      if (size > 10u * 1024 * 1024) {
+        auto parts = uue.Search("echo.one", "", 0, 20, "B");
+        ASSERT_FALSE(parts);
+        EXPECT_EQ(parts.error().code, domain::ErrorCode::kResource);
+      }
+    }
+    auto detail = messages->GetMessage("echo.one", reference, "B");
+    if (size <= 10u * 1024 * 1024) {
+      ASSERT_TRUE(detail) << size;
+      EXPECT_EQ(detail->body.size(), size);
+      ASSERT_TRUE(messages->MarkAsUnread("echo.one", reference, "B"));
+    } else {
+      ASSERT_FALSE(detail);
+      EXPECT_EQ(detail.error().code, domain::ErrorCode::kResource);
+      EXPECT_EQ(conferences->GetConference("echo.one", "B")->unread_count, 1);
+    }
+  }
+  auto too_large = Request("still-bounded-publication");
+  too_large.body.assign(1048577, 'x');
+  EXPECT_FALSE(messages->CreateMessage("echo.two", too_large, "A"));
+}
+
+TEST_F(ServicesTest, CatalogRetainsBrokenAreaWithoutInventingStatistics) {
+  ASSERT_TRUE(messages->CreateMessage("echo.two", Request("healthy"), "A"));
+  ASSERT_TRUE(metadata->AddBookmark("A", "echo.one"));
+  std::ofstream(temp.path() / "different-file.jdx", std::ios::binary).put('x');
+  EXPECT_FALSE(conferences->GetConference("echo.one", "A"));
+  for (auto sort : {"name", "date", "unread"}) {
+    auto page = conferences->GetConferences({0, 100}, {}, "A", sort);
+    ASSERT_TRUE(page);
+    EXPECT_EQ(page->total, 2);
+    ASSERT_EQ(page->conferences.size(), 2u);
+    for (const auto& area : page->conferences) {
+      if (area.id == "echo.one") {
+        EXPECT_FALSE(area.statistics_known);
+        EXPECT_FALSE(area.unsupported_format);
+        EXPECT_TRUE(area.is_bookmarked);
+        EXPECT_TRUE(area.last_message_date.empty());
+      } else {
+        EXPECT_TRUE(area.statistics_known);
+        EXPECT_EQ(area.total_count, 1);
+      }
+    }
+    if (std::string_view(sort) != "name")
+      EXPECT_EQ(page->conferences.front().id, "echo.two");
+    auto first = conferences->GetConferences({0, 1}, {}, "A", sort);
+    auto second = conferences->GetConferences({1, 1}, {}, "A", sort);
+    ASSERT_TRUE(first);
+    ASSERT_TRUE(second);
+    EXPECT_TRUE(first->has_more);
+    EXPECT_FALSE(second->has_more);
+    EXPECT_NE(first->conferences.front().id, second->conferences.front().id);
+  }
+}
+
+TEST_F(ServicesTest, ThousandAreaCatalogAndArchiveSearchHaveBoundedDescriptors) {
+  ASSERT_TRUE(messages->CreateMessage("echo.one", Request("source"), "A"));
+  std::vector<EchoAreaConfig> areas;
+  for (int i = 0; i < 1000; ++i) {
+    const auto name = "area" + std::to_string(i);
+    for (auto extension : {".jhr", ".jdt", ".jdx"})
+      std::filesystem::copy_file(temp.path() / (std::string("different-file") + extension),
+                                 temp.path() / (name + extension));
+    auto area = catalog->areas().at("echo.one").config;
+    area.name = area.filename = name;
+    areas.push_back(area);
+  }
+  struct rlimit saved{};
+  ASSERT_EQ(getrlimit(RLIMIT_NOFILE, &saved), 0);
+  struct Restore {
+    struct rlimit value;
+    ~Restore() {
+      setrlimit(RLIMIT_NOFILE, &value);
+    }
+  } restore{saved};
+  auto limit = saved;
+  limit.rlim_cur = std::min<rlim_t>(1024, saved.rlim_cur);
+  ASSERT_EQ(setrlimit(RLIMIT_NOFILE, &limit), 0);
+  auto count_fds = [] {
+    int count = 0;
+    for (int fd = 0; fd < 1024; ++fd)
+      if (fcntl(fd, F_GETFD) >= 0)
+        ++count;
+    return count;
+  };
+  const int before = count_fds();
+  auto begin = std::chrono::steady_clock::now();
+  auto built = storage::JamCatalog::Build(temp.path(), areas);
+  ASSERT_TRUE(built);
+  auto many = std::shared_ptr<storage::JamCatalog>(std::move(*built));
+  const auto policy = test::EchoAccess(*many, temp.path());
+  service::ConferenceService listing(many, metadata, policy);
+  service::MessageService archive(many, metadata, policy);
+  size_t count = 0;
+  for (int offset = 0; offset < 1000; offset += 100) {
+    auto page = listing.GetConferences({offset, 100}, {}, "B");
+    ASSERT_TRUE(page);
+    count += page->conferences.size();
+    EXPECT_EQ(page->total, 1000);
+    EXPECT_EQ(count_fds(), before + 1);
+  }
+  EXPECT_EQ(count, 1000u);
+  const auto catalog_ms =
+      std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - begin).count();
+  begin = std::chrono::steady_clock::now();
+  count = 0;
+  for (int offset = 0; offset < 1000; offset += 20) {
+    domain::ArchiveSearchRequest request;
+    request.query = "Тема";
+    request.scope = 1;
+    request.limit = 10;
+    for (int i = offset; i < offset + 20; ++i)
+      request.conferences.push_back("area" + std::to_string(i));
+    for (;;) {
+      auto page = archive.SearchArchive(request, "B");
+      ASSERT_TRUE(page);
+      count += page->results.size();
+      EXPECT_EQ(count_fds(), before + 1);
+      if (page->complete)
+        break;
+      request.cursor = page->next_cursor;
+    }
+  }
+  EXPECT_EQ(count, 1000u);
+  const auto search_ms =
+      std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - begin).count();
+  std::cout << "1000 areas: catalog_ms=" << catalog_ms << " archive_ms=" << search_ms
+            << " idle_fd_delta=" << count_fds() - before << '\n';
+  for (const auto& [id, area] : many->areas())
+    EXPECT_EQ(area.files->descriptors[0], -1);
 }

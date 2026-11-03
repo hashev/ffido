@@ -14,6 +14,27 @@ import 'package:fido/api/generated/ffido/v1/ffido.pbgrpc.dart' as wire;
 
 class TestService extends wire.FfidoServiceBase {
   @override
+  Future<wire.SearchArchiveMessagesResponse> searchArchiveMessages(
+    grpc.ServiceCall c,
+    wire.SearchArchiveMessagesRequest r,
+  ) async => throw const grpc.GrpcError.unimplemented();
+  @override
+  Future<wire.ReadArchiveMessageResponse> readArchiveMessage(
+    grpc.ServiceCall c,
+    wire.ReadArchiveMessageRequest r,
+  ) async => throw const grpc.GrpcError.unimplemented();
+  @override
+  Future<wire.ListMessagesResponse> getArchiveThread(
+    grpc.ServiceCall c,
+    wire.GetArchiveThreadRequest r,
+  ) async => throw const grpc.GrpcError.unimplemented();
+  @override
+  Future<wire.MessagePreview> previewMessage(
+    grpc.ServiceCall c,
+    wire.CreateMessageRequest r,
+  ) async => throw const grpc.GrpcError.unimplemented();
+
+  @override
   Future<wire.PersonalMessageFilterSet> getPersonalMessageFilters(
     grpc.ServiceCall c,
     Empty r,

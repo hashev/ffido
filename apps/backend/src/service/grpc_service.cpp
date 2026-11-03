@@ -164,7 +164,7 @@ private:
   std::thread thread_;
 };
 }  // namespace
-grpc::Status GrpcService::Dispatch(grpc::ServerContext* context,
+grpc::Status GrpcService::Dispatch(grpc::ServerContext* context, google::protobuf::MessageLite* response,
                                    const std::function<Result(const storage::AuthenticatedUser&)>& function) {
   try {
     const auto now = std::chrono::system_clock::now();
@@ -201,6 +201,10 @@ grpc::Status GrpcService::Dispatch(grpc::ServerContext* context,
       return {std::chrono::steady_clock::now() >= budget.deadline ? grpc::StatusCode::DEADLINE_EXCEEDED
                                                                   : grpc::StatusCode::CANCELLED,
               "Request no longer active"};
+    if (result && response->ByteSizeLong() > 32u * 1024 * 1024) {
+      response->Clear();
+      return {grpc::StatusCode::RESOURCE_EXHAUSTED, "Response exceeds resource limit"};
+    }
     return result ? grpc::Status::OK : Error(context, result.error());
   } catch (const std::exception&) {
     return {grpc::StatusCode::INTERNAL, "Request processing failed"};
@@ -208,7 +212,7 @@ grpc::Status GrpcService::Dispatch(grpc::ServerContext* context,
 }
 grpc::Status GrpcService::ListConferences(grpc::ServerContext* context, const wire::ListConferencesRequest* request,
                                           wire::ListConferencesResponse* response) {
-  return Dispatch(context, [&](const auto& user) -> Result {
+  return Dispatch(context, response, [&](const auto& user) -> Result {
     auto valid = ValidatePage(request->page());
     if (!valid)
       return valid;
@@ -238,7 +242,7 @@ grpc::Status GrpcService::ListConferences(grpc::ServerContext* context, const wi
 }
 grpc::Status GrpcService::GetConference(grpc::ServerContext* context, const wire::GetConferenceRequest* request,
                                         wire::Conference* response) {
-  return Dispatch(context, [&](const auto& user) -> Result {
+  return Dispatch(context, response, [&](const auto& user) -> Result {
     auto result = conferences_.GetConference(request->conference_id(), user.id);
     if (!result)
       return std::unexpected(result.error());
@@ -248,7 +252,7 @@ grpc::Status GrpcService::GetConference(grpc::ServerContext* context, const wire
 }
 grpc::Status GrpcService::ListMessages(grpc::ServerContext* context, const wire::ListMessagesRequest* request,
                                        wire::ListMessagesResponse* response) {
-  return Dispatch(context, [&](const auto& user) -> Result {
+  return Dispatch(context, response, [&](const auto& user) -> Result {
     auto valid = ValidatePage(request->page());
     if (!valid)
       return valid;
@@ -278,7 +282,7 @@ grpc::Status GrpcService::ListMessages(grpc::ServerContext* context, const wire:
 }
 grpc::Status GrpcService::FindMessage(grpc::ServerContext* context, const wire::FindMessageRequest* request,
                                       wire::FindMessageResponse* response) {
-  return Dispatch(context, [&](const auto& user) -> Result {
+  return Dispatch(context, response, [&](const auto& user) -> Result {
     if (request->sort() != wire::MESSAGE_SORT_DATE_ASCENDING && request->sort() != wire::MESSAGE_SORT_DATE_DESCENDING)
       return std::unexpected(domain::ApiError::Validation("Unknown search sort"));
     auto result = messages_.FindMessage(request->conference_id(), request->query(), static_cast<int>(request->scope()),
@@ -300,7 +304,7 @@ grpc::Status GrpcService::FindMessage(grpc::ServerContext* context, const wire::
 }
 grpc::Status GrpcService::GetPersonalMessageFilters(grpc::ServerContext* context, const google::protobuf::Empty*,
                                                     wire::PersonalMessageFilterSet* response) {
-  return Dispatch(context, [&](const auto& user) -> Result {
+  return Dispatch(context, response, [&](const auto& user) -> Result {
     auto set = messages_.GetPersonalFilters(user.id);
     if (!set)
       return std::unexpected(set.error());
@@ -321,7 +325,7 @@ grpc::Status GrpcService::GetPersonalMessageFilters(grpc::ServerContext* context
 grpc::Status GrpcService::ReplacePersonalMessageFilters(grpc::ServerContext* context,
                                                         const wire::ReplacePersonalMessageFiltersRequest* request,
                                                         wire::ReplacePersonalMessageFiltersResponse* response) {
-  return Dispatch(context, [&](const auto& user) -> Result {
+  return Dispatch(context, response, [&](const auto& user) -> Result {
     if (request->ByteSizeLong() > 256 * 1024)
       return std::unexpected(domain::ApiError::Validation("Filter request too large"));
     std::vector<domain::PersonalMessageFilter> rules;
@@ -339,7 +343,7 @@ grpc::Status GrpcService::ReplacePersonalMessageFilters(grpc::ServerContext* con
 grpc::Status GrpcService::GetMessagePresentation(grpc::ServerContext* context,
                                                  const wire::GetMessagePresentationRequest* request,
                                                  wire::MessagePresentation* response) {
-  return Dispatch(context, [&](const auto& user) -> Result {
+  return Dispatch(context, response, [&](const auto& user) -> Result {
     auto result = messages_.GetPresentation(request->message().conference_id(), request->message().message_id(),
                                             user.id, request->reveal(), request->search_query(),
                                             static_cast<int>(request->search_scope()));
@@ -373,7 +377,7 @@ grpc::Status GrpcService::GetMessagePresentation(grpc::ServerContext* context,
 }
 grpc::Status GrpcService::GetMessageTechnicalData(grpc::ServerContext* context, const wire::MessageReference* request,
                                                   wire::MessageTechnicalData* response) {
-  return Dispatch(context, [&](const auto& user) -> Result {
+  return Dispatch(context, response, [&](const auto& user) -> Result {
     auto result = messages_.GetMessageTechnicalData(request->conference_id(), request->message_id(), user.id);
     if (!result)
       return std::unexpected(result.error());
@@ -393,9 +397,82 @@ grpc::Status GrpcService::GetMessageTechnicalData(grpc::ServerContext* context, 
     return {};
   });
 }
+grpc::Status GrpcService::SearchArchiveMessages(grpc::ServerContext* context,
+                                                const wire::SearchArchiveMessagesRequest* request,
+                                                wire::SearchArchiveMessagesResponse* response) {
+  return Dispatch(context, response, [&](const auto& user) -> Result {
+    domain::ArchiveSearchRequest value;
+    value.conferences.assign(request->conference_ids().begin(), request->conference_ids().end());
+    value.query = request->query();
+    value.cursor = request->cursor();
+    value.scope = static_cast<int>(request->scope());
+    value.sort = static_cast<int>(request->sort());
+    value.limit = request->limit();
+    for (const auto* timestamp :
+         {request->has_from() ? &request->from() : nullptr, request->has_to() ? &request->to() : nullptr})
+      if (timestamp && (!google::protobuf::util::TimeUtil::IsTimestampValid(*timestamp) || timestamp->nanos() != 0))
+        return std::unexpected(domain::ApiError::Validation("Archive period requires valid whole UTC seconds"));
+    if (request->has_from())
+      value.from = request->from().seconds();
+    if (request->has_to())
+      value.to = request->to().seconds();
+    auto result = messages_.SearchArchive(value, user.id);
+    if (!result)
+      return std::unexpected(result.error());
+    response->set_complete(result->complete);
+    response->set_incomplete_reason(result->incomplete_reason);
+    response->set_next_cursor(result->next_cursor);
+    for (const auto& item : result->results) {
+      auto* output = response->add_results();
+      Map(item.message, item.conference, output->mutable_message());
+      output->set_snippet(item.snippet);
+      for (const auto& match : item.matches) {
+        auto* range = output->add_matches();
+        range->set_field(static_cast<wire::MessageSearchField>(match.field));
+        range->set_start_utf16(match.start_utf16);
+        range->set_length_utf16(match.length_utf16);
+      }
+    }
+    return {};
+  });
+}
+grpc::Status GrpcService::ReadArchiveMessage(grpc::ServerContext* context,
+                                             const wire::ReadArchiveMessageRequest* request,
+                                             wire::ReadArchiveMessageResponse* response) {
+  return Dispatch(context, response, [&](const auto& user) -> Result {
+    auto result =
+        messages_.ReadArchiveMessage(request->message().conference_id(), request->message().message_id(), user.id,
+                                     request->body_offset(), request->body_limit(), request->reveal());
+    if (!result)
+      return std::unexpected(result.error());
+    Map(result->message, request->message().conference_id(), response->mutable_message());
+    response->set_body_offset(result->body_offset);
+    response->set_next_offset(result->next_offset);
+    response->set_complete(result->complete);
+    response->set_collapsed(result->collapsed);
+    return {};
+  });
+}
+grpc::Status GrpcService::GetArchiveThread(grpc::ServerContext* context, const wire::GetArchiveThreadRequest* request,
+                                           wire::ListMessagesResponse* response) {
+  return Dispatch(context, response, [&](const auto& user) -> Result {
+    auto valid = ValidatePage(request->page());
+    if (!valid)
+      return valid;
+    auto result = messages_.GetArchiveThread(request->message().conference_id(), request->message().message_id(),
+                                             user.id, Page(request->page()));
+    if (!result)
+      return std::unexpected(result.error());
+    for (const auto& message : result->messages)
+      Map(message, request->message().conference_id(), response->add_messages());
+    response->set_total(result->total);
+    response->set_has_more(result->has_more);
+    return {};
+  });
+}
 grpc::Status GrpcService::GetMessage(grpc::ServerContext* context, const wire::MessageReference* request,
                                      wire::Message* response) {
-  return Dispatch(context, [&](const auto& user) -> Result {
+  return Dispatch(context, response, [&](const auto& user) -> Result {
     auto result = messages_.GetMessage(request->conference_id(), request->message_id(), user.id);
     if (!result)
       return std::unexpected(result.error());
@@ -403,11 +480,52 @@ grpc::Status GrpcService::GetMessage(grpc::ServerContext* context, const wire::M
     return {};
   });
 }
-grpc::Status GrpcService::CreateMessage(grpc::ServerContext* context, const wire::CreateMessageRequest* request,
-                                        wire::CreateMessageResponse* response) {
-  return Dispatch(context, [&](const auto& user) -> Result {
+grpc::Status GrpcService::PreviewMessage(grpc::ServerContext* context, const wire::CreateMessageRequest* request,
+                                         wire::MessagePreview* response) {
+  return Dispatch(context, response, [&](const auto& user) -> Result {
     domain::CreateMessageRequest value;
     value.operation_id = request->operation_id();
+    value.to_name = request->to_name();
+    value.to_address = request->to_address();
+    value.subject = request->subject();
+    value.body = request->body();
+    value.in_reply_to = request->in_reply_to();
+    if (request->has_footer())
+      value.footer = domain::MessageFooter{request->footer().tagline(), request->footer().origin()};
+    // Preview never reuses an operation that may already have a durable intent.
+    auto existing = metadata_->FindOperation(user.id, value.operation_id);
+    if (!existing)
+      return std::unexpected(existing.error());
+    if (*existing)
+      return std::unexpected(domain::ApiError{domain::ErrorCode::kConflict, "Preview requires a new operation ID", {}});
+    auto result = messages_.CreateMessage(request->conference_id(), value, user.id, nullptr, true);
+    if (!result)
+      return std::unexpected(result.error());
+    if (!result->preview)
+      return std::unexpected(domain::ApiError{domain::ErrorCode::kConflict, "Preview operation already exists", {}});
+    const auto& p = *result->preview;
+    response->set_conference_id(p.conference);
+    response->set_from_name(p.from_name);
+    response->set_from_address(p.from_address);
+    response->set_to_name(p.to_name);
+    response->set_to_address(p.to_address);
+    response->set_subject(p.subject);
+    response->set_body(p.body);
+    response->set_effective_encoding(p.encoding);
+    response->set_wire_body_bytes(p.wire_body_bytes);
+    response->set_preview_digest(p.digest);
+    response->set_kind(static_cast<wire::AreaKind>(p.kind));
+    response->set_public_message(p.public_message);
+    response->set_in_reply_to(p.in_reply_to);
+    return {};
+  });
+}
+grpc::Status GrpcService::CreateMessage(grpc::ServerContext* context, const wire::CreateMessageRequest* request,
+                                        wire::CreateMessageResponse* response) {
+  return Dispatch(context, response, [&](const auto& user) -> Result {
+    domain::CreateMessageRequest value;
+    value.operation_id = request->operation_id();
+    value.expected_preview_digest = request->expected_preview_digest();
     value.to_name = request->to_name();
     value.to_address = request->to_address();
     value.subject = request->subject();
@@ -427,7 +545,7 @@ grpc::Status GrpcService::CreateMessage(grpc::ServerContext* context, const wire
 }
 grpc::Status GrpcService::CreateCrosspost(grpc::ServerContext* context, const wire::CreateCrosspostRequest* request,
                                           wire::CreateCrosspostResponse* response) {
-  return Dispatch(context, [&](const auto& user) -> Result {
+  return Dispatch(context, response, [&](const auto& user) -> Result {
     const auto& source = request->message();
     domain::CreateMessageRequest value{source.operation_id(), source.to_name(), source.to_address(),
                                        source.subject(),      source.body(),    source.in_reply_to()};
@@ -453,7 +571,7 @@ grpc::Status GrpcService::CreateCrosspost(grpc::ServerContext* context, const wi
 grpc::Status GrpcService::MarkConferenceRead(grpc::ServerContext* context,
                                              const wire::MarkConferenceReadRequest* request,
                                              wire::MarkConferenceReadResponse* response) {
-  return Dispatch(context, [&](const auto& user) -> Result {
+  return Dispatch(context, response, [&](const auto& user) -> Result {
     auto result = messages_.MarkConferenceRead(request->conference_id(), request->operation_id(), user.id);
     if (!result)
       return std::unexpected(result.error());
@@ -464,20 +582,20 @@ grpc::Status GrpcService::MarkConferenceRead(grpc::ServerContext* context,
   });
 }
 grpc::Status GrpcService::MarkRead(grpc::ServerContext* context, const wire::MessageReference* request,
-                                   google::protobuf::Empty*) {
-  return Dispatch(context, [&](const auto& user) -> Result {
+                                   google::protobuf::Empty* response) {
+  return Dispatch(context, response, [&](const auto& user) -> Result {
     return messages_.MarkAsRead(request->conference_id(), request->message_id(), user.id);
   });
 }
 grpc::Status GrpcService::MarkUnread(grpc::ServerContext* context, const wire::MessageReference* request,
-                                     google::protobuf::Empty*) {
-  return Dispatch(context, [&](const auto& user) -> Result {
+                                     google::protobuf::Empty* response) {
+  return Dispatch(context, response, [&](const auto& user) -> Result {
     return messages_.MarkAsUnread(request->conference_id(), request->message_id(), user.id);
   });
 }
 grpc::Status GrpcService::GetThread(grpc::ServerContext* context, const wire::GetThreadRequest* request,
                                     wire::ListMessagesResponse* response) {
-  return Dispatch(context, [&](const auto& user) -> Result {
+  return Dispatch(context, response, [&](const auto& user) -> Result {
     auto valid = ValidatePage(request->page());
     if (!valid)
       return valid;
@@ -494,7 +612,7 @@ grpc::Status GrpcService::GetThread(grpc::ServerContext* context, const wire::Ge
 }
 grpc::Status GrpcService::ListBookmarks(grpc::ServerContext* context, const wire::PageRequest* request,
                                         wire::ListBookmarksResponse* response) {
-  return Dispatch(context, [&](const auto& user) -> Result {
+  return Dispatch(context, response, [&](const auto& user) -> Result {
     auto valid = ValidatePage(*request);
     if (!valid)
       return valid;
@@ -528,8 +646,8 @@ grpc::Status GrpcService::ListBookmarks(grpc::ServerContext* context, const wire
   });
 }
 grpc::Status GrpcService::AddBookmark(grpc::ServerContext* context, const wire::GetConferenceRequest* request,
-                                      google::protobuf::Empty*) {
-  return Dispatch(context, [&](const auto& user) -> Result {
+                                      google::protobuf::Empty* response) {
+  return Dispatch(context, response, [&](const auto& user) -> Result {
     auto conference = conferences_.GetConference(request->conference_id(), user.id);
     if (!conference)
       return std::unexpected(conference.error());
@@ -539,8 +657,8 @@ grpc::Status GrpcService::AddBookmark(grpc::ServerContext* context, const wire::
   });
 }
 grpc::Status GrpcService::RemoveBookmark(grpc::ServerContext* context, const wire::GetConferenceRequest* request,
-                                         google::protobuf::Empty*) {
-  return Dispatch(context, [&](const auto& user) -> Result {
+                                         google::protobuf::Empty* response) {
+  return Dispatch(context, response, [&](const auto& user) -> Result {
     // Preserve removal of stale echo bookmarks after unsubscription. Private
     // IDs live exclusively in this namespace and require current owner access.
     if (request->conference_id().starts_with("@ffido/")) {
@@ -555,7 +673,7 @@ grpc::Status GrpcService::RemoveBookmark(grpc::ServerContext* context, const wir
 }
 grpc::Status GrpcService::ListHistory(grpc::ServerContext* context, const wire::PageRequest* request,
                                       wire::ListHistoryResponse* response) {
-  return Dispatch(context, [&](const auto& user) -> Result {
+  return Dispatch(context, response, [&](const auto& user) -> Result {
     auto valid = ValidatePage(*request);
     if (!valid)
       return valid;
@@ -589,8 +707,8 @@ grpc::Status GrpcService::ListHistory(grpc::ServerContext* context, const wire::
   });
 }
 grpc::Status GrpcService::ClearHistory(grpc::ServerContext* context, const google::protobuf::Empty*,
-                                       google::protobuf::Empty*) {
-  return Dispatch(context, [&](const auto& user) -> Result { return metadata_->ClearHistory(user.id); });
+                                       google::protobuf::Empty* response) {
+  return Dispatch(context, response, [&](const auto& user) -> Result { return metadata_->ClearHistory(user.id); });
 }
 bool GrpcService::AllowLogin(std::string_view address, std::string peer) {
   // gRPC's peer is authenticated by the transport; forwarded metadata is ignored.
@@ -654,7 +772,7 @@ grpc::Status GrpcService::Login(grpc::ServerContext* context, const wire::LoginR
 }
 grpc::Status GrpcService::RestoreSession(grpc::ServerContext* context, const google::protobuf::Empty*,
                                          wire::SessionInfo* response) {
-  return Dispatch(context, [&](const auto& user) -> Result {
+  return Dispatch(context, response, [&](const auto& user) -> Result {
     auto* profile = response->mutable_profile();
     profile->set_user_id(user.id);
     profile->set_name(user.profile.name);
@@ -668,8 +786,8 @@ grpc::Status GrpcService::RestoreSession(grpc::ServerContext* context, const goo
   });
 }
 grpc::Status GrpcService::Logout(grpc::ServerContext* context, const google::protobuf::Empty*,
-                                 google::protobuf::Empty*) {
-  return Dispatch(context, [&](const auto&) -> Result {
+                                 google::protobuf::Empty* response) {
+  return Dispatch(context, response, [&](const auto&) -> Result {
     const auto header = context->client_metadata().find("authorization")->second;
     const auto token = AuthService::ExtractBearerToken({header.data(), header.size()});
     if (!token)
@@ -679,7 +797,7 @@ grpc::Status GrpcService::Logout(grpc::ServerContext* context, const google::pro
 }
 grpc::Status GrpcService::GetProfile(grpc::ServerContext* context, const google::protobuf::Empty*,
                                      wire::Profile* response) {
-  return Dispatch(context, [&](const auto& user) -> Result {
+  return Dispatch(context, response, [&](const auto& user) -> Result {
     response->set_user_id(user.id);
     response->set_name(user.profile.name);
     response->set_address(user.profile.address);
@@ -699,7 +817,7 @@ void UueSource(const UueReference& source, wire::UuePartReference* target) {
 }  // namespace
 grpc::Status GrpcService::SearchUueParts(grpc::ServerContext* context, const wire::SearchUuePartsRequest* request,
                                          wire::SearchUuePartsResponse* response) {
-  return Dispatch(context, [&](const auto& user) -> Result {
+  return Dispatch(context, response, [&](const auto& user) -> Result {
     auto result = uue_.Search(request->conference_id(), request->generation(), request->after_number(),
                               request->limit(), user.id);
     if (!result)
@@ -732,7 +850,7 @@ grpc::Status GrpcService::SearchUueParts(grpc::ServerContext* context, const wir
 }
 grpc::Status GrpcService::AssembleUue(grpc::ServerContext* context, const wire::AssembleUueRequest* request,
                                       wire::UueAttachment* response) {
-  return Dispatch(context, [&](const auto& user) -> Result {
+  return Dispatch(context, response, [&](const auto& user) -> Result {
     std::vector<UueReference> sources;
     if (static_cast<uint32_t>(request->sources_size()) > uue_.config().max_parts)
       return std::unexpected(domain::ApiError::Validation("Too many UUE sources"));
@@ -757,7 +875,7 @@ grpc::Status GrpcService::AssembleUue(grpc::ServerContext* context, const wire::
 }
 grpc::Status GrpcService::GetUueChunk(grpc::ServerContext* context, const wire::GetUueChunkRequest* request,
                                       wire::UueChunk* response) {
-  return Dispatch(context, [&](const auto& user) -> Result {
+  return Dispatch(context, response, [&](const auto& user) -> Result {
     auto result = uue_.Chunk(request->attachment_id(), request->offset(), request->max_bytes(), user.id);
     if (!result)
       return std::unexpected(result.error());
@@ -788,7 +906,7 @@ void UueStatus(const UueSendStatus& result, wire::UueSendStatus* response) {
 }  // namespace
 grpc::Status GrpcService::GetUueLimits(grpc::ServerContext* context, const google::protobuf::Empty*,
                                        wire::UueLimits* response) {
-  return Dispatch(context, [&](const auto&) -> Result {
+  return Dispatch(context, response, [&](const auto&) -> Result {
     const auto& config = uue_.config();
     response->set_max_file_bytes(config.max_file_bytes);
     response->set_part_body_bytes(config.part_body_bytes);
@@ -801,7 +919,7 @@ grpc::Status GrpcService::GetUueLimits(grpc::ServerContext* context, const googl
 }
 grpc::Status GrpcService::UploadUueChunk(grpc::ServerContext* context, const wire::UploadUueChunkRequest* request,
                                          wire::UueUploadStatus* response) {
-  return Dispatch(context, [&](const auto& user) -> Result {
+  return Dispatch(context, response, [&](const auto& user) -> Result {
     auto result = uue_.Upload(request->operation_id(), request->filename(), request->file_size(), request->sha256(),
                               request->offset(), request->data(), user.id);
     if (!result)
@@ -813,7 +931,7 @@ grpc::Status GrpcService::UploadUueChunk(grpc::ServerContext* context, const wir
 }
 grpc::Status GrpcService::CommitUue(grpc::ServerContext* context, const wire::CommitUueRequest* request,
                                     wire::UueSendStatus* response) {
-  return Dispatch(context, [&](const auto& user) -> Result {
+  return Dispatch(context, response, [&](const auto& user) -> Result {
     const auto& message = request->message();
     domain::CreateMessageRequest value;
     value.operation_id = message.operation_id();
@@ -833,7 +951,7 @@ grpc::Status GrpcService::CommitUue(grpc::ServerContext* context, const wire::Co
 }
 grpc::Status GrpcService::GetUueSendStatus(grpc::ServerContext* context, const wire::UueOperationReference* request,
                                            wire::UueSendStatus* response) {
-  return Dispatch(context, [&](const auto& user) -> Result {
+  return Dispatch(context, response, [&](const auto& user) -> Result {
     auto result = uue_.SendStatus(request->operation_id(), user.id);
     if (!result)
       return std::unexpected(result.error());

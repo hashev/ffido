@@ -1,6 +1,7 @@
 #include <fcntl.h>
 #include <gtest/gtest.h>
 #include <signal.h>
+#include <sys/resource.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -108,8 +109,12 @@ TEST(JamLock, ExternalWriterTimeoutAndCancellationDoNotMutate) {
   ASSERT_FALSE(stopped);
   EXPECT_EQ(stopped.error(), JamLockError::kCancelled);
   char bytes[9];
+  other.Release();
+  auto probe = JamLease::Acquire(owner, false, std::chrono::steady_clock::now() + 1s);
+  ASSERT_TRUE(probe);
   ASSERT_EQ(pread(owner->descriptors[0], bytes, sizeof(bytes), 0), 9);
   EXPECT_EQ(std::string(bytes, sizeof(bytes)), "unchanged");
+  probe->reset();
   other.Release();
   EXPECT_TRUE(JamLease::Acquire(owner, true, std::chrono::steady_clock::now() + 1s));
 }
@@ -262,7 +267,7 @@ TEST(JamAccess, BorrowedViewsNeverCloseOwnersOrDropPosixLock) {
     EXPECT_FALSE(other.locked);
   }
   access->reset();
-  EXPECT_GE(fcntl(owner->descriptors[0], F_GETFD), 0);
+  EXPECT_EQ(owner->descriptors[0], -1);
   ChildLock other(temp.path() / "base.jhr", F_WRLCK, false);
   EXPECT_TRUE(other.locked);
 }
@@ -456,4 +461,96 @@ TEST(JamFile, PositionalSeekMoveAndErrorsPreserveFileContents) {
   EXPECT_TRUE(moved.fail());
   std::ifstream input(path);
   EXPECT_EQ(std::string(std::istreambuf_iterator<char>(input), {}), "aXYdef");
+}
+
+TEST(JamLock, ActiveFileBudgetFailsWithoutLeakingAndRecovers) {
+  fidoback::test::TempDirectory temp;
+  std::vector<EchoAreaConfig> areas;
+  for (int i = 0; i < 65; ++i) {
+    auto name = "base" + std::to_string(i);
+    Files(temp.path() / name);
+    areas.push_back(Config(name, name));
+  }
+  auto catalog = JamCatalog::Build(temp.path(), areas);
+  ASSERT_TRUE(catalog);
+  std::vector<std::unique_ptr<JamLease>> held;
+  for (int i = 0; i < 64; ++i) {
+    auto lease = JamLease::Acquire((*catalog)->areas().at("base" + std::to_string(i)).files, false,
+                                   std::chrono::steady_clock::now() + 1s);
+    ASSERT_TRUE(lease);
+    held.push_back(std::move(*lease));
+  }
+  size_t open_jam_files = 0;
+  for (const auto& lease : held)
+    for (int fd : lease->files().descriptors)
+      if (fd >= 0)
+        ++open_jam_files;
+  EXPECT_EQ(open_jam_files, 192u);
+  std::cout << "active file budget: peak_jam_fds=" << open_jam_files << "\n";
+  auto owner = (*catalog)->areas().at("base64").files;
+  auto denied = JamLease::Acquire(owner, false, std::chrono::steady_clock::now() + 1s);
+  ASSERT_FALSE(denied);
+  EXPECT_EQ(denied.error(), JamLockError::kResource);
+  EXPECT_EQ(owner->descriptors[0], -1);
+  held.clear();
+  EXPECT_TRUE(JamLease::Acquire(owner, false, std::chrono::steady_clock::now() + 1s));
+}
+
+TEST(JamLock, AnotherCatalogCannotCloseAnActivePhysicalLock) {
+  fidoback::test::TempDirectory temp;
+  Files(temp.path() / "base");
+  auto catalog = JamCatalog::Build(temp.path(), {Config("echo", "base")});
+  ASSERT_TRUE(catalog);
+  auto owner = (*catalog)->areas().at("echo").files;
+  auto lease = JamLease::Acquire(owner, false, std::chrono::steady_clock::now() + 1s);
+  ASSERT_TRUE(lease);
+  auto building =
+      std::async(std::launch::async, [&] { return JamCatalog::Build(temp.path(), {Config("alias", "base")}); });
+  ChildLock writer(temp.path() / "base.jhr", F_WRLCK, false);
+  EXPECT_FALSE(writer.locked);
+  lease->reset();
+  auto second = building.get();
+  ASSERT_TRUE(second);
+  EXPECT_EQ((*second)->areas().at("alias").files, owner);
+  EXPECT_EQ(owner->descriptors[0], -1);
+}
+
+TEST(JamLock, PartialOpenUnderEmfileReleasesTheResourceSlot) {
+  fidoback::test::TempDirectory temp;
+  Files(temp.path() / "base");
+  auto catalog = JamCatalog::Build(temp.path(), {Config("echo", "base")});
+  ASSERT_TRUE(catalog);
+  auto owner = (*catalog)->areas().at("echo").files;
+  struct rlimit saved{};
+  ASSERT_EQ(getrlimit(RLIMIT_NOFILE, &saved), 0);
+  struct Restore {
+    struct rlimit value;
+    ~Restore() {
+      setrlimit(RLIMIT_NOFILE, &value);
+    }
+  } restore{saved};
+  auto limit = saved;
+  limit.rlim_cur = std::min<rlim_t>(256, saved.rlim_cur);
+  ASSERT_EQ(setrlimit(RLIMIT_NOFILE, &limit), 0);
+  std::vector<int> fillers;
+  for (;;) {
+    int fd = open("/dev/null", O_RDONLY);
+    if (fd < 0)
+      break;
+    fillers.push_back(fd);
+  }
+  ASSERT_EQ(errno, EMFILE);
+  // Root, parent and one companion fit, the next companion must fail.
+  for (int i = 0; i < 3; ++i) {
+    close(fillers.back());
+    fillers.pop_back();
+  }
+  auto denied = JamLease::Acquire(owner, false, std::chrono::steady_clock::now() + 1s);
+  EXPECT_FALSE(denied);
+  if (!denied)
+    EXPECT_EQ(denied.error(), JamLockError::kResource);
+  EXPECT_EQ(owner->descriptors[0], -1);
+  for (int fd : fillers)
+    close(fd);
+  EXPECT_TRUE(JamLease::Acquire(owner, false, std::chrono::steady_clock::now() + 1s));
 }

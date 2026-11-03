@@ -8,8 +8,8 @@
 namespace fidoback::storage {
 using JamAccessError = std::variant<CatalogError, JamLockError, CoordinationError, msgapi::JamError>;
 
-// No descriptor opening/closing occurs during a request. Snapshot and kernel lock
-// share one lifetime; all reads are refreshed only after obtaining the lock.
+// The lease owns open descriptors and the byte lock; borrowed views die first.
+// All reads are refreshed only after obtaining the lock.
 class JamAccess {
 public:
   static std::expected<std::unique_ptr<JamAccess>, JamAccessError> Open(const JamCatalog& catalog,

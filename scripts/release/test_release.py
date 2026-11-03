@@ -490,8 +490,8 @@ class RelinkRegressionTest(unittest.TestCase):
             archive.write_bytes(b'archive fixture')
             archive.chmod(0o444)
             build = root/'build'
-            for name, flag in zip(['fidoback', 'ffido-admin', 'ffido-hpt-auth'],
-                                  ['-Wl,--dependency-file=', '-Wl,--dependency-file,', '-Xlinker --dependency-file=']):
+            for name, flag in zip(['fidoback', 'ffido-admin', 'ffido-hpt-auth', 'ffido-mcp'],
+                                  ['-Wl,--dependency-file=', '-Wl,--dependency-file,', '-Xlinker --dependency-file=', '-Wl,--dependency-file=']):
                 command = build/f'apps/backend/CMakeFiles/{name}.dir/link.txt'
                 command.parent.mkdir(parents=True)
                 command.write_text(f'c++ {flag}CMakeFiles/{name}.dir/link.d -Xlinker --as-needed {archive} {archive} -o {name}')
@@ -506,9 +506,9 @@ class RelinkRegressionTest(unittest.TestCase):
                 module.relink(stage, build, root/'deps')
             relink = stage/'share/ffido/relink'
             self.assertEqual(len(list(relink.glob('*.dylib'))), 1)
-            self.assertEqual((relink/'relink.sh').read_text().count('read-only.2.4.dylib'), 6)
+            self.assertEqual((relink/'relink.sh').read_text().count('read-only.2.4.dylib'), 8)
             self.assertIn('@loader_path/../../../../lib/read-only.2.dylib', (relink/'relink.sh').read_text())
-            self.assertEqual((relink/'relink.sh').read_text().count('-Xlinker --as-needed'), 3)
+            self.assertEqual((relink/'relink.sh').read_text().count('-Xlinker --as-needed'), 4)
             tools = root/'tools'
             tools.mkdir()
             compiler = tools/'compiler'
@@ -523,7 +523,7 @@ class RelinkRegressionTest(unittest.TestCase):
                            'CXX': str(compiler), 'SDKROOT': '/original-sdk-is-unavailable',
                            'FFIDO_TEST_SDK': str(root/'selected SDK'), 'FFIDO_TEST_LINK_TRACE': str(trace)}
             subprocess.run(['sh', str(relink/'relink.sh')], env=environment, check=True)
-            self.assertEqual(trace.read_text().splitlines(), ['linked']*3)
+            self.assertEqual(trace.read_text().splitlines(), ['linked']*4)
 
 
 

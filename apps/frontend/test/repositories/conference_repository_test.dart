@@ -392,6 +392,16 @@ void main() {
       expect(await repo.getConferenceById('missing'), isNull);
     },
   );
+  test('unknown statistics survive the conference cache', () async {
+    api.conferences = (_) async => wire.ListConferencesResponse(
+      conferences: [wire.Conference(id: 'broken', statisticsKnown: false)],
+    );
+    final live = await repo.fetchConferences();
+    api.conferences = (_) async => throw const NetworkException();
+    final cached = await repo.fetchConferences();
+    expect(live.conferences.single.statisticsKnown, isFalse);
+    expect(cached.conferences.single.statisticsKnown, isFalse);
+  });
   test('legacy cache is removed', () async {
     await prefs.setString('cached_conferences', 'legacy');
     await prefs.setInt('conferences_cache_timestamp', 1);
