@@ -2,6 +2,7 @@
 
 #include <map>
 #include <stdexcept>
+#include <tuple>
 
 #include "service/crypto.hpp"
 #include "service/mail_addressing.hpp"
@@ -252,9 +253,13 @@ std::expected<void, domain::ApiError> MailBridge::Dispatch() {
     // The raw source identity is stable across local decoding-policy changes.
     // Reuse completed journal entries instead of reinterpreting their payload hash.
     std::map<std::string, MailTransfer> completed;
-    for (const auto& transfer : Value(metadata_->MailTransfers()))
+    std::set<std::tuple<std::string, std::string, uint32_t>> quarantined;
+    for (const auto& transfer : Value(metadata_->MailTransfers())) {
       if (transfer.state == TransferState::kDone)
         completed.emplace(transfer.source_key, transfer);
+      else if (transfer.state == TransferState::kQuarantine && !transfer.source_key.starts_with("out:"))
+        quarantined.emplace(transfer.source_conference, transfer.source_generation, transfer.source_number);
+    }
     for (const auto& name : config_.point_mail.ingress_areas) {
       const auto id = AreaId(name);
       auto source = Open(*catalog_, id, false, config_.ftn.default_encoding);
@@ -270,6 +275,12 @@ std::expected<void, domain::ApiError> MailBridge::Dispatch() {
         if (access->generation() != generation)
           throw std::runtime_error("Ingress changed");
         access.reset();
+        // Rewrites must not turn an isolated source slot into a fresh delivery.
+        if (quarantined.contains(std::tuple{id, generation, number})) {
+          if ((snapshot.flags & locked) == 0)
+            throw std::runtime_error("Quarantined mail source is no longer isolated");
+          continue;
+        }
         MailTransfer input;
         input.source_conference = id;
         input.source_generation = generation;

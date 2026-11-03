@@ -686,6 +686,34 @@ TEST_F(PrivateAreasTest, UnclaimedQuarantineStillRejectsChangedSource) {
   EXPECT_EQ(messages->GetMessages(storage::MailboxId("2:1/2.2"), {}, "oldest", "point1")->total, 0);
 }
 
+TEST_F(PrivateAreasTest, ClaimedQuarantineIsNeverReinterpretedAsFreshDelivery) {
+  auto config = Mailboxes();
+  Incoming("2:1/2.2");
+  Incoming("2:1/2.2", "2:1/9.7 same", "Different body");
+  service::MailBridge bridge(config, hpt, catalog, metadata);
+  ASSERT_TRUE(bridge.Dispatch());
+  const auto record = test::ReadJamWireRecord(temp.path() / "MAIL", 1);
+  const auto destination = record.header.find("2:1/2.2");
+  ASSERT_NE(destination, std::string::npos);
+  const auto index = test::ReadFile(temp.path() / "MAIL.jdx");
+  {
+    std::fstream headers(temp.path() / "MAIL.jhr", std::ios::in | std::ios::out | std::ios::binary);
+    headers.seekp(test::Wire32(index, 12) + destination);
+    headers.write("2:1/2.3", 7);
+    ASSERT_TRUE(headers);
+  }
+  const auto before = test::ReadFile(temp.path() / "MAIL.jhr");
+  ASSERT_TRUE(bridge.Recover());
+  ASSERT_TRUE(bridge.Dispatch());
+  ASSERT_TRUE(bridge.Dispatch());
+  EXPECT_EQ(test::ReadFile(temp.path() / "MAIL.jhr"), before);
+  EXPECT_EQ(messages->GetMessages(storage::MailboxId("2:1/2.3"), {}, "oldest", "point2")->total, 0);
+  auto records = metadata->MailTransfers();
+  ASSERT_TRUE(records);
+  ASSERT_EQ(records->size(), 2u);
+  EXPECT_EQ(records->at(1).state, storage::TransferState::kQuarantine);
+}
+
 namespace {
 class MailBridgeCrashTest : public PrivateAreasTest,
                             public ::testing::WithParamInterface<std::pair<std::string, std::string>> {};
