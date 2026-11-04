@@ -55,6 +55,7 @@ enum ConferenceSort {
   CONFERENCE_SORT_NAME = 1;
   CONFERENCE_SORT_LAST_MESSAGE = 2;
   CONFERENCE_SORT_UNREAD = 3;
+  CONFERENCE_SORT_CATALOG = 4;
 }
 
 enum MessageSort {
@@ -67,6 +68,8 @@ message ListConferencesRequest {
   PageRequest page = 1;
   string query = 2;
   ConferenceSort sort = 3;
+  bool omit_statistics = 4;
+  bool bookmarked_only = 5;
 }
 
 message GetConferenceRequest {
@@ -263,6 +266,7 @@ message LoginRequest {
   string password = 3;
 }
 message SessionInfo {
+  bool supports_lightweight_conference_catalog = 4;
   bool supports_message_footer = 3;
   Profile profile = 1;
   google.protobuf.Timestamp expires_at = 2;

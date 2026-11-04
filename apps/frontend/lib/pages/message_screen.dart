@@ -53,7 +53,9 @@ class MessageScreen extends StatefulWidget {
   final AreaKind kind;
   final bool personalMailbox;
   final List<Conference> conferenceOrder;
+  final Future<List<Conference>> Function(RpcCancellation)? loadFavoriteOrder;
   final Future<void> Function()? onAccessDenied;
+  final void Function(String)? onAreaAccessDenied;
   const MessageScreen({
     super.key,
     required this.conferenceId,
@@ -68,7 +70,9 @@ class MessageScreen extends StatefulWidget {
     this.kind = AreaKind.echo,
     this.personalMailbox = false,
     this.conferenceOrder = const [],
+    this.loadFavoriteOrder,
     this.onAccessDenied,
+    this.onAreaAccessDenied,
   });
   @override
   State<MessageScreen> createState() => _MessageScreenState();
@@ -112,7 +116,8 @@ class _MessageScreenState extends State<MessageScreen>
   }
 
   late Conference activeConference;
-  late final List<Conference> conferenceOrder;
+  late List<Conference> conferenceOrder;
+  bool favoriteOrderLoaded = false;
   late final int orderEpoch;
   final Set<String> opened = {};
   bool echoesExhausted = false;
@@ -128,10 +133,11 @@ class _MessageScreenState extends State<MessageScreen>
   Iterable<Conference> nextEchoes() sync* {
     if (repository.epoch != orderEpoch) return;
     final index = conferenceOrder.indexWhere((c) => c.id == conferenceId);
-    if (index < 0) return;
+    if (index < 0 && widget.loadFavoriteOrder == null) return;
+    final start = index < 0 ? 0 : index + 1;
     final seen = <String>{conferenceId};
-    for (var step = 1; step < conferenceOrder.length; step++) {
-      final entry = conferenceOrder[(index + step) % conferenceOrder.length];
+    for (var step = 0; step < conferenceOrder.length; step++) {
+      final entry = conferenceOrder[(start + step) % conferenceOrder.length];
       if (entry.kind == AreaKind.echo &&
           entry.canRead &&
           !entry.unsupportedFormat &&
@@ -141,7 +147,11 @@ class _MessageScreenState extends State<MessageScreen>
     }
   }
 
-  bool get hasNextEcho => !echoesExhausted && nextEchoes().isNotEmpty;
+  bool get hasNextEcho =>
+      repository.epoch == orderEpoch &&
+      !echoesExhausted &&
+      ((widget.loadFavoriteOrder != null && !favoriteOrderLoaded) ||
+          nextEchoes().isNotEmpty);
 
   bool canNavigate(int direction) {
     if (loading || bulkBusy || unreadBusy || !canRead) return false;
@@ -448,7 +458,10 @@ class _MessageScreenState extends State<MessageScreen>
   }) async {
     if (searchBusy || unreadBusy || !canRead || (more && loading)) return;
     if (!more) resetSearch();
-    if (!more) echoesExhausted = false;
+    if (!more) {
+      echoesExhausted = false;
+      favoriteOrderLoaded = false;
+    }
     final current = ++version;
     unawaited(cancellation?.cancel());
     final token = cancellation = RpcCancellation();
@@ -617,7 +630,18 @@ class _MessageScreenState extends State<MessageScreen>
     });
     try {
       var destination = activeConference;
-      final candidates = nextEchoes().iterator;
+      Iterator<Conference>? candidates;
+      Future<Iterator<Conference>> getCandidates() async {
+        if (candidates != null) return candidates!;
+        if (widget.loadFavoriteOrder != null && !favoriteOrderLoaded) {
+          final order = await widget.loadFavoriteOrder!(token);
+          check();
+          conferenceOrder = List.unmodifiable(order);
+          favoriteOrderLoaded = true;
+        }
+        return candidates = nextEchoes().iterator;
+      }
+
       var inCurrent = true;
       while (true) {
         final rows = <Message>[];
@@ -742,8 +766,9 @@ class _MessageScreenState extends State<MessageScreen>
         }
         if (direction < 0) break;
         Conference? next;
-        while (repository.epoch == orderEpoch && candidates.moveNext()) {
-          final entry = candidates.current;
+        final iterator = await getCandidates();
+        while (repository.epoch == orderEpoch && iterator.moveNext()) {
+          final entry = iterator.current;
           try {
             final fresh = await repository.getMailboxState(
               entry.id,
@@ -1004,6 +1029,7 @@ class _MessageScreenState extends State<MessageScreen>
   }
 
   Future<void> accessDenied() async {
+    widget.onAreaAccessDenied?.call(conferenceId);
     resetSearch();
     if (mounted) {
       setState(() {

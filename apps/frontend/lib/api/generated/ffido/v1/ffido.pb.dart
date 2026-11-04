@@ -98,11 +98,15 @@ class ListConferencesRequest extends $pb.GeneratedMessage {
     PageRequest? page,
     $core.String? query,
     ConferenceSort? sort,
+    $core.bool? omitStatistics,
+    $core.bool? bookmarkedOnly,
   }) {
     final result = ListConferencesRequest._();
     if (page != null) result.page = page;
     if (query != null) result.query = query;
     if (sort != null) result.sort = sort;
+    if (omitStatistics != null) result.omitStatistics = omitStatistics;
+    if (bookmarkedOnly != null) result.bookmarkedOnly = bookmarkedOnly;
     return result;
   }
 
@@ -124,6 +128,8 @@ class ListConferencesRequest extends $pb.GeneratedMessage {
     ..aOS(2, _omitFieldNames ? '' : 'query')
     ..aE<ConferenceSort>(3, _omitFieldNames ? '' : 'sort',
         enumValues: ConferenceSort.values)
+    ..aOB(4, _omitFieldNames ? '' : 'omitStatistics')
+    ..aOB(5, _omitFieldNames ? '' : 'bookmarkedOnly')
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -178,6 +184,24 @@ class ListConferencesRequest extends $pb.GeneratedMessage {
   $core.bool hasSort() => $_has(2);
   @$pb.TagNumber(3)
   void clearSort() => $_clearField(3);
+
+  @$pb.TagNumber(4)
+  $core.bool get omitStatistics => $_getBF(3);
+  @$pb.TagNumber(4)
+  set omitStatistics($core.bool value) => $_setBool(3, value);
+  @$pb.TagNumber(4)
+  $core.bool hasOmitStatistics() => $_has(3);
+  @$pb.TagNumber(4)
+  void clearOmitStatistics() => $_clearField(4);
+
+  @$pb.TagNumber(5)
+  $core.bool get bookmarkedOnly => $_getBF(4);
+  @$pb.TagNumber(5)
+  set bookmarkedOnly($core.bool value) => $_setBool(4, value);
+  @$pb.TagNumber(5)
+  $core.bool hasBookmarkedOnly() => $_has(4);
+  @$pb.TagNumber(5)
+  void clearBookmarkedOnly() => $_clearField(5);
 }
 
 class GetConferenceRequest extends $pb.GeneratedMessage {
@@ -2375,12 +2399,16 @@ class SessionInfo extends $pb.GeneratedMessage {
     Profile? profile,
     $2.Timestamp? expiresAt,
     $core.bool? supportsMessageFooter,
+    $core.bool? supportsLightweightConferenceCatalog,
   }) {
     final result = SessionInfo._();
     if (profile != null) result.profile = profile;
     if (expiresAt != null) result.expiresAt = expiresAt;
     if (supportsMessageFooter != null)
       result.supportsMessageFooter = supportsMessageFooter;
+    if (supportsLightweightConferenceCatalog != null)
+      result.supportsLightweightConferenceCatalog =
+          supportsLightweightConferenceCatalog;
     return result;
   }
 
@@ -2402,6 +2430,7 @@ class SessionInfo extends $pb.GeneratedMessage {
     ..aOM<$2.Timestamp>(2, _omitFieldNames ? '' : 'expiresAt',
         subBuilder: $2.Timestamp.$_createMessage)
     ..aOB(3, _omitFieldNames ? '' : 'supportsMessageFooter')
+    ..aOB(4, _omitFieldNames ? '' : 'supportsLightweightConferenceCatalog')
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -2456,6 +2485,16 @@ class SessionInfo extends $pb.GeneratedMessage {
   $core.bool hasSupportsMessageFooter() => $_has(2);
   @$pb.TagNumber(3)
   void clearSupportsMessageFooter() => $_clearField(3);
+
+  @$pb.TagNumber(4)
+  $core.bool get supportsLightweightConferenceCatalog => $_getBF(3);
+  @$pb.TagNumber(4)
+  set supportsLightweightConferenceCatalog($core.bool value) =>
+      $_setBool(3, value);
+  @$pb.TagNumber(4)
+  $core.bool hasSupportsLightweightConferenceCatalog() => $_has(3);
+  @$pb.TagNumber(4)
+  void clearSupportsLightweightConferenceCatalog() => $_clearField(4);
 }
 
 class LoginResponse extends $pb.GeneratedMessage {

@@ -123,6 +123,8 @@ void main() {
       addTearDown(api.dispose);
       await tester.pumpWidget(MaterialApp(home: MainScreen(repository: repo)));
       await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('Все области'));
+      await tester.pumpAndSettle();
       for (final label in ['Эхи', 'Личная почта', 'Локальные', 'Служебные']) {
         expect(find.text(label), findsOneWidget);
       }

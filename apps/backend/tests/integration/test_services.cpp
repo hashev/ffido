@@ -2160,3 +2160,70 @@ TEST_F(ServicesTest, ThousandAreaCatalogAndArchiveSearchHaveBoundedDescriptors) 
   for (const auto& [id, area] : many->areas())
     EXPECT_EQ(area.files->descriptors[0], -1);
 }
+
+TEST_F(ServicesTest, CatalogNameOrderFoldsCyrillicAndKeepsIdTieBreakAcrossPages) {
+  for (const auto& names : {std::pair{"ЯБЛОКО", "Альфа"}, std::pair{"ЁЖ", "ёж"}, std::pair{"ALPHA", "alpha"},
+                            std::pair{"ÄLPHA", "älpha"}, std::pair{"Σ", "σ"}}) {
+    std::vector<EchoAreaConfig> areas;
+    for (const auto& [id, area] : catalog->areas()) {
+      auto config = area.config;
+      config.description = id == "echo.one" ? names.first : names.second;
+      areas.push_back(config);
+    }
+    auto built = storage::JamCatalog::Build(temp.path(), areas);
+    ASSERT_TRUE(built);
+    auto source = std::shared_ptr<storage::JamCatalog>(std::move(*built));
+    service::ConferenceService sorted(source, metadata, test::EchoAccess(*source, temp.path()));
+    auto first = sorted.GetConferences({0, 1}, {}, "A", "catalog", true);
+    auto second = sorted.GetConferences({1, 1}, {}, "A", "catalog", true);
+    ASSERT_TRUE(first);
+    ASSERT_TRUE(second);
+    ASSERT_EQ(first->conferences.size(), 1);
+    ASSERT_EQ(second->conferences.size(), 1);
+    EXPECT_EQ(first->conferences[0].id, std::string(names.first) == "ЯБЛОКО" ? "echo.two" : "echo.one");
+    EXPECT_NE(first->conferences[0].id, second->conferences[0].id);
+    EXPECT_EQ(first->total, 2);
+    EXPECT_TRUE(first->has_more);
+    EXPECT_FALSE(second->has_more);
+  }
+}
+TEST_F(ServicesTest, LightweightModeDoesNotHideCancellationOrAcceptStatisticsSort) {
+  EXPECT_FALSE(conferences->GetConferences({0, 20}, {}, "A", "unread", true));
+  std::stop_source stop;
+  stop.request_stop();
+  service::RequestBudget budget{std::chrono::steady_clock::now() + std::chrono::seconds(30), stop.get_token()};
+  service::RequestScope request(budget);
+  auto result = conferences->GetConferences({0, 20}, {}, "A", "catalog", true);
+  ASSERT_FALSE(result);
+  EXPECT_EQ(result.error().code, domain::ErrorCode::kCancelled);
+}
+
+TEST_F(ServicesTest, LightweightCatalogGroupsAllAreaKindsBeforeAlphabeticalEchoes) {
+  std::vector<EchoAreaConfig> areas;
+  for (int kind = 0; kind < 6; ++kind) {
+    EchoAreaConfig config;
+    config.name = "group" + std::to_string(kind);
+    config.filename = config.name;
+    config.kind = static_cast<AreaKind>(kind);
+    config.msgbase_type = "JAM";
+    for (const auto* extension : {".jhr", ".jdt", ".jdx"})
+      std::filesystem::copy_file((temp.path() / "different-file").string() + extension,
+                                 (temp.path() / config.filename).string() + extension);
+    areas.push_back(config);
+  }
+  auto built = storage::JamCatalog::Build(temp.path(), areas);
+  ASSERT_TRUE(built);
+  auto source = std::shared_ptr<storage::JamCatalog>(std::move(*built));
+  service::HptConfiguration config;
+  config.credentials.emplace("2:5015/1", "fixture-only");
+  config.echoes.push_back({"group0", temp.path() / "group0", {}});
+  auto policy = service::EchoAccess::Build(config, *source, {"2:5015/1"});
+  ASSERT_TRUE(policy);
+  ASSERT_TRUE(metadata->SaveProfile("A", domain::Profile{"Owner", "2:5015/1", "", ""}));
+  service::ConferenceService sorted(source, metadata, *policy);
+  auto response = sorted.GetConferences({0, 20}, {}, "A", "catalog", true);
+  ASSERT_TRUE(response);
+  ASSERT_EQ(response->conferences.size(), 6);
+  for (size_t i = 0; i < 6; ++i)
+    EXPECT_EQ(response->conferences[i].kind, static_cast<AreaKind>((i + 1) % 6));
+}

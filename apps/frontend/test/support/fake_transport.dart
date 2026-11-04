@@ -9,6 +9,8 @@ class FakeTransport implements ApiTransport {
   @override
   int epoch = 0;
   @override
+  bool supportsLightweightConferenceCatalog = false;
+  @override
   bool hasToken = true;
   @override
   Uri endpoint = Uri.parse('https://test.invalid');

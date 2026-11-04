@@ -224,13 +224,17 @@ grpc::Status GrpcService::ListConferences(grpc::ServerContext* context, const wi
       case wire::CONFERENCE_SORT_LAST_MESSAGE:
         sort = "date";
         break;
+      case wire::CONFERENCE_SORT_CATALOG:
+        sort = "catalog";
+        break;
       case wire::CONFERENCE_SORT_UNREAD:
         sort = "unread";
         break;
       default:
         return std::unexpected(domain::ApiError::Validation({domain::ErrorDetail{"sort", "Unknown conference sort"}}));
     }
-    auto result = conferences_.GetConferences(Page(request->page()), request->query(), user.id, sort);
+    auto result = conferences_.GetConferences(Page(request->page()), request->query(), user.id, sort,
+                                              request->omit_statistics(), request->bookmarked_only());
     if (!result)
       return std::unexpected(result.error());
     for (const auto& conference : result->conferences)
@@ -621,7 +625,7 @@ grpc::Status GrpcService::ListBookmarks(grpc::ServerContext* context, const wire
       return std::unexpected(saved.error());
     std::vector<wire::Bookmark> available;
     for (const auto& bookmark : *saved) {
-      auto conference = conferences_.GetConference(bookmark.conference_id, user.id);
+      auto conference = conferences_.GetConference(bookmark.conference_id, user.id, true);
       if (!conference) {
         if (conference.error().code == domain::ErrorCode::kNotFound ||
             conference.error().code == domain::ErrorCode::kForbidden)
@@ -638,8 +642,13 @@ grpc::Status GrpcService::ListBookmarks(grpc::ServerContext* context, const wire
     }
     const auto start = std::min<uint64_t>(request->offset(), available.size()),
                end = std::min<uint64_t>(start + request->limit(), available.size());
-    for (auto i = start; i < end; ++i)
+    for (auto i = start; i < end; ++i) {
+      auto conference = conferences_.GetConference(available.at(i).conference().id(), user.id);
+      if (!conference)
+        return std::unexpected(conference.error());
+      Map(*conference, available.at(i).mutable_conference());
       *response->add_bookmarks() = std::move(available.at(i));
+    }
     response->set_total(available.size());
     response->set_has_more(end < available.size());
     return {};
@@ -648,7 +657,7 @@ grpc::Status GrpcService::ListBookmarks(grpc::ServerContext* context, const wire
 grpc::Status GrpcService::AddBookmark(grpc::ServerContext* context, const wire::GetConferenceRequest* request,
                                       google::protobuf::Empty* response) {
   return Dispatch(context, response, [&](const auto& user) -> Result {
-    auto conference = conferences_.GetConference(request->conference_id(), user.id);
+    auto conference = conferences_.GetConference(request->conference_id(), user.id, true);
     if (!conference)
       return std::unexpected(conference.error());
     if (!conference->can_read)
@@ -662,7 +671,7 @@ grpc::Status GrpcService::RemoveBookmark(grpc::ServerContext* context, const wir
     // Preserve removal of stale echo bookmarks after unsubscription. Private
     // IDs live exclusively in this namespace and require current owner access.
     if (request->conference_id().starts_with("@ffido/")) {
-      auto conference = conferences_.GetConference(request->conference_id(), user.id);
+      auto conference = conferences_.GetConference(request->conference_id(), user.id, true);
       if (!conference)
         return std::unexpected(conference.error());
       if (!conference->can_read)
@@ -758,6 +767,7 @@ grpc::Status GrpcService::Login(grpc::ServerContext* context, const wire::LoginR
     response->set_session_secret(login->token);
     auto* session = response->mutable_session();
     session->set_supports_message_footer(true);
+    session->set_supports_lightweight_conference_catalog(true);
     auto* profile = session->mutable_profile();
     profile->set_user_id(login->user.id);
     profile->set_name(login->user.profile.name);
@@ -782,6 +792,7 @@ grpc::Status GrpcService::RestoreSession(grpc::ServerContext* context, const goo
       return std::unexpected(domain::ApiError::Server("Invalid profile timestamp"));
     response->mutable_expires_at()->set_seconds(user.expires_at);
     response->set_supports_message_footer(true);
+    response->set_supports_lightweight_conference_catalog(true);
     return {};
   });
 }

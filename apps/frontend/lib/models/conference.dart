@@ -58,6 +58,17 @@ class Conference {
     this.positionRevision = 0,
   });
 
+  static int compareByName(Conference a, Conference b) {
+    final name = a.name.toLowerCase().compareTo(b.name.toLowerCase());
+    return name != 0 ? name : a.id.compareTo(b.id);
+  }
+
+  static int compareByCatalogName(Conference a, Conference b) {
+    int group(AreaKind kind) => kind == AreaKind.echo ? 5 : kind.index - 1;
+    final type = group(a.kind).compareTo(group(b.kind));
+    return type != 0 ? type : compareByName(a, b);
+  }
+
   int get _catalogGroup => switch (kind) {
     AreaKind.netmail => 0,
     AreaKind.local => 1,

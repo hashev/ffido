@@ -4,133 +4,48 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:fido/api/generated/ffido/v1/ffido.pb.dart' as wire;
 import 'package:fido/pages/message_screen.dart';
-import 'package:fido/pages/reader_app.dart';
 import 'package:fido/pages/personal_conferences.dart';
 import 'package:fido/repositories/account_repository.dart';
-import 'package:fido/repositories/conference_repository.dart';
 
 import '../support/fake_transport.dart';
+
+import 'package:fido/repositories/message_repository.dart';
+import 'package:fido/api/model_mapping.dart';
 
 wire.Conference conference(String id) => wire.Conference(
   id: id,
   name: id,
   canRead: true,
+  isBookmarked: true,
   unreadCount: Int64(1),
   statisticsKnown: true,
 );
 
 void main() {
-  testWidgets(
-    'catalog passes sorted filtered snapshot and refreshes after cross-echo reading',
-    (tester) async {
-      SharedPreferences.setMockInitialValues({});
-      final api = FakeTransport();
-      addTearDown(api.dispose);
-      api.conferences = (r) async => wire.ListConferencesResponse(
-        conferences: [
-          conference('z'),
-          conference('a'),
-          if (r.query.isEmpty) conference('outside'),
-        ],
-      );
-      api.conference = (r) async => conference(r.conferenceId);
-      api.messages = (r) async => wire.ListMessagesResponse(
-        messages: [wire.Message(id: '${r.conferenceId}#1', subject: 'letter')],
-      );
-      api.message = (r) async => wire.Message(
-        id: r.messageId,
-        body: 'body ${r.conferenceId}',
-        isRead: true,
-      );
-      final repo = ConferenceRepository(
-        apiClient: api,
-        prefs: await SharedPreferences.getInstance(),
-      );
-      addTearDown(repo.dispose);
-      await tester.pumpWidget(MaterialApp(home: MainScreen(repository: repo)));
-      await tester.pumpAndSettle();
-      await tester.enterText(find.byType(TextField), 'filter');
-      await tester.pump(const Duration(milliseconds: 350));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('z'));
-      await tester.pumpAndSettle();
-      final reader = tester.widget<MessageScreen>(find.byType(MessageScreen));
-      expect(reader.conferenceOrder.map((c) => c.id), ['a', 'z']);
-      await tester.tap(find.text('letter'));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('Следующее'));
-      await tester.pumpAndSettle();
-      expect(find.text('body a'), findsOneWidget);
-      expect(
-        api.calls.whereType<wire.GetConferenceRequest>().map(
-          (r) => r.conferenceId,
-        ),
-        ['a'],
-      );
-      await tester.pageBack();
-      await tester.pumpAndSettle();
-      expect(find.byType(MessageScreen), findsNothing);
-      expect(
-        tester.widget<TextField>(find.byType(TextField)).controller!.text,
-        'filter',
-      );
-      expect(
-        api.calls.whereType<wire.ListConferencesRequest>().last.query,
-        'filter',
-      );
-      expect(find.text('outside'), findsNothing);
-    },
-  );
-
-  testWidgets('repeated personal pages stop without opening partial context', (
-    tester,
-  ) async {
-    final api = FakeTransport();
-    addTearDown(api.dispose);
-    api.bookmarks = (_) async => wire.ListBookmarksResponse(
-      bookmarks: [wire.Bookmark(conference: conference('z'))],
-      hasMore: true,
-    );
-    await tester.pumpWidget(
-      MaterialApp(
-        home: PersonalConferences(
-          history: false,
-          repository: AccountRepository(api),
-        ),
-      ),
-    );
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('z'));
-    await tester.pumpAndSettle();
-    expect(find.byType(MessageScreen), findsNothing);
-    expect(find.text('Список устарел. Обновите конференции.'), findsOneWidget);
-    expect(api.calls.whereType<wire.PageRequest>().length, 2);
-  });
-
-  for (final history in [false, true]) {
+  for (final source in ['catalog', 'bookmarks', 'history']) {
     testWidgets(
-      'source snapshot preserves ${history ? 'history' : 'bookmarks'} order across pages',
+      '$source opens immediately and uses alphabetical favorites for transitions',
       (tester) async {
+        SharedPreferences.setMockInitialValues({});
         final api = FakeTransport();
         addTearDown(api.dispose);
+        api.conferences = (_) async => wire.ListConferencesResponse(
+          conferences: [conference('z'), conference('outside')],
+        );
         api.bookmarks = (r) async => wire.ListBookmarksResponse(
           bookmarks: [
             wire.Bookmark(
               conference: conference(r.offset.toInt() == 0 ? 'z' : 'a'),
             ),
           ],
-          hasMore: r.offset.toInt() == 0,
+          hasMore: r.offset == Int64.ZERO,
         );
-        api.history = (r) async => wire.ListHistoryResponse(
-          history: [
-            wire.HistoryEntry(
-              conference: conference(r.offset.toInt() == 0 ? 'z' : 'a'),
-            ),
-          ],
-          hasMore: r.offset.toInt() == 0,
+        api.history = (_) async => wire.ListHistoryResponse(
+          history: [wire.HistoryEntry(conference: conference('z'))],
+          hasMore: true,
         );
-        var reachedA = false;
         api.conference = (r) async => conference(r.conferenceId);
+        var reachedA = false;
         api.messages = (r) async => wire.ListMessagesResponse(
           messages: [
             wire.Message(id: '${r.conferenceId}#1', subject: 'letter'),
@@ -149,22 +64,23 @@ void main() {
         await tester.pumpWidget(
           MaterialApp(
             home: PersonalConferences(
-              history: history,
+              history: source == 'history',
+              catalog: source == 'catalog',
               repository: AccountRepository(api),
             ),
           ),
         );
         await tester.pumpAndSettle();
+        final before = api.calls.whereType<wire.PageRequest>().length;
         await tester.tap(find.text('z'));
         await tester.pumpAndSettle();
-        final reader = tester.widget<MessageScreen>(find.byType(MessageScreen));
-        expect(reader.conferenceOrder.map((c) => c.id), ['z', 'a']);
+        expect(find.byType(MessageScreen), findsOneWidget);
+        expect(api.calls.whereType<wire.PageRequest>(), hasLength(before));
         await tester.tap(find.text('letter'));
         await tester.pumpAndSettle();
         await tester.tap(find.text('Следующее'));
         await tester.pumpAndSettle();
         expect(find.text('body a'), findsOneWidget);
-        // The second transition wraps to the start of this personal snapshot.
         await tester.tap(find.text('Следующее'));
         await tester.pumpAndSettle();
         expect(find.text('body z'), findsOneWidget);
@@ -174,8 +90,94 @@ void main() {
           ),
           ['a', 'z'],
         );
-        expect(api.calls.whereType<wire.ListConferencesRequest>(), isEmpty);
+        expect(
+          api.calls.whereType<wire.ListConferencesRequest>().length,
+          source == 'catalog' ? 1 : 0,
+        );
       },
     );
   }
+  testWidgets(
+    'nonfavorite echo starts at first alphabetical favorite and empty favorites end traversal',
+    (tester) async {
+      final api = FakeTransport();
+      addTearDown(api.dispose);
+      api.conference = (r) async => conference(r.conferenceId);
+      api.messages = (r) async => wire.ListMessagesResponse(
+        messages: [wire.Message(id: '${r.conferenceId}#1', subject: 'letter')],
+      );
+      api.message = (r) async => wire.Message(
+        id: r.messageId,
+        body: 'body ${r.conferenceId}',
+        isRead: true,
+      );
+      for (final empty in [false, true]) {
+        await tester.pumpWidget(const SizedBox());
+        await tester.pumpWidget(
+          MaterialApp(
+            home: MessageScreen(
+              conferenceId: 'outside',
+              conferenceName: 'outside',
+              conferenceDescription: '',
+              canRead: true,
+              repository: MessageRepository(api),
+              loadFavoriteOrder: (_) async => empty
+                  ? []
+                  : [
+                      mapConference(conference('a')),
+                      mapConference(conference('z')),
+                    ],
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('letter'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Следующее'));
+        await tester.pumpAndSettle();
+        expect(find.text(empty ? 'body outside' : 'body a'), findsOneWidget);
+        if (empty) {
+          expect(
+            find.text('Дальнейших непрочитанных сообщений нет'),
+            findsOneWidget,
+          );
+        }
+      }
+    },
+  );
+  testWidgets(
+    'repeated favorite page errors only when transition needs snapshot',
+    (tester) async {
+      SharedPreferences.setMockInitialValues({});
+      final api = FakeTransport();
+      addTearDown(api.dispose);
+      api.bookmarks = (_) async => wire.ListBookmarksResponse(
+        bookmarks: [wire.Bookmark(conference: conference('z'))],
+        hasMore: true,
+      );
+      api.messages = (_) async => wire.ListMessagesResponse(
+        messages: [wire.Message(id: 'z#1', subject: 'letter')],
+      );
+      api.message = (r) async =>
+          wire.Message(id: r.messageId, body: 'body z', isRead: true);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PersonalConferences(
+            history: false,
+            repository: AccountRepository(api),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('z'));
+      await tester.pumpAndSettle();
+      expect(find.byType(MessageScreen), findsOneWidget);
+      await tester.tap(find.text('letter'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Следующее'));
+      await tester.pumpAndSettle();
+      expect(find.text('body z'), findsOneWidget);
+      expect(find.textContaining('не продвигается'), findsOneWidget);
+    },
+  );
 }

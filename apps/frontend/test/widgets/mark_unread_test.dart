@@ -139,6 +139,8 @@ void main() {
     tester,
   ) async {
     final f = Fixture()..read = true;
+    final original = f.api.conference!;
+    f.api.conference = (r) async => (await original(r))..isBookmarked = true;
     addTearDown(f.api.dispose);
     f.api.bookmarks = (_) async => wire.ListBookmarksResponse(
       bookmarks: [
@@ -165,7 +167,7 @@ void main() {
     await choose(tester);
     await tester.pageBack();
     await tester.pumpAndSettle();
-    expect(find.text('Закладки'), findsOneWidget);
+    expect(find.text('Избранное'), findsOneWidget);
     expect(find.text('1'), findsOneWidget);
     expect(find.text('0'), findsNothing);
   });
