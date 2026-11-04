@@ -114,10 +114,20 @@ class _MessageTechnicalDialogState extends State<MessageTechnicalDialog> {
 
   @override
   Widget build(BuildContext context) => AlertDialog(
+    scrollable: true,
     title: const Text('Технические данные'),
     content: SizedBox(
       width: 640,
-      height: min(600, MediaQuery.sizeOf(context).height * .6),
+      height: min(
+        600,
+        max(
+          48,
+          (MediaQuery.sizeOf(context).height -
+                  MediaQuery.viewInsetsOf(context).bottom -
+                  160) *
+              .6,
+        ),
+      ),
       child: loading
           ? const Center(child: CircularProgressIndicator())
           : error != null

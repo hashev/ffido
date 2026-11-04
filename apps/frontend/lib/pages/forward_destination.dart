@@ -1,3 +1,5 @@
+import '../widgets/adaptive_layout.dart';
+
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -75,52 +77,54 @@ class _ForwardDestinationState extends State<ForwardDestination> {
   @override
   Widget build(BuildContext context) => Scaffold(
     appBar: AppBar(title: const Text('Выберите эху для пересылки')),
-    body: Column(
-      children: [
-        Padding(
-          padding: const EdgeInsets.all(16),
-          child: TextField(
-            controller: search,
-            decoration: const InputDecoration(labelText: 'Поиск эхи'),
-            onChanged: (_) {
-              ++version;
-              debounce?.cancel();
-              setState(() {
-                rows = [];
-                hasMore = false;
-                loading = true;
-              });
-              debounce = Timer(const Duration(milliseconds: 300), () => load());
-            },
+    body: AdaptiveContent(
+      maxWidth: AdaptiveContent.listWidth,
+      child: ListView(
+        children: [
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: TextField(
+              controller: search,
+              decoration: const InputDecoration(labelText: 'Поиск эхи'),
+              onChanged: (_) {
+                ++version;
+                debounce?.cancel();
+                setState(() {
+                  rows = [];
+                  hasMore = false;
+                  loading = true;
+                });
+                debounce = Timer(
+                  const Duration(milliseconds: 300),
+                  () => load(),
+                );
+              },
+            ),
           ),
-        ),
-        if (loading) const LinearProgressIndicator(),
-        if (error != null) Text(error!),
-        if (error != null)
-          TextButton(onPressed: () => load(), child: const Text('Повторить')),
-        if (!loading && error == null && rows.isEmpty)
-          const Padding(
-            padding: EdgeInsets.all(16),
-            child: Text('Нет доступных для публикации эх'),
-          ),
-        Expanded(
-          child: ListView(
-            children: [
-              for (final row in rows)
-                ListTile(
-                  title: Text(row.name),
-                  subtitle: Text(row.id),
-                  onTap: loading ? null : () => Navigator.pop(context, row),
-                ),
-              if (hasMore)
-                TextButton(
-                  onPressed: loading ? null : () => load(more: true),
-                  child: const Text('Загрузить ещё'),
-                ),
-            ],
-          ),
-        ),
-      ],
+          if (loading) const LinearProgressIndicator(),
+          if (error != null) Text(error!),
+          if (error != null)
+            TextButton(onPressed: () => load(), child: const Text('Повторить')),
+          if (!loading && error == null && rows.isEmpty)
+            const Padding(
+              padding: EdgeInsets.all(16),
+              child: Text('Нет доступных для публикации эх'),
+            ),
+          ...[
+            for (final row in rows)
+              ListTile(
+                title: Text(row.name),
+                subtitle: Text(row.id),
+                onTap: loading ? null : () => Navigator.pop(context, row),
+              ),
+            if (hasMore)
+              TextButton(
+                onPressed: loading ? null : () => load(more: true),
+                child: const Text('Загрузить ещё'),
+              ),
+          ],
+        ],
+      ),
     ),
   );
 }

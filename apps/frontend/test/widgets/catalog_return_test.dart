@@ -1,3 +1,6 @@
+import 'dart:async';
+
+import 'package:fido/pages/personal_conferences.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -159,4 +162,56 @@ void main() {
       expect(api.calls.whereType<wire.ListConferencesRequest>(), hasLength(2));
     },
   );
+
+  testWidgets('catalog resize keeps query pages scroll and pending bookmark', (
+    t,
+  ) async {
+    t.view.devicePixelRatio = 1;
+    t.view.physicalSize = const Size(600, 800);
+    addTearDown(t.view.resetPhysicalSize);
+    addTearDown(t.view.resetDevicePixelRatio);
+    final api = FakeTransport()..supportsLightweightConferenceCatalog = true;
+    api.conferences = (r) async => wire.ListConferencesResponse(
+      conferences: List.generate(
+        20,
+        (i) => area('echo-${r.page.offset.toInt() + i}', 1),
+      ),
+      hasMore: r.page.offset.toInt() == 0,
+    );
+    final pending = Completer<Empty>();
+    api.add = (_) => pending.future;
+    api.remove = (_) => pending.future;
+    await start(t, api);
+    await t.tap(find.byTooltip('Все области'));
+    await t.pumpAndSettle();
+    await t.enterText(find.byType(TextField), 'echo');
+    await t.pump(const Duration(milliseconds: 400));
+    await t.pumpAndSettle();
+    final state = t.state<PersonalConferencesState>(
+      find.byWidgetPredicate((w) => w is PersonalConferences && w.catalog),
+    );
+    await state.load(more: true);
+    await t.pumpAndSettle();
+    expect(state.entries, hasLength(40));
+    state.controller.jumpTo(100);
+    await t.pumpAndSettle();
+    final offset = state.controller.offset;
+    final operation = state.toggle(state.entries.first);
+    await t.pump();
+    final calls = api.calls.length;
+    for (final width in [599.0, 600.0, 1023.0, 1024.0, 600.0]) {
+      t.view.physicalSize = Size(width, 800);
+      await t.pumpAndSettle();
+      expect(state.search.text, 'echo');
+      expect(state.entries, hasLength(40));
+      expect(state.controller.offset, offset);
+      expect(api.calls.length, calls);
+      expect(t.takeException(), isNull);
+    }
+    pending.complete(Empty());
+    await operation;
+    await t.pumpAndSettle();
+    expect(state.search.text, 'echo');
+    expect(state.entries, hasLength(40));
+  });
 }

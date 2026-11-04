@@ -1,3 +1,5 @@
+import '../widgets/adaptive_layout.dart';
+
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -120,48 +122,47 @@ class _ReplyDestinationState extends State<ReplyDestination> {
           widget.personalOnly ? 'Личный ответ' : 'Область для ответа',
         ),
       ),
-      body: Column(
-        children: [
-          Padding(
-            padding: const EdgeInsets.all(16),
-            child: TextField(
-              controller: search,
-              onChanged: (_) => setState(() {}),
-              decoration: const InputDecoration(labelText: 'Поиск области'),
-            ),
-          ),
-          if (loading) const LinearProgressIndicator(),
-          if (error != null) ...[
-            Text(error!),
-            TextButton(onPressed: load, child: const Text('Повторить')),
-          ],
-          if (!loading && error == null && visible.isEmpty)
+      body: AdaptiveContent(
+        maxWidth: AdaptiveContent.listWidth,
+        child: ListView(
+          children: [
             Padding(
               padding: const EdgeInsets.all(16),
-              child: Text(
-                rows.isNotEmpty
-                    ? 'Ничего не найдено'
-                    : widget.personalOnly
-                    ? 'Нет доступного для отправки Netmail. Настройте личный ящик на сервере.'
-                    : 'Нет доступных областей для ответа',
+              child: TextField(
+                controller: search,
+                onChanged: (_) => setState(() {}),
+                decoration: const InputDecoration(labelText: 'Поиск области'),
               ),
             ),
-          Expanded(
-            child: ListView(
-              children: [
-                if (!loading && error == null)
-                  for (final area in visible)
-                    ListTile(
-                      title: Text(area.name),
-                      subtitle: Text(
-                        '${area.kind == AreaKind.netmail ? "Netmail · лично" : "Эха · всем участникам"}\n${area.id}',
-                      ),
-                      onTap: () => Navigator.pop(context, area),
+            if (loading) const LinearProgressIndicator(),
+            if (error != null) ...[
+              Text(error!),
+              TextButton(onPressed: load, child: const Text('Повторить')),
+            ],
+            if (!loading && error == null && visible.isEmpty)
+              Padding(
+                padding: const EdgeInsets.all(16),
+                child: Text(
+                  rows.isNotEmpty
+                      ? 'Ничего не найдено'
+                      : widget.personalOnly
+                      ? 'Нет доступного для отправки Netmail. Настройте личный ящик на сервере.'
+                      : 'Нет доступных областей для ответа',
+                ),
+              ),
+            ...[
+              if (!loading && error == null)
+                for (final area in visible)
+                  ListTile(
+                    title: Text(area.name),
+                    subtitle: Text(
+                      '${area.kind == AreaKind.netmail ? "Netmail · лично" : "Эха · всем участникам"}\n${area.id}',
                     ),
-              ],
-            ),
-          ),
-        ],
+                    onTap: () => Navigator.pop(context, area),
+                  ),
+            ],
+          ],
+        ),
       ),
     );
   }
