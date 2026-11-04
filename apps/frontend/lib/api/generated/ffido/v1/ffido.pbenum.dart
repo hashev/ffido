@@ -23,16 +23,19 @@ class ConferenceSort extends $pb.ProtobufEnum {
       ConferenceSort._(2, _omitEnumNames ? '' : 'CONFERENCE_SORT_LAST_MESSAGE');
   static const ConferenceSort CONFERENCE_SORT_UNREAD =
       ConferenceSort._(3, _omitEnumNames ? '' : 'CONFERENCE_SORT_UNREAD');
+  static const ConferenceSort CONFERENCE_SORT_CATALOG =
+      ConferenceSort._(4, _omitEnumNames ? '' : 'CONFERENCE_SORT_CATALOG');
 
   static const $core.List<ConferenceSort> values = <ConferenceSort>[
     CONFERENCE_SORT_UNSPECIFIED,
     CONFERENCE_SORT_NAME,
     CONFERENCE_SORT_LAST_MESSAGE,
     CONFERENCE_SORT_UNREAD,
+    CONFERENCE_SORT_CATALOG,
   ];
 
   static final $core.List<ConferenceSort?> _byValue =
-      $pb.ProtobufEnum.$_initByValueList(values, 3);
+      $pb.ProtobufEnum.$_initByValueList(values, 4);
   static ConferenceSort? valueOf($core.int value) =>
       value < 0 || value >= _byValue.length ? null : _byValue[value];
 

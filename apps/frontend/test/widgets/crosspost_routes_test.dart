@@ -107,6 +107,11 @@ void main() {
       api.conferences = (_) async => wire.ListConferencesResponse(
         conferences: [area('A'), area('B'), area('C')],
       );
+      api.bookmarks = (_) async => wire.ListBookmarksResponse(
+        bookmarks: [
+          for (final id in ['A', 'B', 'C']) wire.Bookmark(conference: area(id)),
+        ],
+      );
       api.conference = (r) async => area(r.conferenceId);
       api.messages = (r) async => wire.ListMessagesResponse(
         messages: [wire.Message(id: '${r.conferenceId}#1', subject: 'Letter')],

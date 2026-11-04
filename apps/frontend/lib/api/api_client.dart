@@ -48,6 +48,9 @@ class ApiClient implements ApiTransport, MessageFooterSupport {
   Stream<void> get identityChanges => _identityChanges.stream;
   @override
   bool get supportsMessageFooter => _session?.supportsMessageFooter ?? false;
+  @override
+  bool get supportsLightweightConferenceCatalog =>
+      _session?.supportsLightweightConferenceCatalog ?? false;
   wire.SessionInfo? get session => _session;
   set session(wire.SessionInfo? value) {
     _session = value;

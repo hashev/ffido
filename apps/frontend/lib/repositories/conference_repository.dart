@@ -14,6 +14,7 @@ import '../models/conference.dart';
 class ConferenceRepository {
   ConferenceRepository({required this._apiClient, required this._prefs}) {
     _subscription = _apiClient.sessionChanges.listen((_) {
+      _legacyCatalog = null;
       unawaited(clearCache());
     });
   }
@@ -23,6 +24,113 @@ class ConferenceRepository {
   Future<void> _cacheQueue = Future.value();
   static const _prefix = 'ffido-conferences-v2:';
   static const _cacheValidDuration = Duration(minutes: 5);
+  final _changes = StreamController<ConferenceChange>.broadcast(sync: true);
+  Stream<ConferenceChange> get changes => _changes.stream;
+  ConferenceListResponse? _legacyCatalog;
+  String _legacyQuery = '';
+  void notifyRead(Set<String> ids) {
+    for (final id in ids) {
+      _changes.add(ConferenceChange(id));
+    }
+  }
+
+  void notifyDenied(String id) {
+    _legacyCatalog = null;
+    _changes.add(ConferenceChange(id, revoked: true));
+  }
+
+  void notifyBookmark(String id, bool bookmarked) =>
+      _changes.add(ConferenceChange(id, bookmarked: bookmarked));
+
+  Future<ConferenceListResponse> fetchCatalogPage({
+    bool bookmarkedOnly = false,
+    bool omitStatistics = true,
+    String query = '',
+    int offset = 0,
+    int limit = ApiConstants.defaultLimit,
+    RpcCancellation? cancellation,
+  }) async {
+    final captured = epoch;
+    _check(captured, cancellation);
+    if (_apiClient.supportsLightweightConferenceCatalog) {
+      final response = await _apiClient.listConferences(
+        wire.ListConferencesRequest(
+          page: _page(offset, limit),
+          query: query.trim(),
+          sort: wire.ConferenceSort.CONFERENCE_SORT_CATALOG,
+          omitStatistics: omitStatistics,
+          bookmarkedOnly: bookmarkedOnly,
+        ),
+        cancellation: cancellation,
+      );
+      _check(captured, cancellation);
+      return mapConferences(response);
+    }
+    if (bookmarkedOnly) {
+      final page = await _apiClient.listBookmarks(
+        _page(offset, limit),
+        cancellation: cancellation,
+      );
+      _check(captured, cancellation);
+      return ConferenceListResponse(
+        conferences: page.bookmarks
+            .map((e) => mapConference(e.conference))
+            .toList(),
+        total: page.total.toInt(),
+        hasMore: page.hasMore,
+      );
+    }
+    if (offset == 0 || _legacyCatalog == null || _legacyQuery != query) {
+      final result = await fetchAllConferences(
+        query: query,
+        cancellation: cancellation,
+      );
+      _check(captured, cancellation);
+      _legacyCatalog = ConferenceListResponse(
+        conferences: [...result.conferences]
+          ..sort(Conference.compareByCatalogName),
+        total: result.total,
+        hasMore: result.hasMore,
+      );
+      _legacyQuery = query;
+    }
+    final page = _legacyCatalog!;
+    return ConferenceListResponse(
+      conferences: page.conferences.skip(offset).take(limit).toList(),
+      total: page.total,
+      hasMore: offset + limit < page.conferences.length || page.hasMore,
+    );
+  }
+
+  Future<List<Conference>> favoriteSnapshot({
+    RpcCancellation? cancellation,
+  }) async {
+    final captured = epoch;
+    final items = <String, Conference>{};
+    var offset = 0;
+    while (true) {
+      final page = await fetchCatalogPage(
+        bookmarkedOnly: true,
+        offset: offset,
+        limit: 100,
+        cancellation: cancellation,
+      );
+      _check(captured, cancellation);
+      final previous = items.length;
+      for (final item in page.conferences) {
+        items[item.id] = item;
+      }
+      if (!page.hasMore) break;
+      if (items.length == previous) {
+        throw const ServerException(
+          message: 'Загрузка избранного не продвигается',
+        );
+      }
+      offset += page.conferences.length;
+    }
+    return items.values.toList()..sort(Conference.compareByName);
+  }
+
   int get epoch => _apiClient.epoch;
   ApiTransport get transport => _apiClient;
   Stream<int> get sessionChanges => _apiClient.sessionChanges;
@@ -215,6 +323,7 @@ class ConferenceRepository {
     }
     _check(captured, cancellation);
     await clearCache();
+    notifyBookmark(id, !isBookmarked);
     return !isBookmarked;
   }
 
@@ -302,5 +411,15 @@ class ConferenceRepository {
     return _cacheQueue;
   }
 
-  Future<void> dispose() => _subscription.cancel();
+  Future<void> dispose() async {
+    await _subscription.cancel();
+    await _changes.close();
+  }
+}
+
+class ConferenceChange {
+  final String id;
+  final bool? bookmarked;
+  final bool revoked;
+  const ConferenceChange(this.id, {this.bookmarked, this.revoked = false});
 }

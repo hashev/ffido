@@ -107,13 +107,13 @@ python3 scripts/release/audit_github.py
 ## 4. CI и зависимости
 
 `ci.yml` вызывает `build.yml`. PR не получает signing secrets и write-токен.
-Обязательные jobs: release-tools tests, клиентские analyze/test/build на пяти
-OS/arch вариантах, backend build/CTest/HPT/static checks/proto на трёх вариантах.
+Обязательные jobs: release-tools tests, клиентские analyze/test/build на четырёх
+OS/arch вариантах, backend build/CTest/HPT/static checks/proto на двух вариантах.
 Тестовый HPT собирается из закреплённых Husky-ревизий в локальном build-prefix.
 `check_ctest.py` запрещает отсутствующий HPT и skipped tests. amster2 не используется.
 
 Матрица использует Flutter 3.47.7, Java 17, Ubuntu 24.04, Windows 2022 runner,
-macOS 15 arm64 и macos-15-intel. Backend выбирает установленный Xcode 26.3
+macOS 15 arm64. Backend выбирает установленный Xcode 26.3
 для стандартного `std::stop_token`; deployment target остаётся macOS 15.
 Actions закреплены полными commit SHA.
 Кеш dependency prefix привязан к runner/архитектуре, fingerprint compiler/SDK/внешних библиотек и содержимому builder scripts.
@@ -184,7 +184,7 @@ gh variable set FFIDO_PUBLICATION_READY --repo hashev/ffido --body true
 run number + offset 1000. Prerelease: `vX.Y.Z-dev.N.<sha>`. При переименовании/замене
 workflow нельзя обнулить Android versionCode: увеличьте offset через PR.
 
-Публикация собирает восемь целевых пакетов одного запуска, сверяет manifest и
+Публикация собирает шесть целевых пакетов одного запуска, сверяет manifest и
 SHA-256, создаёт draft, загружает файлы, повторно скачивает и проверяет их и только
 после этого открывает релиз. Уже публичные файлы не заменяются молча.
 Пакеты должны скачиваться без авторизации со страницы Releases, а не только
@@ -408,7 +408,7 @@ manifest файлов. Workflow `native-dependencies.yml` прогревает �
 Он разрешён только для master и тегов v*, с прежним environment `release` и
 production-ключами. Publish по-прежнему ожидает identity, verify и android-sign;
 failed/cancelled/skipped обязательного задания блокирует публикацию. Сохраняются
-валидация текущего запуска/identity, восемь пакетов, подписи и проверка контейнера.
+валидация текущего запуска/identity, шесть пакетов, подписи и проверка контейнера.
 Раннее завершение подписания не меняет публичные assets или канал обновления.
 
 Переносимые format/analyze запускаются один раз. Платформенные сборки, тесты,
@@ -435,3 +435,9 @@ Docker-native snapshots хранятся отдельными точными Git
 входы внутри toolchain и переносят компоненты между hosted runners. Вспомогательные
 cache targets не являются входами основного image build. Сами snapshots находятся
 в `build/docker-native-cache`, отдельно от публикуемого `build/container`.
+
+### Матрица после исключения macOS Intel
+
+PR, master, stable и прогрев больше не создают заданий macos-15-intel. Обязательны client-macos-arm64, client-windows-x86_64, client-linux-x86_64, client-android-universal, server-macos-arm64, server-linux-x86_64 и прежний контейнер linux/amd64. Проверки оставшихся платформ, HPT, Android API 24/25/35 и общий gate сохраняются. Intel в исторических подписанных метаданных по-прежнему распознаётся; старые assets не переписываются.
+
+Resolve client dependencies и Test client — отдельные шаги: длительность тестов не является временем pub get. В stable 1.0.21 Intel pub get занял около трёх секунд при успешном кеше, а составной шаг с Flutter-тестами — 835 секунд. Кеширование само по себе не решает эту задержку. Удаление Intel не гарантирует определённого времени релиза: остаются ARM-проверки и очередь runner.

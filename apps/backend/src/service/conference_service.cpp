@@ -2,16 +2,24 @@
 
 #include <spdlog/spdlog.h>
 
+#include <locale>
+#include <set>
+
 #include "service/jam_mapping.hpp"
+#include "service/message_search.hpp"
 #include "service/request_context.hpp"
 
 namespace fidoback::service {
 std::expected<domain::Conference, domain::ApiError> ConferenceService::GetConference(std::string_view id,
-                                                                                     std::string_view user) {
-  return Describe(id, user, false);
+                                                                                     std::string_view user,
+                                                                                     bool omit_statistics) {
+  return Describe(id, user, false, omit_statistics);
 }
 std::expected<domain::Conference, domain::ApiError> ConferenceService::Describe(std::string_view id,
-                                                                                std::string_view user, bool tolerant) {
+                                                                                std::string_view user, bool tolerant,
+                                                                                bool omit_statistics) {
+  if (!RequestActive())
+    return std::unexpected(SearchInterrupted());
   auto permission = access_->Permissions(*metadata_, user, id);
   if (!permission)
     return std::unexpected(permission.error());
@@ -29,15 +37,17 @@ std::expected<domain::Conference, domain::ApiError> ConferenceService::Describe(
   result.personal_mailbox = !area.config.mailbox_address.empty();
   result.storage_format = area.config.msgbase_type.value_or("");
   result.unsupported_format = !area.files;
-  result.statistics_known = permission->read && !result.unsupported_format;
+  result.statistics_known = !omit_statistics && permission->read && !result.unsupported_format;
   result.can_read = permission->read;
   result.can_post = permission->post;
-  if (!permission->read || result.unsupported_format)
+  if (!permission->read)
     return result;
   auto bookmarked = metadata_->IsBookmarked(user, id);
   if (!bookmarked)
     return std::unexpected(bookmarked.error());
   result.is_bookmarked = *bookmarked;
+  if (omit_statistics || result.unsupported_format)
+    return result;
   const auto storage_failure =
       [&](const storage::JamAccessError& error) -> std::expected<domain::Conference, domain::ApiError> {
     if (!RequestActive())
@@ -93,22 +103,36 @@ std::expected<domain::Conference, domain::ApiError> ConferenceService::Describe(
 }
 std::expected<domain::ConferenceListResponse, domain::ApiError> ConferenceService::GetConferences(
     const domain::PaginationRequest& page, std::optional<std::string_view> search, std::string_view user,
-    std::string_view sort) {
-  if (!ValidPage(page) || (sort != "name" && sort != "date" && sort != "unread"))
+    std::string_view sort, bool omit_statistics, bool bookmarked_only) {
+  if (!ValidPage(page) || (sort != "name" && sort != "date" && sort != "unread" && sort != "catalog"))
     return std::unexpected(domain::ApiError::Validation("Invalid page"));
+  if (omit_statistics && (sort == "date" || sort == "unread"))
+    return std::unexpected(domain::ApiError::Validation("Statistics sort requires statistics"));
+  std::set<std::string> bookmarks;
+  if (bookmarked_only) {
+    auto saved = metadata_->GetBookmarks(user);
+    if (!saved)
+      return std::unexpected(saved.error());
+    for (const auto& bookmark : *saved)
+      bookmarks.insert(bookmark.conference_id);
+  }
   std::vector<std::string_view> ids;
   for (const auto& [id, area] : catalog_->areas()) {
+    if (!RequestActive())
+      return std::unexpected(SearchInterrupted());
     auto permission = access_->Permissions(*metadata_, user, id);
     if (!permission)
       return std::unexpected(permission.error());
     if (!permission->read && !permission->post && !permission->visible)
+      continue;
+    if (bookmarked_only && (!permission->read || !bookmarks.contains(id)))
       continue;
     const auto name = area.config.description.value_or(area.config.name);
     if (!search || search->empty() || id.find(*search) != std::string::npos || name.find(*search) != std::string::npos)
       ids.push_back(id);
   }
   std::vector<domain::Conference> sorted;
-  if (sort != "name") {
+  if (sort == "date" || sort == "unread") {
     for (auto id : ids) {
       auto item = Describe(id, user, true);
       if (!item)
@@ -124,6 +148,27 @@ std::expected<domain::ConferenceListResponse, domain::ApiError> ConferenceServic
         return a.unread_count > b.unread_count;
       return a.id < b.id;
     });
+  } else if (sort == "catalog") {
+    // Pin UTF-8 casing independently of the process locale on supported hosts.
+#ifdef __APPLE__
+    static const std::locale casing("en_US.UTF-8");
+#else
+    static const std::locale casing("C.UTF-8");
+#endif
+    const auto& unicode = std::use_facet<std::ctype<wchar_t>>(casing);
+    std::map<std::string_view, std::pair<int, std::u32string>> keys;
+    for (auto id : ids) {
+      const auto& config = catalog_->areas().at(std::string(id)).config;
+      auto folded = FoldSearch(config.description.value_or(config.name), false);
+      if (!folded)
+        return std::unexpected(folded.error());
+      for (auto& point : folded->folded)
+        point = static_cast<char32_t>(unicode.tolower(static_cast<wchar_t>(point)));
+      const int group = config.kind == AreaKind::kEcho ? 5 : static_cast<int>(config.kind) - 1;
+      keys.emplace(id, std::pair{group, std::move(folded->folded)});
+    }
+    std::sort(ids.begin(), ids.end(),
+              [&](auto a, auto b) { return keys.at(a) == keys.at(b) ? a < b : keys.at(a) < keys.at(b); });
   } else {
     std::sort(ids.begin(), ids.end(), [&](auto a, auto b) {
       const auto& ac = catalog_->areas().at(std::string(a)).config;
@@ -138,10 +183,10 @@ std::expected<domain::ConferenceListResponse, domain::ApiError> ConferenceServic
   const auto start = std::min<uint64_t>(page.offset, ids.size());
   const auto end = std::min<uint64_t>(start + page.limit, ids.size());
   for (auto i = start; i < end; ++i) {
-    if (sort != "name")
+    if (sort == "date" || sort == "unread")
       result.conferences.push_back(std::move(sorted.at(i)));
     else {
-      auto conference = Describe(ids.at(i), user, true);
+      auto conference = Describe(ids.at(i), user, true, omit_statistics);
       if (!conference)
         return std::unexpected(conference.error());
       result.conferences.push_back(std::move(*conference));

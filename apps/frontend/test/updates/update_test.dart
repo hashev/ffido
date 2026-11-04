@@ -94,6 +94,20 @@ void main() {
       isFalse,
     );
   });
+  test('Intel macOS cannot select ARM64 package from new matrix', () {
+    final source = fixture.available.package.json;
+    final arm = UpdatePackage({
+      ...source,
+      'id': 'client-macos-arm64',
+      'platform': {'os': 'macos', 'architecture': 'arm64'},
+      'min_os': {'version': '15'},
+    }, fixture.available.manifest.identity);
+    expect(
+      const UpdatePlatform('macos', 'x86_64', [15]).supports(arm),
+      isFalse,
+    );
+    expect(const UpdatePlatform('macos', 'arm64', [15]).supports(arm), isTrue);
+  });
   test('проверка находит подписанный совместимый пакет', () async {
     expect(
       (await fixture.service().check('stable'))?.package.id,

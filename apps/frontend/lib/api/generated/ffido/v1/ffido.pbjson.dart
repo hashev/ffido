@@ -23,6 +23,7 @@ const ConferenceSort$json = {
     {'1': 'CONFERENCE_SORT_NAME', '2': 1},
     {'1': 'CONFERENCE_SORT_LAST_MESSAGE', '2': 2},
     {'1': 'CONFERENCE_SORT_UNREAD', '2': 3},
+    {'1': 'CONFERENCE_SORT_CATALOG', '2': 4},
   ],
 };
 
@@ -30,7 +31,8 @@ const ConferenceSort$json = {
 final $typed_data.Uint8List conferenceSortDescriptor = $convert.base64Decode(
     'Cg5Db25mZXJlbmNlU29ydBIfChtDT05GRVJFTkNFX1NPUlRfVU5TUEVDSUZJRUQQABIYChRDT0'
     '5GRVJFTkNFX1NPUlRfTkFNRRABEiAKHENPTkZFUkVOQ0VfU09SVF9MQVNUX01FU1NBR0UQAhIa'
-    'ChZDT05GRVJFTkNFX1NPUlRfVU5SRUFEEAM=');
+    'ChZDT05GRVJFTkNFX1NPUlRfVU5SRUFEEAMSGwoXQ09ORkVSRU5DRV9TT1JUX0NBVEFMT0cQBA'
+    '==');
 
 @$core.Deprecated('Use messageSortDescriptor instead')
 const MessageSort$json = {
@@ -233,6 +235,8 @@ const ListConferencesRequest$json = {
       '6': '.ffido.v1.ConferenceSort',
       '10': 'sort'
     },
+    {'1': 'omit_statistics', '3': 4, '4': 1, '5': 8, '10': 'omitStatistics'},
+    {'1': 'bookmarked_only', '3': 5, '4': 1, '5': 8, '10': 'bookmarkedOnly'},
   ],
 };
 
@@ -240,7 +244,8 @@ const ListConferencesRequest$json = {
 final $typed_data.Uint8List listConferencesRequestDescriptor = $convert.base64Decode(
     'ChZMaXN0Q29uZmVyZW5jZXNSZXF1ZXN0EikKBHBhZ2UYASABKAsyFS5mZmlkby52MS5QYWdlUm'
     'VxdWVzdFIEcGFnZRIUCgVxdWVyeRgCIAEoCVIFcXVlcnkSLAoEc29ydBgDIAEoDjIYLmZmaWRv'
-    'LnYxLkNvbmZlcmVuY2VTb3J0UgRzb3J0');
+    'LnYxLkNvbmZlcmVuY2VTb3J0UgRzb3J0EicKD29taXRfc3RhdGlzdGljcxgEIAEoCFIOb21pdF'
+    'N0YXRpc3RpY3MSJwoPYm9va21hcmtlZF9vbmx5GAUgASgIUg5ib29rbWFya2VkT25seQ==');
 
 @$core.Deprecated('Use getConferenceRequestDescriptor instead')
 const GetConferenceRequest$json = {
@@ -894,6 +899,13 @@ const SessionInfo$json = {
   '1': 'SessionInfo',
   '2': [
     {
+      '1': 'supports_lightweight_conference_catalog',
+      '3': 4,
+      '4': 1,
+      '5': 8,
+      '10': 'supportsLightweightConferenceCatalog'
+    },
+    {
       '1': 'supports_message_footer',
       '3': 3,
       '4': 1,
@@ -921,10 +933,11 @@ const SessionInfo$json = {
 
 /// Descriptor for `SessionInfo`. Decode as a `google.protobuf.DescriptorProto`.
 final $typed_data.Uint8List sessionInfoDescriptor = $convert.base64Decode(
-    'CgtTZXNzaW9uSW5mbxI2ChdzdXBwb3J0c19tZXNzYWdlX2Zvb3RlchgDIAEoCFIVc3VwcG9ydH'
-    'NNZXNzYWdlRm9vdGVyEisKB3Byb2ZpbGUYASABKAsyES5mZmlkby52MS5Qcm9maWxlUgdwcm9m'
-    'aWxlEjkKCmV4cGlyZXNfYXQYAiABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wUglleH'
-    'BpcmVzQXQ=');
+    'CgtTZXNzaW9uSW5mbxJVCidzdXBwb3J0c19saWdodHdlaWdodF9jb25mZXJlbmNlX2NhdGFsb2'
+    'cYBCABKAhSJHN1cHBvcnRzTGlnaHR3ZWlnaHRDb25mZXJlbmNlQ2F0YWxvZxI2ChdzdXBwb3J0'
+    'c19tZXNzYWdlX2Zvb3RlchgDIAEoCFIVc3VwcG9ydHNNZXNzYWdlRm9vdGVyEisKB3Byb2ZpbG'
+    'UYASABKAsyES5mZmlkby52MS5Qcm9maWxlUgdwcm9maWxlEjkKCmV4cGlyZXNfYXQYAiABKAsy'
+    'Gi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wUglleHBpcmVzQXQ=');
 
 @$core.Deprecated('Use loginResponseDescriptor instead')
 const LoginResponse$json = {

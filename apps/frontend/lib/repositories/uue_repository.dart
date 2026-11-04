@@ -33,7 +33,8 @@ class UueDraft {
 class UueRepository {
   final ApiTransport api;
   late final _footers = MessageFooterSnapshots(api);
-  UueRepository(this.api);
+  final void Function(String)? onChanged;
+  UueRepository(this.api, {this.onChanged});
   int get epoch => api.epoch;
   Stream<int> get sessionChanges => api.sessionChanges;
   Future<UueCapabilities?>? _capabilities;
@@ -292,6 +293,10 @@ class UueRepository {
       cancellation: cancellation,
     );
     _check(before, cancellation);
-    return UueTransfer.fromWire(response);
+    final transfer = UueTransfer.fromWire(response);
+    if (transfer.saved > 0 || transfer.complete) {
+      onChanged?.call(draft.conference);
+    }
+    return transfer;
   }
 }

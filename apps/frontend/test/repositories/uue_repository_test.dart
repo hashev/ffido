@@ -32,9 +32,11 @@ UueDraft draft(Uint8List bytes) => UueDraft(
 void main() {
   late FakeTransport api;
   late UueRepository repository;
+  late Set<String> changed;
   setUp(() {
     api = FakeTransport();
-    repository = UueRepository(api);
+    changed = {};
+    repository = UueRepository(api, onChanged: changed.add);
     api.getUueLimitsHandler = (_) async => limits();
     api.getUueSendStatusHandler = (_) async => throw const NotFoundException();
   });
@@ -71,6 +73,7 @@ void main() {
         progress: (done, _) => progress.add(done),
       );
       expect(result.complete, isTrue);
+      expect(changed, {'ECHO'});
       expect(progress, [65536, 100000]);
       expect(api.calls.whereType<wire.UploadUueChunkRequest>().length, 2);
     },

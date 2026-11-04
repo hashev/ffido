@@ -129,6 +129,9 @@ void main() {
       api.bookmarks = (_) async => data(3);
       await tester.pumpWidget(screen(true));
       await tester.pumpAndSettle();
+      expect(find.text('0'), findsOneWidget);
+      await tester.tap(find.byTooltip('Обновить'));
+      await tester.pumpAndSettle();
       expect(find.text('3'), findsOneWidget);
       final old = Completer<wire.ListBookmarksResponse>();
       api.bookmarks = (_) => old.future;
@@ -161,6 +164,13 @@ void main() {
           ),
         ),
       ],
+    );
+    api.conference = (_) async => wire.Conference(
+      id: 'echo',
+      name: 'Echo',
+      canRead: true,
+      isBookmarked: true,
+      unreadCount: Int64(unread ? 1 : 0),
     );
     api.messages = (_) async => wire.ListMessagesResponse(
       messages: [wire.Message(id: 'g#1', subject: 'Subject')],

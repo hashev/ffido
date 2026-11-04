@@ -18,6 +18,7 @@ class RpcCancellation {
 
 abstract interface class ApiTransport {
   int get epoch;
+  bool get supportsLightweightConferenceCatalog;
   Uri get endpoint;
   String get cacheScope;
   bool get hasToken;

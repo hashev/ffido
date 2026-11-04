@@ -24,10 +24,11 @@ class MessageRepository {
   final PersonalMessageFiltersRepository filters;
   final UueRepository uue;
   final MessageFooterSnapshots _footers;
-  MessageRepository(ApiTransport apiClient)
+  final void Function(String)? onChanged;
+  MessageRepository(ApiTransport apiClient, {this.onChanged})
     : _apiClient = apiClient,
       filters = PersonalMessageFiltersRepository(apiClient),
-      uue = UueRepository(apiClient),
+      uue = UueRepository(apiClient, onChanged: onChanged),
       _footers = MessageFooterSnapshots(apiClient);
   int _positionEpoch = -1;
   final Map<String, int> _latestRevision = {};
@@ -337,6 +338,7 @@ class MessageRepository {
         : MessageSearchResult.validate(
             wire.FindMessageResponse(message: message, matches: value.matches),
           );
+    if (value.hasVisible()) onChanged?.call(conferenceId);
     return MessageSearchResult(mapMessage(message), matches);
   }
 
@@ -365,6 +367,7 @@ class MessageRepository {
     );
     _check(captured, cancellation);
     final result = mapMessage(response);
+    onChanged?.call(conferenceId);
     if (result.positionRevision > (_latestRevision[conferenceId] ?? 0)) {
       _latestRevision[conferenceId] = result.positionRevision;
     }
@@ -413,6 +416,7 @@ class MessageRepository {
         message: 'Сервер не подтвердил локальное сохранение',
       );
     }
+    onChanged?.call(conferenceId);
     return SendMessageResponse(
       id: response.message.messageId,
       status: 'saved_locally',
@@ -464,6 +468,9 @@ class MessageRepository {
       throw const ServerException(
         message: 'Сервер не подтвердил все копии кросспостинга',
       );
+    }
+    for (final saved in response.saved) {
+      onChanged?.call(saved.message.conferenceId);
     }
     return response;
   }
@@ -584,6 +591,7 @@ class MessageRepository {
         cancellation: cancellation,
       );
       _check(captured, cancellation);
+      onChanged?.call(conferenceId);
     } on ApiException catch (error) {
       _check(captured, cancellation);
       if (error.statusCode == 12) {
@@ -608,6 +616,7 @@ class MessageRepository {
       cancellation: cancellation,
     );
     _check(captured, cancellation);
+    onChanged?.call(conferenceId);
   }
 
   /// Убрать персональную отметку чтения, сохранив историю и позицию.
@@ -624,6 +633,7 @@ class MessageRepository {
         cancellation: cancellation,
       );
       _check(captured, cancellation);
+      onChanged?.call(conferenceId);
     } on ApiException catch (error) {
       _check(captured, cancellation);
       if (error.statusCode == 12) {

@@ -1,105 +1,353 @@
-import '../models/conference.dart';
-import '../api/api_exceptions.dart';
-import '../utils/refresh_on_resume.dart';
-
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-
-import '../api/api_transport.dart';
-import '../main.dart';
-import '../repositories/account_repository.dart';
-import 'message_screen.dart';
-import '../repositories/message_repository.dart';
-import '../repositories/conference_repository.dart';
-
 import 'package:shared_preferences/shared_preferences.dart';
 
-/// Закладки и история используют одинаковую пагинацию и смену сессии.
+import '../api/api_exceptions.dart';
+import '../api/api_transport.dart';
+import '../conference_card.dart';
+import '../fido_conference.dart';
+import '../main.dart';
+import '../models/conference.dart';
+import '../repositories/account_repository.dart';
+import '../repositories/conference_repository.dart';
+import '../repositories/message_repository.dart';
+import '../utils/debouncer.dart';
+import '../utils/refresh_on_resume.dart';
+import 'message_screen.dart';
+
+/// Каталог и избранное разделяют представление, но не состояние загрузки.
 class PersonalConferences extends StatefulWidget {
-  final bool history;
+  final bool history, catalog, active;
   final AccountRepository? repository;
-  final bool active;
+  final ConferenceRepository? conferences;
+  final VoidCallback? onChooseAreas;
   const PersonalConferences({
     super.key,
     required this.history,
+    this.catalog = false,
     this.repository,
+    this.conferences,
     this.active = true,
+    this.onChooseAreas,
   });
   @override
-  State<PersonalConferences> createState() => _PersonalConferencesState();
+  State<PersonalConferences> createState() => PersonalConferencesState();
 }
 
-class _PersonalConferencesState extends State<PersonalConferences>
+class PersonalConferencesState extends State<PersonalConferences>
     with RefreshOnResume<PersonalConferences> {
   @override
   bool get resumeRefreshEnabled => widget.active;
   @override
   Future<void> refreshOnResume() => load();
-
   AccountRepository get repository => widget.repository ?? accountRepository;
+  late ConferenceRepository conferences;
+  late final Future<void> ready;
+  StreamSubscription<int>? sessionSubscription;
+  StreamSubscription<ConferenceChange>? changeSubscription;
+  final controller = ScrollController();
+  final search = TextEditingController();
+  final debouncer = Debouncer(duration: const Duration(milliseconds: 300));
   List<PersonalConferenceEntry> entries = [];
-  bool loading = false, hasMore = false;
-  bool opening = false;
+  final pending = <String>{};
+  final failedUpdates = <String>{};
+  bool loading = false,
+      hasMore = false,
+      loaded = false,
+      dirty = false,
+      opening = false;
   String? error;
+  String? bookmarkError;
+  Future<void> Function()? retryBookmark;
   int version = 0;
   RpcCancellation? cancellation;
-  late final StreamSubscription<int> subscription;
-  final Set<String> removing = {};
   @override
   void initState() {
     super.initState();
-    subscription = repository.sessionChanges.listen((_) {
-      entries = [];
-      removing.clear();
+    loading = widget.active;
+    controller.addListener(() {
+      if (widget.active &&
+          controller.position.extentAfter < 250 &&
+          hasMore &&
+          !loading &&
+          error == null) {
+        unawaited(load(more: true));
+      }
+    });
+    ready = initialize();
+    unawaited(
+      ready.then((_) {
+        if (mounted && widget.active && !loaded) unawaited(load());
+      }),
+    );
+  }
+
+  Future<void> initialize() async {
+    conferences =
+        widget.conferences ??
+        ConferenceRepository(
+          apiClient: repository.transport,
+          prefs: await SharedPreferences.getInstance(),
+        );
+    if (!mounted) {
+      if (widget.conferences == null) await conferences.dispose();
+      return;
+    }
+    sessionSubscription = repository.sessionChanges.listen((_) {
       ++version;
       unawaited(cancellation?.cancel());
+      entries = [];
+      pending.clear();
+      failedUpdates.clear();
+      retryUpdate = null;
+      loaded = false;
+      dirty = false;
+      error = null;
+      bookmarkError = null;
+      retryBookmark = null;
+      hasMore = false;
+      loading = false;
+      search.clear();
+      debouncer.cancel();
       setState(() {});
-      if (widget.active) load();
+      if (widget.active) unawaited(load());
     });
-    if (widget.active) load();
+    changeSubscription = conferences.changes.listen(
+      (event) => unawaited(changed(event)),
+    );
   }
 
   @override
   void didUpdateWidget(covariant PersonalConferences oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (widget.active && !oldWidget.active) load();
+    if (widget.active && !oldWidget.active && (!loaded || dirty)) {
+      unawaited(load());
+    }
   }
 
   @override
   void dispose() {
     ++version;
     unawaited(cancellation?.cancel());
-    unawaited(subscription.cancel());
+    unawaited(sessionSubscription?.cancel());
+    unawaited(changeSubscription?.cancel());
+    if (widget.conferences == null && changeSubscription != null) {
+      unawaited(conferences.dispose());
+    }
+    controller.dispose();
+    search.dispose();
+    debouncer.dispose();
     super.dispose();
   }
 
+  Future<void> changed(ConferenceChange event) async {
+    if (!mounted) return;
+    if (event.revoked) {
+      failedUpdates.remove(event.id);
+      setState(() {
+        entries.removeWhere((e) => e.conference.id == event.id);
+      });
+      return;
+    }
+    if (widget.history) {
+      if (event.bookmarked != null) return;
+      dirty = true;
+      if (widget.active) await load();
+      return;
+    }
+    final index = entries.indexWhere((e) => e.conference.id == event.id);
+    if (event.bookmarked != null) {
+      setState(() {
+        if (!widget.catalog) {
+          dirty = true;
+          if (!event.bookmarked!) {
+            entries.removeWhere((e) => e.conference.id == event.id);
+          }
+        } else if (index >= 0) {
+          final old = entries[index];
+          entries[index] = PersonalConferenceEntry(
+            old.conference.copyWith(isBookmarked: event.bookmarked!),
+            old.date,
+          );
+        }
+      });
+      return;
+    }
+    if (widget.catalog || index < 0) return;
+    final epoch = repository.epoch, captured = version;
+    try {
+      final fresh = await conferences.getConferenceById(event.id);
+      if (!mounted || epoch != repository.epoch || captured != version) return;
+      setState(() {
+        failedUpdates.remove(event.id);
+        if (failedUpdates.isEmpty && retryUpdate != null) {
+          error = null;
+          retryUpdate = null;
+        }
+        final position = entries.indexWhere((e) => e.conference.id == event.id);
+        if (position < 0) return;
+        if (fresh == null || !fresh.canRead || !fresh.isBookmarked) {
+          entries.removeAt(position);
+        } else {
+          entries[position] = PersonalConferenceEntry(
+            fresh,
+            entries[position].date,
+          );
+        }
+      });
+    } catch (e) {
+      if (!mounted || epoch != repository.epoch || captured != version) return;
+      if (e is ApiException && e.isAccessDenied) {
+        conferences.notifyDenied(event.id);
+        setState(() => error = e.toString());
+        return;
+      }
+      setState(() {
+        failedUpdates.add(event.id);
+        error = 'Не удалось обновить счётчик: $e';
+      });
+      retryUpdate = () async {
+        for (final id in failedUpdates.toList()) {
+          await changed(ConferenceChange(id));
+        }
+      };
+    }
+  }
+
+  Future<void> Function()? retryUpdate;
   Future<void> load({bool more = false}) async {
+    if (more && loading) return;
+    if (!more) debouncer.cancel();
+    if (more && dirty) more = false;
     final current = ++version;
     unawaited(cancellation?.cancel());
     final token = cancellation = RpcCancellation();
     setState(() {
       loading = true;
       error = null;
+      retryUpdate = null;
+      failedUpdates.clear();
     });
     try {
-      final offset = more ? entries.length : 0;
-      final page = widget.history
-          ? await repository.getHistory(offset: offset, cancellation: token)
-          : await repository.getBookmarks(offset: offset, cancellation: token);
+      await ready;
       if (!mounted || current != version) return;
+      final offset = more ? entries.length : 0;
+      final List<PersonalConferenceEntry> rows;
+      final bool next;
+      if (widget.history) {
+        final page = await repository.getHistory(
+          offset: offset,
+          cancellation: token,
+        );
+        rows = page.entries;
+        next = page.hasMore;
+      } else {
+        final page = await conferences.fetchCatalogPage(
+          bookmarkedOnly: !widget.catalog,
+          omitStatistics: widget.catalog,
+          query: search.text.trim(),
+          offset: offset,
+          cancellation: token,
+        );
+        rows = page.conferences
+            .map((c) => PersonalConferenceEntry(c, null))
+            .toList();
+        next = page.hasMore;
+      }
+      if (!mounted || current != version) return;
+      final combined = <String, PersonalConferenceEntry>{
+        if (more)
+          for (final e in entries) e.conference.id: e,
+        for (final e in rows) e.conference.id: e,
+      };
+      if (more && next && combined.length == entries.length) {
+        throw const ServerException(
+          message: 'Загрузка списка не продвигается. Обновите список.',
+        );
+      }
       setState(() {
-        entries = more ? [...entries, ...page.entries] : page.entries;
-        hasMore = page.hasMore;
+        entries = combined.values.toList();
+        hasMore = next;
         loading = false;
+        loaded = true;
+        dirty = false;
       });
     } catch (e) {
       if (!mounted || current != version) return;
       setState(() {
         loading = false;
         error = e.toString();
-        if (e is ApiException && e.isAccessDenied) entries = [];
+        if (e is ApiException && e.isAccessDenied) {
+          entries = [];
+          loaded = false;
+        }
       });
+    }
+  }
+
+  Future<void> toggle(PersonalConferenceEntry entry) async {
+    final id = entry.conference.id;
+    if (!pending.add(id)) return;
+    final epoch = repository.epoch;
+    setState(() {
+      bookmarkError = null;
+      retryBookmark = null;
+    });
+    try {
+      await conferences.toggleBookmark(
+        id,
+        widget.catalog ? entry.conference.isBookmarked : true,
+      );
+    } catch (e) {
+      if (!mounted || epoch != repository.epoch) return;
+      setState(() {
+        bookmarkError = e.toString();
+        retryBookmark = () => toggle(entry);
+        if (e is ApiException && e.isAccessDenied) {
+          entries.removeWhere((e) => e.conference.id == id);
+        }
+      });
+    } finally {
+      if (mounted && epoch == repository.epoch) {
+        setState(() => pending.remove(id));
+      }
+    }
+  }
+
+  Future<void> open(PersonalConferenceEntry entry) async {
+    if (opening || pending.contains(entry.conference.id)) return;
+    opening = true;
+    final epoch = repository.epoch;
+    final touched = <String>{};
+    try {
+      await Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => MessageScreen(
+            conferenceId: entry.conference.id,
+            conferenceName: entry.conference.name,
+            conferenceDescription: entry.conference.description,
+            canRead: entry.conference.canRead,
+            canPost: entry.conference.canPost,
+            kind: entry.conference.kind,
+            unsupportedFormat: entry.conference.unsupportedFormat,
+            personalMailbox: entry.conference.personalMailbox,
+            conferences: conferences,
+            repository: MessageRepository(
+              repository.transport,
+              onChanged: touched.add,
+            ),
+            loadFavoriteOrder: (token) =>
+                conferences.favoriteSnapshot(cancellation: token),
+            onAccessDenied: conferences.clearCache,
+            onAreaAccessDenied: conferences.notifyDenied,
+          ),
+        ),
+      );
+      if (mounted && epoch == repository.epoch) conferences.notifyRead(touched);
+    } finally {
+      opening = false;
     }
   }
 
@@ -122,187 +370,198 @@ class _PersonalConferencesState extends State<PersonalConferences>
     } catch (e) {
       if (!mounted || current != version) return;
       setState(() {
-        loading = false;
         error = e.toString();
-        if (e is ApiException && e.isAccessDenied) entries = [];
+        loading = false;
       });
-    }
-  }
-
-  Future<void> remove(PersonalConferenceEntry entry) async {
-    final id = entry.conference.id;
-    if (!removing.add(id)) return;
-    final epoch = repository.epoch;
-    setState(() {});
-    try {
-      await repository.removeBookmark(id);
-      if (!mounted || epoch != repository.epoch) return;
-      await load();
-    } catch (e) {
-      if (!mounted || epoch != repository.epoch) return;
-      setState(() => error = e.toString());
-    } finally {
-      if (mounted && epoch == repository.epoch) {
-        setState(() => removing.remove(id));
-      }
-    }
-  }
-
-  Future<void> open(PersonalConferenceEntry entry) async {
-    if (opening || loading) return;
-    opening = true;
-    ConferenceRepository? conferences;
-    try {
-      final epoch = repository.epoch;
-      while (hasMore) {
-        final count = entries.length;
-        final known = entries.map((e) => e.conference.id).toSet();
-        await load(more: true);
-        if (!mounted || epoch != repository.epoch || error != null) return;
-        if (!entries.skip(count).any((e) => !known.contains(e.conference.id))) {
-          setState(() => error = 'Список устарел. Обновите конференции.');
-          return;
-        }
-      }
-      if (!mounted || epoch != repository.epoch) return;
-      conferences = ConferenceRepository(
-        apiClient: repository.transport,
-        prefs: await SharedPreferences.getInstance(),
-      );
-      if (!mounted || epoch != repository.epoch) return;
-      final order = List<Conference>.unmodifiable(
-        entries.map((e) => e.conference),
-      );
-      await Navigator.push(
-        context,
-        MaterialPageRoute(
-          builder: (_) => MessageScreen(
-            conferenceOrder: order,
-            conferenceId: entry.conference.id,
-            onAccessDenied: repository.onBookmarksChanged,
-            canRead: entry.conference.canRead,
-            canPost: entry.conference.canPost,
-            unsupportedFormat: entry.conference.unsupportedFormat,
-            kind: entry.conference.kind,
-            personalMailbox: entry.conference.personalMailbox,
-            conferenceName: entry.conference.name,
-            conferenceDescription: entry.conference.description,
-            repository: MessageRepository(repository.transport),
-            conferences: conferences,
-          ),
-        ),
-      );
-      if (mounted && epoch == repository.epoch) await load();
-    } finally {
-      await conferences?.dispose();
-      opening = false;
     }
   }
 
   @override
   Widget build(BuildContext context) => Scaffold(
     appBar: AppBar(
-      title: Text(widget.history ? 'История' : 'Закладки'),
+      title: Text(
+        widget.history
+            ? 'История'
+            : widget.catalog
+            ? 'Все области'
+            : 'Избранное',
+      ),
       actions: [
         IconButton(
-          onPressed: loading ? null : load,
-          icon: const Icon(Icons.refresh),
           tooltip: 'Обновить',
+          icon: const Icon(Icons.refresh),
+          onPressed: () => load(),
         ),
         if (widget.history)
           IconButton(
-            onPressed: loading ? null : clear,
-            icon: const Icon(Icons.delete_sweep),
             tooltip: 'Очистить историю',
+            icon: const Icon(Icons.delete_sweep),
+            onPressed: loading ? null : clear,
           ),
       ],
     ),
     body: Column(
       children: [
+        if (widget.catalog)
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: TextField(
+              controller: search,
+              decoration: InputDecoration(
+                hintText: 'Поиск конференций...',
+                prefixIcon: const Icon(Icons.search),
+                suffixIcon: search.text.isEmpty
+                    ? null
+                    : IconButton(
+                        tooltip: 'Очистить поиск',
+                        icon: const Icon(Icons.clear),
+                        onPressed: () {
+                          search.clear();
+                          searchChanged('');
+                        },
+                      ),
+              ),
+              onChanged: searchChanged,
+            ),
+          ),
         if (loading) const LinearProgressIndicator(),
+        if (bookmarkError != null)
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              children: [
+                Text(bookmarkError!),
+                TextButton(
+                  onPressed: retryBookmark,
+                  child: const Text('Повторить изменение закладки'),
+                ),
+              ],
+            ),
+          ),
         if (error != null)
           Padding(
             padding: const EdgeInsets.all(16),
             child: Column(
               children: [
                 Text(error!),
-                TextButton(onPressed: load, child: const Text('Повторить')),
+                TextButton(
+                  onPressed:
+                      retryUpdate ??
+                      () => load(more: entries.isNotEmpty && hasMore),
+                  child: const Text('Повторить'),
+                ),
               ],
             ),
           ),
         if (!loading && error == null && entries.isEmpty)
           Expanded(
             child: Center(
-              child: Text(
-                widget.history ? 'История просмотров пуста' : 'Нет закладок',
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    widget.history
+                        ? 'История просмотров пуста'
+                        : widget.catalog
+                        ? 'Конференции не найдены'
+                        : 'Нет закладок',
+                  ),
+                  if (!widget.history &&
+                      !widget.catalog &&
+                      widget.onChooseAreas != null)
+                    TextButton(
+                      onPressed: widget.onChooseAreas,
+                      child: const Text('Выбрать эхи'),
+                    ),
+                ],
               ),
             ),
           ),
         if (entries.isNotEmpty)
           Expanded(
-            child: ListView.builder(
-              itemCount: entries.length + (hasMore ? 1 : 0),
-              itemBuilder: (context, index) {
-                if (index == entries.length) {
-                  return TextButton(
-                    onPressed: loading ? null : () => load(more: true),
-                    child: const Text('Загрузить ещё'),
+            child: RefreshIndicator(
+              onRefresh: load,
+              child: ListView.builder(
+                controller: controller,
+                itemCount: entries.length + (hasMore ? 1 : 0),
+                itemBuilder: (context, index) {
+                  if (index == entries.length) {
+                    return TextButton(
+                      onPressed: loading ? null : () => load(more: true),
+                      child: const Text('Загрузить ещё'),
+                    );
+                  }
+                  final e = entries[index], c = e.conference;
+                  if (widget.history) {
+                    return ListTile(
+                      title: Text(c.name),
+                      subtitle: Text('${c.kind.groupLabel} · ${c.description}'),
+                      trailing: e.date == null
+                          ? null
+                          : Text(e.date!.toLocal().toString()),
+                      onTap: () => open(e),
+                    );
+                  }
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      if (index == 0 ||
+                          entries[index - 1].conference.kind != c.kind)
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
+                          child: Text(
+                            c.kind.groupLabel,
+                            style: Theme.of(context).textTheme.titleMedium,
+                          ),
+                        ),
+                      ConferenceCard(
+                        conference: FidoConference(
+                          id: c.id,
+                          name: c.name,
+                          description: c.description,
+                          unreadCount: c.unreadCount,
+                          icon: Icons.forum,
+                          isBookmarked: !widget.catalog || c.isBookmarked,
+                          canRead: c.canRead,
+                          canPost: c.canPost,
+                          kind: c.kind,
+                          personalMailbox: c.personalMailbox,
+                          storageFormat: c.storageFormat,
+                          unsupportedFormat: c.unsupportedFormat,
+                          statisticsKnown: c.statisticsKnown,
+                        ),
+                        showStatistics: !widget.catalog,
+                        showZeroCount: true,
+                        onTap: () => open(e),
+                        onBookmark: c.canRead || !widget.catalog
+                            ? () => toggle(e)
+                            : null,
+                        bookmarkPending: pending.contains(c.id),
+                      ),
+                    ],
                   );
-                }
-                final entry = entries[index];
-                return ListTile(
-                  title: Text(entry.conference.name),
-                  subtitle: Text(
-                    '${entry.conference.kind.groupLabel} · ${entry.conference.description}',
-                  ),
-                  trailing: !widget.history
-                      ? Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            if (entry.conference.kind == AreaKind.echo)
-                              Padding(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 8,
-                                ),
-                                child: Semantics(
-                                  container: true,
-                                  label: entry.conference.statisticsKnown
-                                      ? 'Непрочитанных: ${entry.conference.unreadCount}'
-                                      : 'Количество непрочитанных неизвестно',
-                                  excludeSemantics: true,
-                                  child: Tooltip(
-                                    message: entry.conference.statisticsKnown
-                                        ? 'Непрочитанных: ${entry.conference.unreadCount}'
-                                        : 'Количество непрочитанных неизвестно',
-                                    child: Text(
-                                      entry.conference.statisticsKnown
-                                          ? entry.conference.unreadCount
-                                                .toString()
-                                          : '—',
-                                    ),
-                                  ),
-                                ),
-                              ),
-                            IconButton(
-                              tooltip: 'Удалить из закладок',
-                              onPressed: removing.contains(entry.conference.id)
-                                  ? null
-                                  : () => remove(entry),
-                              icon: const Icon(Icons.bookmark_remove),
-                            ),
-                          ],
-                        )
-                      : entry.date == null
-                      ? null
-                      : Text(entry.date!.toLocal().toString()),
-                  onTap: removing.contains(entry.conference.id)
-                      ? null
-                      : () => open(entry),
-                );
-              },
+                },
+              ),
             ),
           ),
       ],
     ),
   );
+  void searchChanged(String value) {
+    if (controller.hasClients) controller.jumpTo(0);
+    ++version;
+    unawaited(cancellation?.cancel());
+    debouncer.cancel();
+    setState(() {
+      error = null;
+      entries = [];
+      hasMore = false;
+      loading = true;
+    });
+    if (value.trim().isEmpty) {
+      unawaited(load());
+    } else {
+      debouncer.run(() => load());
+    }
+  }
 }

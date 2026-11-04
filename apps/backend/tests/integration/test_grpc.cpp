@@ -1,10 +1,12 @@
 #include <gtest/gtest.h>
 #include <spawn.h>
+#include <sqlite3.h>
 #include <sys/resource.h>
 #include <sys/wait.h>
 
 #include <condition_variable>
 #include <future>
+#include <nlohmann/json.hpp>
 #include <thread>
 
 #include "../support/echo_access.hpp"
@@ -630,6 +632,7 @@ TEST_F(GrpcTest, HptLoginTwoDevicesShareServerDataAndLogoutIsIndependent) {
   ASSERT_TRUE(login("fixture-a", phone).ok());
   ASSERT_TRUE(login("fixture-a", laptop).ok());
   EXPECT_TRUE(phone.session().supports_message_footer());
+  EXPECT_TRUE(phone.session().supports_lightweight_conference_catalog());
   EXPECT_EQ(phone.session().profile().user_id(), "A");
   EXPECT_EQ(phone.session().profile().name(), "Алексей");
   EXPECT_NE(phone.session_secret(), laptop.session_secret());
@@ -674,6 +677,7 @@ TEST_F(GrpcTest, HptLoginTwoDevicesShareServerDataAndLogoutIsIndependent) {
   EXPECT_TRUE(
       invoke(laptop.session_secret(), [&](auto& c) { return client->RestoreSession(&c, empty, &restored); }).ok());
   EXPECT_TRUE(restored.supports_message_footer());
+  EXPECT_TRUE(restored.supports_lightweight_conference_catalog());
 }
 TEST_F(GrpcTest, LoginLimitsAndFieldValidationAreAppliedBeforeSessionCreation) {
   ASSERT_TRUE(service->ConfigureAuth({{"2:1/3", "fixture"}}, std::string(32, 'k')));
@@ -2948,4 +2952,264 @@ TEST_F(GrpcKoiLargeTest, CancellationDuringLargeReadReleasesTheFileLease) {
     }
     EXPECT_EQ(owner->descriptors[0], -1);
   }
+}
+
+namespace {
+class LargeCatalogGrpcTest : public GrpcTest {
+  int AreaCount() const override {
+    return 514;
+  }
+};
+}  // namespace
+TEST_F(LargeCatalogGrpcTest, LightweightPagesAndBookmarkMutationNeverOpenJam) {
+  for (const auto& [id, area] : catalog->areas()) {
+    for (const auto* extension : {".jhr", ".jdt", ".jdx"})
+      std::filesystem::remove((temp.path() / area.config.filename).string() + extension);
+  }
+  wire::ListConferencesRequest request;
+  request.mutable_page()->set_limit(20);
+  request.set_sort(wire::CONFERENCE_SORT_CATALOG);
+  request.set_omit_statistics(true);
+  wire::ListConferencesResponse response;
+  grpc::ClientContext context;
+  context.AddMetadata("authorization", "Bearer " + a);
+  ASSERT_TRUE(client->ListConferences(&context, request, &response).ok());
+  EXPECT_EQ(response.total(), 514);
+  EXPECT_EQ(response.conferences_size(), 20);
+  EXPECT_TRUE(response.has_more());
+  for (const auto& value : response.conferences()) {
+    EXPECT_FALSE(value.statistics_known());
+    EXPECT_EQ(value.total_count(), 0);
+    EXPECT_EQ(value.unread_count(), 0);
+    EXPECT_FALSE(value.has_last_message_date());
+  }
+  wire::GetConferenceRequest bookmark;
+  bookmark.set_conference_id("RU.TEST");
+  google::protobuf::Empty empty;
+  grpc::ClientContext add;
+  add.AddMetadata("authorization", "Bearer " + a);
+  ASSERT_TRUE(client->AddBookmark(&add, bookmark, &empty).ok());
+  request.set_bookmarked_only(true);
+  grpc::ClientContext favorites;
+  favorites.AddMetadata("authorization", "Bearer " + a);
+  ASSERT_TRUE(client->ListConferences(&favorites, request, &response).ok());
+  ASSERT_EQ(response.total(), 1);
+  ASSERT_EQ(response.conferences_size(), 1);
+  EXPECT_EQ(response.conferences(0).id(), "RU.TEST");
+  EXPECT_TRUE(response.conferences(0).is_bookmarked());
+  grpc::ClientContext other;
+  other.AddMetadata("authorization", "Bearer " + b);
+  ASSERT_TRUE(client->ListConferences(&other, request, &response).ok());
+  EXPECT_EQ(response.total(), 0);
+  request.set_query("missing");
+  grpc::ClientContext search;
+  search.AddMetadata("authorization", "Bearer " + a);
+  ASSERT_TRUE(client->ListConferences(&search, request, &response).ok());
+  EXPECT_EQ(response.total(), 0);
+}
+TEST_F(LargeCatalogGrpcTest, BookmarkStatisticsAreLimitedToRequestedPage) {
+  ASSERT_TRUE(metadata->AddBookmark("A", "RU.TEST"));
+  ASSERT_TRUE(metadata->AddBookmark("A", "RU.EXTRA1"));
+  auto saved = metadata->GetBookmarks("A");
+  ASSERT_TRUE(saved);
+  ASSERT_EQ(saved->size(), 2);
+  const auto& omitted = catalog->areas().at(saved->back().conference_id);
+  std::filesystem::remove((temp.path() / omitted.config.filename).string() + ".jhr");
+  wire::PageRequest request;
+  request.set_limit(1);
+  wire::ListBookmarksResponse response;
+  grpc::ClientContext context;
+  context.AddMetadata("authorization", "Bearer " + a);
+  ASSERT_TRUE(client->ListBookmarks(&context, request, &response).ok());
+  ASSERT_EQ(response.bookmarks_size(), 1);
+  EXPECT_EQ(response.total(), 2);
+  EXPECT_TRUE(response.has_more());
+  EXPECT_TRUE(response.bookmarks(0).conference().statistics_known());
+  request.set_offset(1);
+  grpc::ClientContext next;
+  next.AddMetadata("authorization", "Bearer " + a);
+  EXPECT_FALSE(client->ListBookmarks(&next, request, &response).ok());
+}
+
+TEST_F(LargeCatalogGrpcTest, CatalogPerformanceFixture) {
+  for (int i = 0; i < 40; ++i) {
+    auto request = Request("catalog-benchmark-" + std::to_string(i));
+    wire::CreateMessageResponse response;
+    grpc::ClientContext context;
+    context.AddMetadata("authorization", "Bearer " + a);
+    ASSERT_TRUE(client->CreateMessage(&context, request, &response).ok());
+  }
+  for (const auto& [id, area] : catalog->areas()) {
+    if (id == "RU.TEST")
+      continue;
+    for (const auto* extension : {".jhr", ".jdt", ".jdx"})
+      std::filesystem::copy_file((temp.path() / "file").string() + extension,
+                                 (temp.path() / area.config.filename).string() + extension,
+                                 std::filesystem::copy_options::overwrite_existing);
+  }
+  auto measure = [&](std::string_view label, bool light, bool favorites, bool all, std::string query = "") {
+    const auto begin = std::chrono::steady_clock::now();
+    int rpc = 0, rows = 0;
+    int64_t headers = 0;
+    wire::ListConferencesRequest request;
+    request.mutable_page()->set_limit(light && favorites ? 100 : 20);
+    request.set_sort(light || favorites ? wire::CONFERENCE_SORT_CATALOG : wire::CONFERENCE_SORT_NAME);
+    request.set_omit_statistics(light);
+    request.set_bookmarked_only(favorites);
+    request.set_query(query);
+    while (true) {
+      grpc::ClientContext context;
+      context.AddMetadata("authorization", "Bearer " + b);
+      wire::ListConferencesResponse response;
+      const auto status = client->ListConferences(&context, request, &response);
+      EXPECT_TRUE(status.ok()) << status.error_message();
+      if (!status.ok())
+        break;
+      ++rpc;
+      rows += response.conferences_size();
+      for (const auto& area : response.conferences())
+        headers += area.total_count() * 2;
+      if (!all || !response.has_more())
+        break;
+      request.mutable_page()->set_offset(rows);
+    }
+    const auto ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin).count();
+    // These work counts follow the verified one-open/two-header-pass statistics
+    // path on this deletion-free fixture; timing is measured independently.
+    std::cout << "CATALOG_BENCH "
+              << nlohmann::json{{"case", label},
+                                {"milliseconds", ms},
+                                {"rpc", rpc},
+                                {"areas_returned", rows},
+                                {"statistics_jam_opens", light ? 0 : rows},
+                                {"statistics_header_reads", headers}}
+                     .dump()
+              << '\n';
+    if (light)
+      EXPECT_EQ(headers, 0);
+    return ms;
+  };
+  measure("legacy_start_full_514_cold", false, false, true);
+  measure("legacy_start_full_514_warm", false, false, true);
+  measure("light_first_page_cold", true, false, false);
+  measure("light_first_page_warm", true, false, false);
+  measure("legacy_search_all_matches", false, false, true, "RU.");
+  measure("light_search_first_page", true, false, false, "RU.");
+  {
+    const auto begin = std::chrono::steady_clock::now();
+    grpc::ClientContext context;
+    context.AddMetadata("authorization", "Bearer " + b);
+    wire::GetConferenceRequest request;
+    request.set_conference_id("RU.TEST");
+    google::protobuf::Empty response;
+    ASSERT_TRUE(client->AddBookmark(&context, request, &response).ok());
+    std::cout
+        << "CATALOG_BENCH "
+        << nlohmann::json{{"case", "new_bookmark_confirm_no_reload"},
+                          {"milliseconds",
+                           std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin).count()},
+                          {"rpc", 1},
+                          {"statistics_jam_opens", 0},
+                          {"statistics_header_reads", 0}}
+               .dump()
+        << '\n';
+  }
+  measure("legacy_bookmark_catalog_reload", false, false, true);
+  measure("legacy_return_catalog_reload", false, false, true);
+  for (const auto* phase : {"new_return_one_area_cold", "new_return_one_area_warm"}) {
+    const auto begin = std::chrono::steady_clock::now();
+    grpc::ClientContext context;
+    context.AddMetadata("authorization", "Bearer " + b);
+    wire::GetConferenceRequest request;
+    request.set_conference_id("RU.TEST");
+    wire::Conference response;
+    ASSERT_TRUE(client->GetConference(&context, request, &response).ok());
+    ASSERT_EQ(response.total_count(), 40);
+    std::cout
+        << "CATALOG_BENCH "
+        << nlohmann::json{{"case", phase},
+                          {"milliseconds",
+                           std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin).count()},
+                          {"rpc", 1},
+                          {"statistics_jam_opens", 1},
+                          {"statistics_header_reads", response.total_count() * 2}}
+               .dump()
+        << '\n';
+  }
+  for (const int count : {0, 5, 50}) {
+    auto saved = metadata->GetBookmarks("B");
+    ASSERT_TRUE(saved);
+    for (const auto& entry : *saved)
+      ASSERT_TRUE(metadata->RemoveBookmark("B", entry.conference_id));
+    int inserted = 0;
+    for (const auto& [id, area] : catalog->areas()) {
+      if (inserted++ >= count)
+        break;
+      ASSERT_TRUE(metadata->AddBookmark("B", id));
+    }
+    measure("favorites_" + std::to_string(count) + "_first_cold", false, true, false);
+    measure("favorites_" + std::to_string(count) + "_first_warm", false, true, false);
+    const auto snapshot_ms = measure("favorites_" + std::to_string(count) + "_navigation_snapshot", true, true, true);
+    if (count == 0)
+      continue;
+    auto favorites = metadata->GetBookmarks("B");
+    ASSERT_TRUE(favorites);
+    const auto target = std::min_element(favorites->begin(), favorites->end(), [](const auto& left, const auto& right) {
+                          return left.conference_id < right.conference_id;
+                        })->conference_id;
+    const auto begin = std::chrono::steady_clock::now();
+    wire::GetConferenceRequest state;
+    state.set_conference_id(target);
+    wire::Conference details;
+    grpc::ClientContext check;
+    check.AddMetadata("authorization", "Bearer " + b);
+    ASSERT_TRUE(client->GetConference(&check, state, &details).ok());
+    wire::ListMessagesRequest page;
+    page.set_conference_id(target);
+    page.mutable_page()->set_limit(20);
+    page.set_sort(wire::MESSAGE_SORT_DATE_DESCENDING);
+    wire::ListMessagesResponse messages;
+    grpc::ClientContext list;
+    list.AddMetadata("authorization", "Bearer " + b);
+    ASSERT_TRUE(client->ListMessages(&list, page, &messages).ok());
+    ASSERT_GT(messages.messages_size(), 0);
+    wire::MessageReference reference;
+    reference.set_conference_id(target);
+    const auto unread = std::find_if(messages.messages().begin(), messages.messages().end(),
+                                     [](const auto& value) { return !value.is_read(); });
+    ASSERT_NE(unread, messages.messages().end());
+    reference.set_message_id(unread->id());
+    wire::Message message;
+    grpc::ClientContext read;
+    read.AddMetadata("authorization", "Bearer " + b);
+    ASSERT_TRUE(client->GetMessage(&read, reference, &message).ok());
+    EXPECT_TRUE(message.is_read());
+    std::cout << "CATALOG_BENCH "
+              << nlohmann::json{{"case", "favorites_" + std::to_string(count) + "_first_transition"},
+                                {"milliseconds", snapshot_ms + std::chrono::duration<double, std::milli>(
+                                                                   std::chrono::steady_clock::now() - begin)
+                                                                   .count()},
+                                {"rpc", 4},
+                                {"statistics_jam_opens", 1},
+                                {"statistics_header_reads", details.total_count() * 2},
+                                {"message_jam_opens", 2}}
+                     .dump()
+              << '\n';
+  }
+}
+
+TEST_F(LargeCatalogGrpcTest, LightweightCatalogDoesNotHideSqliteFailure) {
+  sqlite3* raw = nullptr;
+  ASSERT_EQ(sqlite3_open((temp.path() / "metadata.db").c_str(), &raw), SQLITE_OK);
+  const int result = sqlite3_exec(raw, "DROP TABLE bookmarks", nullptr, nullptr, nullptr);
+  sqlite3_close(raw);
+  ASSERT_EQ(result, SQLITE_OK);
+  wire::ListConferencesRequest request;
+  request.mutable_page()->set_limit(20);
+  request.set_omit_statistics(true);
+  request.set_sort(wire::CONFERENCE_SORT_CATALOG);
+  wire::ListConferencesResponse response;
+  grpc::ClientContext context;
+  context.AddMetadata("authorization", "Bearer " + a);
+  EXPECT_EQ(client->ListConferences(&context, request, &response).error_code(), grpc::StatusCode::INTERNAL);
 }

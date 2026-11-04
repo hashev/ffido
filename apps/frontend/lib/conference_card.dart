@@ -1,12 +1,16 @@
 import 'package:flutter/material.dart';
 import 'package:fido/fido_conference.dart';
 
+import 'models/conference.dart';
+
 /// Виджет карточки конференции
 class ConferenceCard extends StatelessWidget {
   final FidoConference conference;
   final VoidCallback onTap;
   final VoidCallback? onBookmark;
   final bool bookmarkPending;
+  final bool showStatistics;
+  final bool showZeroCount;
 
   const ConferenceCard({
     super.key,
@@ -14,6 +18,8 @@ class ConferenceCard extends StatelessWidget {
     required this.onTap,
     this.onBookmark,
     this.bookmarkPending = false,
+    this.showStatistics = true,
+    this.showZeroCount = false,
   });
 
   @override
@@ -28,39 +34,60 @@ class ConferenceCard extends StatelessWidget {
         ),
         title: Text(
           conference.name,
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
           style: Theme.of(context).textTheme.titleLarge!
               .copyWith(fontWeight: FontWeight.bold),
         ),
         subtitle: Text(
           conference.unsupportedFormat
               ? 'Формат ${conference.storageFormat} не поддерживается. Статистика неизвестна.'
-              : !conference.statisticsKnown
+              : showStatistics && !conference.statisticsKnown
               ? 'Статистика недоступна'
               : conference.description,
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
           style: Theme.of(context).textTheme.bodyMedium,
         ),
         trailing: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Container(
-              padding: const EdgeInsets.all(8),
-              decoration: BoxDecoration(
-                color: conference.statisticsKnown && conference.unreadCount > 0
-                    ? colorScheme.primary
-                    : Colors.transparent,
-                shape: BoxShape.circle,
-              ),
-              child: Text(
-                conference.statisticsKnown && conference.unreadCount > 0
-                    ? conference.unreadCount.toString()
-                    : '',
-                style: TextStyle(
-                  color: colorScheme.onPrimary,
-                  fontWeight: FontWeight.bold,
-                  fontSize: 12,
+            if (showStatistics &&
+                conference.kind == AreaKind.echo &&
+                (showZeroCount ||
+                    conference.unreadCount > 0 ||
+                    !conference.statisticsKnown))
+              Semantics(
+                container: true,
+                excludeSemantics: true,
+                label: conference.statisticsKnown
+                    ? 'Непрочитанных: ${conference.unreadCount}'
+                    : 'Количество непрочитанных неизвестно',
+                child: Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color:
+                        conference.statisticsKnown && conference.unreadCount > 0
+                        ? colorScheme.primary
+                        : Colors.transparent,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Text(
+                    conference.statisticsKnown
+                        ? conference.unreadCount.toString()
+                        : '—',
+                    style: TextStyle(
+                      color:
+                          conference.unreadCount > 0 &&
+                              conference.statisticsKnown
+                          ? colorScheme.onPrimary
+                          : colorScheme.onSurfaceVariant,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 12,
+                    ),
+                  ),
                 ),
               ),
-            ),
             if (onBookmark != null || bookmarkPending)
               IconButton(
                 tooltip: conference.isBookmarked

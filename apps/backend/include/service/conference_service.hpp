@@ -19,15 +19,15 @@ public:
         access_(std::move(access)),
         encoding_(std::move(encoding)) {
   }
-  std::expected<domain::ConferenceListResponse, domain::ApiError> GetConferences(const domain::PaginationRequest& page,
-                                                                                 std::optional<std::string_view> search,
-                                                                                 std::string_view user,
-                                                                                 std::string_view sort = "name");
-  std::expected<domain::Conference, domain::ApiError> GetConference(std::string_view id, std::string_view user);
+  std::expected<domain::ConferenceListResponse, domain::ApiError> GetConferences(
+      const domain::PaginationRequest& page, std::optional<std::string_view> search, std::string_view user,
+      std::string_view sort = "name", bool omit_statistics = false, bool bookmarked_only = false);
+  std::expected<domain::Conference, domain::ApiError> GetConference(std::string_view id, std::string_view user,
+                                                                    bool omit_statistics = false);
 
 private:
   std::expected<domain::Conference, domain::ApiError> Describe(std::string_view id, std::string_view user,
-                                                               bool tolerant);
+                                                               bool tolerant, bool omit_statistics = false);
   std::shared_ptr<storage::JamCatalog> catalog_;
   std::shared_ptr<storage::IMetadataStore> metadata_;
   std::shared_ptr<const EchoAccess> access_;

@@ -25,6 +25,8 @@ Future<void> start(WidgetTester tester, FakeTransport api) async {
   addTearDown(api.dispose);
   await tester.pumpWidget(MaterialApp(home: MainScreen(repository: repo)));
   await tester.pumpAndSettle();
+  await tester.tap(find.byTooltip('Все области'));
+  await tester.pumpAndSettle();
 }
 
 void main() {
@@ -57,13 +59,13 @@ void main() {
       await tester.tap(find.byTooltip('Добавить в закладки'));
       await tester.pumpAndSettle();
       expect(find.byTooltip('Удалить из закладок'), findsOneWidget);
-      await tester.tap(find.text('Закладки').last);
+      await tester.tap(find.byTooltip('Закладки'));
       await tester.pumpAndSettle();
       expect(find.text('Конференция'), findsOneWidget);
       await tester.tap(find.byTooltip('Удалить из закладок'));
       await tester.pumpAndSettle();
       expect(find.text('Нет закладок'), findsOneWidget);
-      await tester.tap(find.text('Главная').last);
+      await tester.tap(find.byTooltip('Все области'));
       await tester.pumpAndSettle();
       expect(find.byTooltip('Добавить в закладки'), findsOneWidget);
       expect(saved, isFalse);
@@ -147,7 +149,7 @@ void main() {
       await tester.tap(find.byTooltip('Удалить из закладок'));
       await tester.pumpAndSettle();
       expect(find.text('A'), findsOneWidget);
-      expect(find.text('Повторить'), findsOneWidget);
+      expect(find.text('Повторить изменение закладки'), findsOneWidget);
       final pending = Completer<Empty>();
       api.remove = (_) => pending.future;
       await tester.tap(find.byTooltip('Удалить из закладок'));
@@ -218,7 +220,7 @@ void main() {
       await tester.tap(find.text('История').last);
       await tester.pumpAndSettle();
       expect(find.text('История просмотров пуста'), findsOneWidget);
-      await tester.tap(find.text('Главная').last);
+      await tester.tap(find.byTooltip('Все области'));
       await tester.pumpAndSettle();
       await tester.enterText(find.byType(TextField), 'Кон');
       await tester.pump(const Duration(milliseconds: 301));
