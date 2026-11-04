@@ -2147,7 +2147,142 @@ protected:
     return config;
   }
 };
+
+class BudgetMcpService : public wire::Ffido::Service {
+public:
+  struct Observation {
+    std::chrono::system_clock::time_point started, deadline;
+  };
+  explicit BudgetMcpService(service::GrpcService& backend) : backend_(backend) {
+  }
+  std::atomic<int> delay_ms{0};
+  std::atomic<bool> blocked{false}, entered{false};
+  grpc::Status RestoreSession(grpc::ServerContext* context, const google::protobuf::Empty* input,
+                              wire::SessionInfo* output) override {
+    Observe(context);
+    return backend_.RestoreSession(context, input, output);
+  }
+  grpc::Status GetConference(grpc::ServerContext* context, const wire::GetConferenceRequest* input,
+                             wire::Conference* output) override {
+    Observe(context);
+    const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(delay_ms.exchange(0));
+    entered = true;
+    while (blocked || std::chrono::steady_clock::now() < until) {
+      if (context->IsCancelled())
+        return {grpc::StatusCode::CANCELLED, "cancelled"};
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    return backend_.GetConference(context, input, output);
+  }
+  grpc::Status ReadArchiveMessage(grpc::ServerContext* context, const wire::ReadArchiveMessageRequest* input,
+                                  wire::ReadArchiveMessageResponse* output) override {
+    Observe(context);
+    *output->mutable_message()->mutable_id() = input->message().message_id();
+    output->mutable_message()->set_conference_id(input->message().conference_id());
+    output->mutable_message()->set_body("short");
+    output->set_complete(true);
+    return grpc::Status::OK;
+  }
+  std::vector<Observation> Observations() {
+    std::lock_guard lock(mutex_);
+    return observations_;
+  }
+  bool WaitForEntry() const {
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!entered && std::chrono::steady_clock::now() < until)
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    return entered;
+  }
+
+private:
+  void Observe(grpc::ServerContext* context) {
+    std::lock_guard lock(mutex_);
+    observations_.push_back({std::chrono::system_clock::now(), context->deadline()});
+  }
+  service::GrpcService& backend_;
+  std::mutex mutex_;
+  std::vector<Observation> observations_;
+};
+class BudgetMcpGrpcTest : public McpGrpcTest {
+protected:
+  std::unique_ptr<BudgetMcpService> proxy;
+  int AreaCount() const override {
+    return 2;
+  }
+  grpc::Service* RegisteredService() override {
+    proxy = std::make_unique<BudgetMcpService>(*service);
+    return proxy.get();
+  }
+  std::filesystem::path ConfigureBudgetMcp() {
+    const auto path = ConfigureMcp();
+    auto config = nlohmann::json::parse(test::ReadFile(path));
+    config["read_area_ids"] = {"RU.TEST", "RU.EXTRA1"};
+    std::ofstream output(path);
+    output << config;
+    return path;
+  }
+};
 }  // namespace
+TEST_F(BudgetMcpGrpcTest, CatalogOutlivesFiveSecondsAndKeepsOneAbsoluteDeadline) {
+  const auto config = ConfigureBudgetMcp();
+  proxy->delay_ms = 6000;
+  test::McpProcess mcp(config.string());
+  mcp.Initialize();
+  const auto result = mcp.Call(2, "ffido_list_areas", {{"limit", 100}});
+  ASSERT_FALSE(result.at("isError").get<bool>()) << result.dump();
+  EXPECT_EQ(result.at("structuredContent").at("data").at("total"), 2);
+  const auto calls = proxy->Observations();
+  ASSERT_EQ(calls.size(), 3u);
+  EXPECT_GT(calls.front().deadline - calls.front().started, std::chrono::seconds(25));
+  EXPECT_LE(calls.front().deadline - calls.front().started, std::chrono::seconds(31));
+  for (const auto& call : calls) {
+    EXPECT_LT(call.deadline - calls.front().deadline, std::chrono::milliseconds(250));
+    EXPECT_GT(call.deadline - calls.front().deadline, -std::chrono::milliseconds(250));
+  }
+  EXPECT_LT(calls.back().deadline - calls.back().started, std::chrono::seconds(25));
+}
+TEST_F(BudgetMcpGrpcTest, OrdinaryToolRetainsFiveSecondBudget) {
+  const auto config = ConfigureBudgetMcp();
+  test::McpProcess mcp(config.string());
+  mcp.Initialize();
+  const auto result =
+      mcp.Call(2, "ffido_get_message", {{"reference", {{"conference_id", "RU.TEST"}, {"message_id", "source"}}}});
+  ASSERT_FALSE(result.at("isError").get<bool>()) << result.dump();
+  EXPECT_EQ(result.at("structuredContent").at("data").at("message").at("body"), "short");
+  const auto calls = proxy->Observations();
+  ASSERT_EQ(calls.size(), 2u);
+  for (const auto& call : calls) {
+    EXPECT_GT(call.deadline - call.started, std::chrono::seconds(3));
+    EXPECT_LE(call.deadline - call.started, std::chrono::milliseconds(5500));
+  }
+}
+TEST_F(BudgetMcpGrpcTest, CatalogCancellationReleasesSlotAndEofCancelsActiveCall) {
+  const auto config = ConfigureBudgetMcp();
+  test::McpProcess mcp(config.string());
+  mcp.Initialize();
+  const auto send_catalog = [&](int id) {
+    mcp.Send({{"jsonrpc", "2.0"},
+              {"id", id},
+              {"method", "tools/call"},
+              {"params", {{"name", "ffido_list_areas"}, {"arguments", nlohmann::json::object()}}}});
+  };
+  proxy->blocked = true;
+  send_catalog(2);
+  ASSERT_TRUE(proxy->WaitForEntry());
+  auto started = std::chrono::steady_clock::now();
+  mcp.Send({{"jsonrpc", "2.0"}, {"method", "notifications/cancelled"}, {"params", {{"requestId", 2}}}});
+  EXPECT_TRUE(mcp.Read().at("result").at("isError"));
+  EXPECT_LT(std::chrono::steady_clock::now() - started, std::chrono::seconds(3));
+  proxy->blocked = false;
+  EXPECT_FALSE(mcp.Call(3, "ffido_list_areas", nlohmann::json::object()).at("isError"));
+  proxy->entered = false;
+  proxy->blocked = true;
+  send_catalog(4);
+  ASSERT_TRUE(proxy->WaitForEntry());
+  started = std::chrono::steady_clock::now();
+  mcp.Finish();
+  EXPECT_LT(std::chrono::steady_clock::now() - started, std::chrono::seconds(3));
+}
 TEST_F(McpGrpcTest, StdioResearchPrepareSendAndRestartPreserveSourcesAndIdempotency) {
   const auto config = ConfigureMcp();
   std::string draft_id, saved_id;
