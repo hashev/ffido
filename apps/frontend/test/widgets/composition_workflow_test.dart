@@ -1,3 +1,9 @@
+import 'dart:typed_data';
+
+import 'package:fido/files/uue_files.dart';
+
+import 'uue_workflow_test.dart' as uue_fixture;
+
 import 'package:fido/updates/update_controller.dart';
 
 import 'dart:async';
@@ -265,4 +271,106 @@ void main() {
       expect(find.text('Нет доступных для публикации эх'), findsOneWidget);
     },
   );
+
+  testWidgets('draft resize preserves recipient text attachment and focus', (
+    t,
+  ) async {
+    final oldFiles = uueFiles;
+    uueFiles = uue_fixture.Files()
+      ..selected = SelectedUueFile('draft.bin', Uint8List.fromList([1, 2]));
+    addTearDown(() => uueFiles = oldFiles);
+    final api = transport();
+    api.getUueLimitsHandler = (_) async => uue_fixture.limits();
+    final repo = await repository(api);
+    addTearDown(repo.dispose);
+    addTearDown(api.dispose);
+    t.view.devicePixelRatio = 1;
+    t.view.physicalSize = const Size(600, 800);
+    addTearDown(t.view.resetPhysicalSize);
+    addTearDown(t.view.resetDevicePixelRatio);
+    addTearDown(t.view.resetViewInsets);
+    await reader(t, api, repo);
+    await tap(t, 'Ответить в эху');
+    final fields = find.byType(TextField);
+    final body = t.widget<TextField>(fields.last).controller!;
+    final recipientController = t.widget<TextField>(fields.first).controller!;
+    final recipient = recipientController.text;
+    await t.enterText(fields.last, 'Несохранённый текст\n AB> Цитата');
+    body.selection = const TextSelection.collapsed(offset: 5);
+    await tap(t, 'Прикрепить файл UUE');
+    final calls = api.calls.length;
+    for (final size in [
+      const Size(320, 568),
+      const Size(800, 360),
+      const Size(1024, 768),
+      const Size(600, 800),
+    ]) {
+      t.view.physicalSize = size;
+      await t.pumpAndSettle();
+      expect(body.text, 'Несохранённый текст\n AB> Цитата');
+      expect(body.selection.baseOffset, 5);
+      expect(recipientController.text, recipient);
+      t.view.viewInsets = const FakeViewPadding(bottom: 120);
+      await t.pumpAndSettle();
+      await t.scrollUntilVisible(
+        find.text('draft.bin'),
+        100,
+        scrollable: find
+            .descendant(
+              of: find.byType(ListView),
+              matching: find.byType(Scrollable),
+            )
+            .first,
+      );
+      await t.pumpAndSettle();
+      expect(api.calls.length, calls);
+      expect(t.takeException(), isNull);
+    }
+    expect(api.calls.whereType<wire.UploadUueChunkRequest>(), isEmpty);
+  });
+  testWidgets('resize during send and uncertain retry creates one operation', (
+    t,
+  ) async {
+    final api = transport();
+    final pending = Completer<wire.CreateMessageResponse>();
+    api.create = (_) => pending.future;
+    final repo = await repository(api);
+    addTearDown(repo.dispose);
+    addTearDown(api.dispose);
+    t.view.devicePixelRatio = 1;
+    t.view.physicalSize = const Size(600, 800);
+    addTearDown(t.view.resetPhysicalSize);
+    addTearDown(t.view.resetDevicePixelRatio);
+    addTearDown(t.view.resetViewInsets);
+    await reader(t, api, repo);
+    await tap(t, 'Ответить в эху');
+    final body = t.widget<TextField>(find.byType(TextField).last).controller!;
+    body.text = 'Точное тело';
+    await t.tap(find.text('Отправить'));
+    await t.pump();
+    final first = api.calls.whereType<wire.CreateMessageRequest>().single;
+    t.view.physicalSize = const Size(320, 568);
+    await t.pump();
+    expect(api.calls.whereType<wire.CreateMessageRequest>(), hasLength(1));
+    pending.completeError(
+      const ApiException(message: 'Timeout', statusCode: 4),
+    );
+    await t.pumpAndSettle();
+    expect(find.text('Повторить отправку'), findsOneWidget);
+    t.view.physicalSize = const Size(1024, 768);
+    await t.pumpAndSettle();
+    expect(body.text, 'Точное тело');
+    expect(t.widget<TextField>(find.byType(TextField).last).enabled, isFalse);
+    api.create = (_) async => wire.CreateMessageResponse(
+      message: wire.MessageReference(
+        conferenceId: 'source',
+        messageId: 'new#1',
+      ),
+    );
+    await tap(t, 'Повторить отправку');
+    final requests = api.calls.whereType<wire.CreateMessageRequest>().toList();
+    expect(requests, hasLength(2));
+    expect(requests[1], first);
+    expect(t.takeException(), isNull);
+  });
 }

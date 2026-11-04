@@ -1,3 +1,11 @@
+import 'dart:io';
+
+import 'package:flutter/services.dart';
+import 'package:fido/pages/message_screen.dart';
+import 'package:fido/repositories/message_repository.dart';
+
+import '../test/support/fake_transport.dart';
+
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -71,6 +79,9 @@ void main() {
       await Future<void>.delayed(const Duration(milliseconds: 1100));
     }
     await reader.markRead(refs[1]);
+    for (final id in ['RU.ONE', 'RU.TWO']) {
+      await reader.addBookmark(wire.GetConferenceRequest(conferenceId: id));
+    }
     SharedPreferences.setMockInitialValues({});
     final catalog = ConferenceRepository(
       apiClient: reader,
@@ -139,5 +150,137 @@ void main() {
     );
     expect(find.text('RU.TWO'), findsOneWidget);
     expect(reader.supportsMessageFooter, isTrue);
+  }, skip: const bool.fromEnvironment('FFIDO_ADAPTIVE_ONLY'));
+
+  testWidgets('adaptive reader preserves draft through native rotation', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({});
+    final api = FakeTransport();
+    api.messages = (_) async => wire.ListMessagesResponse(
+      messages: [wire.Message(id: 'g#1', subject: 'Адаптивная проверка')],
+    );
+    api.message = (r) async => wire.Message(
+      id: r.messageId,
+      subject: 'Адаптивная проверка',
+      fromName: 'Автор',
+      fromAddress: '2:1/2',
+      body: 'Текст письма\n AB> Цитата',
+    );
+    final catalog = ConferenceRepository(
+      apiClient: api,
+      prefs: await SharedPreferences.getInstance(),
+    );
+    addTearDown(api.dispose);
+    addTearDown(catalog.dispose);
+    addTearDown(() => SystemChrome.setPreferredOrientations([]));
+    await tester.pumpWidget(
+      MaterialApp(
+        debugShowCheckedModeBanner: false,
+        theme: ThemeData(
+          brightness: const bool.fromEnvironment('FFIDO_ADAPTIVE_LIGHT')
+              ? Brightness.light
+              : Brightness.dark,
+        ),
+        home: Builder(
+          builder: (context) => Scaffold(
+            body: TextButton(
+              child: const Text('Открыть'),
+              onPressed: () => Navigator.push(
+                context,
+                MaterialPageRoute<void>(
+                  builder: (_) => MessageScreen(
+                    conferenceId: 'echo',
+                    conferenceName: 'Длинное название эхоконференции',
+                    conferenceDescription: '',
+                    canRead: true,
+                    canPost: true,
+                    repository: MessageRepository(api),
+                    conferences: catalog,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    Future<void> tapText(String text) async {
+      final target = find.text(text);
+      if (target.evaluate().isEmpty) {
+        await tester.scrollUntilVisible(
+          target,
+          100,
+          scrollable: find
+              .descendant(
+                of: find.byType(ListView),
+                matching: find.byType(Scrollable),
+              )
+              .first,
+        );
+      }
+      await tester.ensureVisible(target);
+      await tester.tap(target);
+      await tester.pumpAndSettle();
+    }
+
+    await tapText('Открыть');
+    await tapText('Адаптивная проверка');
+    await tapText('Ответить в эху');
+    final body = tester
+        .widget<TextField>(find.byType(TextField).last)
+        .controller!;
+    await tester.enterText(
+      find.byType(TextField).last,
+      'Черновик после поворота\n AB> Цитата',
+    );
+    if (Platform.isAndroid &&
+        const bool.fromEnvironment('FFIDO_ADAPTIVE_KEYBOARD')) {
+      await SystemChannels.textInput.invokeMethod<void>('TextInput.show');
+      await tester.pump(const Duration(seconds: 1));
+      await tester.pumpAndSettle();
+      expect(tester.view.viewInsets.bottom, greaterThan(0));
+      debugPrint('ADAPTIVE_KEYBOARD bottom=${tester.view.viewInsets.bottom}');
+    }
+    final calls = api.calls.length;
+    if (Platform.isAndroid) {
+      await SystemChrome.setPreferredOrientations([
+        DeviceOrientation.landscapeLeft,
+      ]);
+      await tester.pump(const Duration(seconds: 1));
+      await tester.pumpAndSettle();
+      expect(
+        tester.view.physicalSize.width,
+        greaterThan(tester.view.physicalSize.height),
+      );
+    } else {
+      await binding.setSurfaceSize(const Size(600, 700));
+      await tester.pumpAndSettle();
+    }
+    expect(body.text, 'Черновик после поворота\n AB> Цитата');
+    expect(api.calls.length, calls);
+    expect(tester.takeException(), isNull);
+    await tapText('Отправить');
+    // FakeTransport records synthetic sends only, with no real server or FTN data.
+    expect(api.calls.whereType<wire.CreateMessageRequest>(), hasLength(1));
+    if (Platform.isAndroid) {
+      await SystemChrome.setPreferredOrientations([
+        DeviceOrientation.portraitUp,
+      ]);
+      await tester.pump(const Duration(seconds: 1));
+      await tester.pumpAndSettle();
+      expect(
+        tester.view.physicalSize.height,
+        greaterThan(tester.view.physicalSize.width),
+      );
+    } else {
+      await binding.setSurfaceSize(const Size(1200, 800));
+      await tester.pumpAndSettle();
+      await binding.setSurfaceSize(null);
+    }
+    expect(tester.takeException(), isNull);
+    debugPrint(
+      'ADAPTIVE_ACCEPTANCE physical=${tester.view.physicalSize} density=${tester.view.devicePixelRatio} calls=${api.calls.length}',
+    );
   });
 }

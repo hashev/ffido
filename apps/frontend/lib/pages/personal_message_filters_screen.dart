@@ -1,3 +1,5 @@
+import '../widgets/adaptive_layout.dart';
+
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -243,107 +245,105 @@ class _PersonalMessageFiltersScreenState
         ),
       ],
     ),
-    body: Column(
-      children: [
-        if (busy) const LinearProgressIndicator(),
-        if (error != null)
-          Padding(
-            padding: const EdgeInsets.all(12),
-            child: Column(
-              children: [
-                Text(error!),
-                TextButton(
-                  onPressed: busy ? null : load,
-                  child: const Text('Загрузить актуальные'),
-                ),
-              ],
-            ),
-          ),
-        if (remote != null && conflict)
-          ExpansionTile(
-            title: const Text('Актуальные правила сервера'),
-            subtitle: Text(
-              'Ревизия ${remote!.revision.toStringUnsigned()}. Ваш набор ниже.',
-            ),
-            children: [
-              for (final r in remote!.rules)
-                ListTile(
-                  title: Text(personalRuleDescription(r)),
-                  subtitle: Text(
-                    r.conferenceId.isEmpty ? 'Все эхи' : r.conferenceId,
-                  ),
-                ),
-            ],
-          ),
-        if (widget.repository.supported != false)
-          Expanded(
-            child: ListView(
-              children: [
-                const Padding(
-                  padding: EdgeInsets.all(16),
-                  child: Text(
-                    'Правила действуют только в эхах. Условия одного правила — И, разные правила — ИЛИ. Свернутые письма остаются в счётчиках.',
-                  ),
-                ),
-                if (initialized && draft.isEmpty)
-                  const ListTile(title: Text('Правил нет')),
-                for (final rule in draft)
-                  ListTile(
-                    title: Text(personalRuleDescription(rule)),
-                    subtitle: Text(
-                      rule.conferenceId.isEmpty ? 'Все эхи' : rule.conferenceId,
-                    ),
-                    leading: Checkbox(
-                      value: rule.enabled,
-                      onChanged: busy
-                          ? null
-                          : (v) => change(() => rule.enabled = v!),
-                    ),
-                    onTap: busy ? null : () => edit(rule),
-                    trailing: IconButton(
-                      tooltip: 'Удалить правило',
-                      onPressed: busy
-                          ? null
-                          : () => change(() => draft.remove(rule)),
-                      icon: const Icon(Icons.delete_outline),
-                    ),
-                  ),
-              ],
-            ),
-          ),
-        if (widget.repository.supported != false)
-          SafeArea(
-            child: Padding(
+    body: AdaptiveContent(
+      maxWidth: AdaptiveContent.listWidth,
+      child: ListView(
+        children: [
+          if (busy) const LinearProgressIndicator(),
+          if (error != null)
+            Padding(
               padding: const EdgeInsets.all(12),
-              child: Wrap(
-                spacing: 12,
+              child: Column(
                 children: [
+                  Text(error!),
                   TextButton(
-                    onPressed: busy || draft.length >= 200
-                        ? null
-                        : () => edit(),
-                    child: const Text('Добавить правило'),
-                  ),
-                  FilledButton(
-                    onPressed:
-                        busy ||
-                            !dirty ||
-                            needsReload ||
-                            (conflict &&
-                                remote?.revision == pending?.expectedRevision)
-                        ? null
-                        : save,
-                    child: Text(
-                      conflict
-                          ? 'Сохранить мой набор вместо актуального'
-                          : 'Сохранить правила',
-                    ),
+                    onPressed: busy ? null : load,
+                    child: const Text('Загрузить актуальные'),
                   ),
                 ],
               ),
             ),
-          ),
-      ],
+          if (remote != null && conflict)
+            ExpansionTile(
+              title: const Text('Актуальные правила сервера'),
+              subtitle: Text(
+                'Ревизия ${remote!.revision.toStringUnsigned()}. Ваш набор ниже.',
+              ),
+              children: [
+                for (final r in remote!.rules)
+                  ListTile(
+                    title: Text(personalRuleDescription(r)),
+                    subtitle: Text(
+                      r.conferenceId.isEmpty ? 'Все эхи' : r.conferenceId,
+                    ),
+                  ),
+              ],
+            ),
+          if (widget.repository.supported != false) ...[
+            const Padding(
+              padding: EdgeInsets.all(16),
+              child: Text(
+                'Правила действуют только в эхах. Условия одного правила — И, разные правила — ИЛИ. Свернутые письма остаются в счётчиках.',
+              ),
+            ),
+            if (initialized && draft.isEmpty)
+              const ListTile(title: Text('Правил нет')),
+            for (final rule in draft)
+              ListTile(
+                title: Text(personalRuleDescription(rule)),
+                subtitle: Text(
+                  rule.conferenceId.isEmpty ? 'Все эхи' : rule.conferenceId,
+                ),
+                leading: Checkbox(
+                  value: rule.enabled,
+                  onChanged: busy
+                      ? null
+                      : (v) => change(() => rule.enabled = v!),
+                ),
+                onTap: busy ? null : () => edit(rule),
+                trailing: IconButton(
+                  tooltip: 'Удалить правило',
+                  onPressed: busy
+                      ? null
+                      : () => change(() => draft.remove(rule)),
+                  icon: const Icon(Icons.delete_outline),
+                ),
+              ),
+          ],
+          if (widget.repository.supported != false)
+            SafeArea(
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: Wrap(
+                  spacing: 12,
+                  children: [
+                    TextButton(
+                      onPressed: busy || draft.length >= 200
+                          ? null
+                          : () => edit(),
+                      child: const Text('Добавить правило'),
+                    ),
+                    FilledButton(
+                      onPressed:
+                          busy ||
+                              !dirty ||
+                              needsReload ||
+                              (conflict &&
+                                  remote?.revision == pending?.expectedRevision)
+                          ? null
+                          : save,
+                      child: Text(
+                        conflict
+                            ? 'Сохранить мой набор вместо актуального'
+                            : 'Сохранить правила',
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+        ],
+      ),
     ),
   );
 }
@@ -416,6 +416,7 @@ class _RuleEditorState extends State<_RuleEditor> {
       options.putIfAbsent(scope, () => '$scope (сохранённая эха)');
     }
     return AlertDialog(
+      scrollable: true,
       title: const Text('Правило сворачивания'),
       content: SizedBox(
         width: 500,

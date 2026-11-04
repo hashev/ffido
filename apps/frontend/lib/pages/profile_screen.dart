@@ -1,3 +1,4 @@
+import '../widgets/adaptive_layout.dart';
 import 'personal_message_filters_screen.dart';
 import '../repositories/personal_message_filters_repository.dart';
 import '../utils/refresh_on_resume.dart';
@@ -98,35 +99,43 @@ class _ProfileScreenState extends State<ProfileScreen>
         ),
       ],
     ),
-    body: _loading
-        ? const Center(child: Text('Загрузка профиля...'))
-        : _error.isNotEmpty
-        ? Center(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
+    body: AdaptiveContent(
+      maxWidth: AdaptiveContent.formWidth,
+      child: _loading
+          ? const Center(child: Text('Загрузка профиля...'))
+          : _error.isNotEmpty
+          ? Center(
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(_error),
+                    TextButton(
+                      onPressed: _load,
+                      child: const Text('Повторить'),
+                    ),
+                  ],
+                ),
+              ),
+            )
+          : _profile == null
+          ? const Center(child: Text('Профиль не найден'))
+          : ListView(
+              padding: const EdgeInsets.all(16),
               children: [
-                Text(_error),
-                TextButton(onPressed: _load, child: const Text('Повторить')),
+                Text(
+                  _profile!.name,
+                  style: Theme.of(context).textTheme.headlineSmall,
+                ),
+                const SizedBox(height: 16),
+                Text(_profile!.address),
+                if (_profile!.email != null) Text(_profile!.email!),
+                if (_profile!.registeredAt != null)
+                  Text(
+                    'Регистрация: ${_profile!.registeredAt!.toIso8601String()}',
+                  ),
               ],
             ),
-          )
-        : _profile == null
-        ? const Center(child: Text('Профиль не найден'))
-        : ListView(
-            padding: const EdgeInsets.all(16),
-            children: [
-              Text(
-                _profile!.name,
-                style: Theme.of(context).textTheme.headlineSmall,
-              ),
-              const SizedBox(height: 16),
-              Text(_profile!.address),
-              if (_profile!.email != null) Text(_profile!.email!),
-              if (_profile!.registeredAt != null)
-                Text(
-                  'Регистрация: ${_profile!.registeredAt!.toIso8601String()}',
-                ),
-            ],
-          ),
+    ),
   );
 }

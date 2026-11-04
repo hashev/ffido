@@ -1,3 +1,4 @@
+import '../widgets/adaptive_layout.dart';
 import '../templates/template_settings_panel.dart';
 import '../api/message_footer.dart';
 import '../updates/update_controller.dart';
@@ -266,66 +267,69 @@ class _SettingsWidgetState extends State<SettingsWidget> {
       title: const Text('Подключение к FFIDO'),
       actions: const [UpdateButton()],
     ),
-    body: ListView(
-      padding: const EdgeInsets.all(16),
-      children: [
-        _field('name', 'Имя', _name),
-        _field('address', 'FTN-адрес', _address),
-        _field('password', 'Пароль', _password, secret: true),
-        _field('endpoint', 'Адрес сервера', _endpoint),
-        const Text(
-          'Используйте FTN-адрес и пароль, настроенные у вашего сисопа. Адрес сервера: https://fido.example.org',
-        ),
-        const SizedBox(height: 16),
-        FilledButton(
-          onPressed: _busy ? null : () => _save(),
-          child: const Text('Подключиться'),
-        ),
-        if (_client.hasToken) ...[
-          OutlinedButton(
-            onPressed: _busy ? null : () => _save(logout: true),
-            child: const Text('Выйти'),
+    body: AdaptiveContent(
+      maxWidth: AdaptiveContent.formWidth,
+      child: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          _field('name', 'Имя', _name),
+          _field('address', 'FTN-адрес', _address),
+          _field('password', 'Пароль', _password, secret: true),
+          _field('endpoint', 'Адрес сервера', _endpoint),
+          const Text(
+            'Используйте FTN-адрес и пароль, настроенные у вашего сисопа. Адрес сервера: https://fido.example.org',
+          ),
+          const SizedBox(height: 16),
+          FilledButton(
+            onPressed: _busy ? null : () => _save(),
+            child: const Text('Подключиться'),
+          ),
+          if (_client.hasToken) ...[
+            OutlinedButton(
+              onPressed: _busy ? null : () => _save(logout: true),
+              child: const Text('Выйти'),
+            ),
+            TextButton(
+              onPressed: _busy
+                  ? null
+                  : () =>
+                        Navigator.of(context)
+                            .pushNamedAndRemoveUntil('/', (_) => false),
+              child: const Text('Открыть конференции'),
+            ),
+          ],
+          const Divider(),
+          const Text('Оформление исходящих сообщений'),
+          _field(
+            'tagline',
+            'Tagline (после ---)',
+            _tagline,
+            loading: _footer == null,
+          ),
+          _field('origin', 'Origin', _origin, loading: _footer == null),
+          const Text(
+            'FTN-адрес в Origin добавляет сервер. Оформление применяется только к эхам.',
+          ),
+          if (!_client.supportsMessageFooter)
+            const Text(
+              'Пользовательское оформление требует обновлённого сервера FFIDO.',
+            ),
+          FilledButton(
+            onPressed: _busy || _footer == null ? null : () => _saveFooter(),
+            child: const Text('Сохранить оформление'),
           ),
           TextButton(
-            onPressed: _busy
+            onPressed: _busy || _footer == null
                 ? null
-                : () =>
-                      Navigator.of(context)
-                          .pushNamedAndRemoveUntil('/', (_) => false),
-            child: const Text('Открыть конференции'),
+                : () => _saveFooter(reset: true),
+            child: const Text('Сбросить оформление'),
           ),
+          if (_busy) const Center(child: CircularProgressIndicator()),
+          if (_message.isNotEmpty)
+            Text(_message, key: const Key('connection-message')),
+          TemplateSettingsPanel(preferences: widget.preferences),
         ],
-        const Divider(),
-        const Text('Оформление исходящих сообщений'),
-        _field(
-          'tagline',
-          'Tagline (после ---)',
-          _tagline,
-          loading: _footer == null,
-        ),
-        _field('origin', 'Origin', _origin, loading: _footer == null),
-        const Text(
-          'FTN-адрес в Origin добавляет сервер. Оформление применяется только к эхам.',
-        ),
-        if (!_client.supportsMessageFooter)
-          const Text(
-            'Пользовательское оформление требует обновлённого сервера FFIDO.',
-          ),
-        FilledButton(
-          onPressed: _busy || _footer == null ? null : () => _saveFooter(),
-          child: const Text('Сохранить оформление'),
-        ),
-        TextButton(
-          onPressed: _busy || _footer == null
-              ? null
-              : () => _saveFooter(reset: true),
-          child: const Text('Сбросить оформление'),
-        ),
-        if (_busy) const Center(child: CircularProgressIndicator()),
-        if (_message.isNotEmpty)
-          Text(_message, key: const Key('connection-message')),
-        TemplateSettingsPanel(preferences: widget.preferences),
-      ],
+      ),
     ),
   );
 }

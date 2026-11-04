@@ -157,6 +157,8 @@ class _CommandHelp extends InheritedWidget {
 }
 
 class CommandHelpButton extends StatelessWidget {
+  static void show(BuildContext context) =>
+      context.getInheritedWidgetOfExactType<_CommandHelp>()!.showHelp();
   const CommandHelpButton({super.key});
   @override
   Widget build(BuildContext context) => desktopCommandsEnabled()

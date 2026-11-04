@@ -36,6 +36,7 @@ class _MessageSearchDialogState extends State<MessageSearchDialog> {
   @override
   Widget build(BuildContext context) => AlertDialog(
     title: const Text('Поиск по письмам'),
+    scrollable: true,
     content: SizedBox(
       width: 400,
       child: Column(

@@ -1,3 +1,6 @@
+import '../widgets/adaptive_layout.dart';
+import '../widgets/message_actions.dart';
+
 import 'dart:math';
 
 import 'personal_message_filters_screen.dart';
@@ -1165,6 +1168,7 @@ class _MessageScreenState extends State<MessageScreen>
       final confirmed = await showDialog<bool>(
         context: context,
         builder: (context) => AlertDialog(
+          scrollable: true,
           title: const Text('Отметить всё прочитанным'),
           content: Text(
             'Отметить все сообщения в «$conferenceName» прочитанными? '
@@ -1577,503 +1581,519 @@ class _MessageScreenState extends State<MessageScreen>
     ),
   );
 
-  Widget buildReader(BuildContext context) => Scaffold(
-    appBar: AppBar(
-      title: Text(conferenceName),
-      actions: [
-        const CommandHelpButton(),
-        if (canRead && !activeConference.unsupportedFormat)
-          CommandIconButton(
-            command: DesktopCommand.search,
-            label: 'Поиск по письмам',
-            icon: Icons.search,
-            onPressed: commandReason(DesktopCommand.search) == null
-                ? showSearch
-                : null,
-          ),
-        if (canRead &&
-            kind == AreaKind.echo &&
-            !activeConference.unsupportedFormat)
-          IconButton(
-            tooltip: 'Персональные фильтры',
-            onPressed: commandBusy ? null : () => managePersonalFilters(),
-            icon: const Icon(Icons.filter_alt_outlined),
-          ),
-        if (canRead && !activeConference.unsupportedFormat)
-          PopupMenuButton<String>(
-            tooltip: 'Действия области',
-            enabled: !bulkBusy && !unreadBusy && !loading,
-            onSelected: (action) {
-              if (action.startsWith('filter:')) {
-                managePersonalFilters(selected!, action.substring(7));
-              } else if (action == 'technical') {
-                showTechnicalData(selected!.id);
-              } else if (action == 'unread') {
-                markSelectedUnread();
-              } else {
-                markAreaRead();
-              }
-            },
-            itemBuilder: (_) => [
-              if (selected != null && kind == AreaKind.echo)
-                for (final entry in {
-                  'author': 'Свернуть по автору',
-                  'address': 'Свернуть по адресу',
-                  'subject': 'Свернуть по теме',
-                }.entries)
+  Widget buildReader(BuildContext context) {
+    final compact =
+        LayoutWidth.of(MediaQuery.sizeOf(context).width) == LayoutWidth.compact;
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(
+          conferenceName,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        ),
+        actions: [
+          if (!compact || !canRead || activeConference.unsupportedFormat)
+            const CommandHelpButton(),
+          if (canRead && !activeConference.unsupportedFormat)
+            CommandIconButton(
+              command: DesktopCommand.search,
+              label: 'Поиск по письмам',
+              icon: Icons.search,
+              onPressed: commandReason(DesktopCommand.search) == null
+                  ? showSearch
+                  : null,
+            ),
+          if (!compact &&
+              canRead &&
+              kind == AreaKind.echo &&
+              !activeConference.unsupportedFormat)
+            IconButton(
+              tooltip: 'Персональные фильтры',
+              onPressed: commandBusy ? null : () => managePersonalFilters(),
+              icon: const Icon(Icons.filter_alt_outlined),
+            ),
+          if (canRead && !activeConference.unsupportedFormat)
+            PopupMenuButton<String>(
+              tooltip: 'Действия области',
+              enabled: !bulkBusy && !unreadBusy && !loading,
+              onSelected: (action) {
+                if (action == 'refresh') {
+                  load(preserveThread: personalMailbox);
+                } else if (action == 'filters') {
+                  managePersonalFilters();
+                } else if (action == 'help') {
+                  CommandHelpButton.show(context);
+                } else if (action.startsWith('filter:')) {
+                  managePersonalFilters(selected!, action.substring(7));
+                } else if (action == 'technical') {
+                  showTechnicalData(selected!.id);
+                } else if (action == 'unread') {
+                  markSelectedUnread();
+                } else {
+                  markAreaRead();
+                }
+              },
+              itemBuilder: (_) => [
+                if (compact) ...[
                   PopupMenuItem(
-                    value: 'filter:${entry.key}',
-                    child: Text(entry.value),
+                    value: 'refresh',
+                    enabled: !commandBusy,
+                    child: const ListTile(
+                      leading: Icon(Icons.refresh),
+                      title: Text('Обновить'),
+                    ),
                   ),
-              if (selected != null)
-                const PopupMenuItem(
-                  value: 'technical',
-                  child: Text('Технические данные'),
-                ),
-              if (selected != null)
-                const PopupMenuItem(
-                  value: 'unread',
-                  child: Text('Пометить непрочитанным'),
-                ),
-              PopupMenuItem(
-                value: 'read',
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Icon(Icons.done_all),
-                    const SizedBox(width: 8),
-                    Flexible(
-                      child: Text(
-                        bulkOperation == null
-                            ? 'Отметить всё прочитанным'
-                            : 'Проверить/повторить',
+                  if (kind == AreaKind.echo)
+                    PopupMenuItem(
+                      value: 'filters',
+                      enabled: !commandBusy,
+                      child: const ListTile(
+                        leading: Icon(Icons.filter_alt_outlined),
+                        title: Text('Персональные фильтры'),
                       ),
                     ),
-                  ],
+                  if (desktopCommandsEnabled())
+                    const PopupMenuItem(
+                      value: 'help',
+                      child: ListTile(
+                        leading: Icon(Icons.help_outline),
+                        title: Text('Горячие клавиши'),
+                      ),
+                    ),
+                ],
+                if (selected != null && kind == AreaKind.echo)
+                  for (final entry in {
+                    'author': 'Свернуть по автору',
+                    'address': 'Свернуть по адресу',
+                    'subject': 'Свернуть по теме',
+                  }.entries)
+                    PopupMenuItem(
+                      value: 'filter:${entry.key}',
+                      child: Text(entry.value),
+                    ),
+                if (selected != null)
+                  const PopupMenuItem(
+                    value: 'technical',
+                    child: Text('Технические данные'),
+                  ),
+                if (selected != null)
+                  const PopupMenuItem(
+                    value: 'unread',
+                    child: Text('Пометить непрочитанным'),
+                  ),
+                PopupMenuItem(
+                  value: 'read',
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(Icons.done_all),
+                      const SizedBox(width: 8),
+                      Flexible(
+                        child: Text(
+                          bulkOperation == null
+                              ? 'Отметить всё прочитанным'
+                              : 'Проверить/повторить',
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          if (canRead && (!compact || activeConference.unsupportedFormat))
+            IconButton(
+              onPressed: loading
+                  ? null
+                  : () => load(preserveThread: personalMailbox),
+              icon: const Icon(Icons.refresh),
+              tooltip: 'Обновить',
+            ),
+          if (canPost)
+            CommandIconButton(
+              command: DesktopCommand.compose,
+              label: 'Новое сообщение',
+              icon: Icons.create,
+              onPressed: commandReason(DesktopCommand.compose) == null
+                  ? () => compose()
+                  : null,
+            ),
+        ],
+      ),
+      bottomNavigationBar: selected == null && !unreadNavigation
+          ? null
+          : SafeArea(
+              child: Padding(
+                padding: const EdgeInsets.all(8),
+                child: ReaderNavigation(
+                  previous: canNavigate(-1) ? () => navigate(-1) : null,
+                  next: !commandBusy && canNavigate(1)
+                      ? () => navigate(1)
+                      : null,
+                  nextTooltip: unreadNavigation
+                      ? commandTooltip(
+                          DesktopCommand.unread,
+                          'Следующее непрочитанное',
+                        )
+                      : 'Следующее',
                 ),
               ),
-            ],
-          ),
-        if (canRead)
-          IconButton(
-            onPressed: loading
-                ? null
-                : () => load(preserveThread: personalMailbox),
-            icon: const Icon(Icons.refresh),
-            tooltip: 'Обновить',
-          ),
-        if (canPost)
-          CommandIconButton(
-            command: DesktopCommand.compose,
-            label: 'Новое сообщение',
-            icon: Icons.create,
-            onPressed: commandReason(DesktopCommand.compose) == null
-                ? () => compose()
-                : null,
-          ),
-      ],
-    ),
-    bottomNavigationBar: selected == null && !unreadNavigation
-        ? null
-        : SafeArea(
-            child: Padding(
-              padding: const EdgeInsets.all(8),
-              child: Row(
+            ),
+      body: AdaptiveContent(
+        maxWidth: selected == null
+            ? AdaptiveContent.listWidth
+            : AdaptiveContent.readerWidth,
+        child: Column(
+          children: [
+            if (searchQuery.isNotEmpty)
+              Wrap(
+                crossAxisAlignment: WrapCrossAlignment.center,
                 children: [
-                  Expanded(
-                    child: TextButton.icon(
-                      onPressed: canNavigate(-1) ? () => navigate(-1) : null,
-                      icon: const Icon(Icons.chevron_left),
-                      label: const Text('Предыдущее'),
-                    ),
+                  Text('Поиск: $searchQuery'),
+                  TextButton(
+                    onPressed: loading ? null : findNext,
+                    child: const Text('Найти далее'),
                   ),
-                  Expanded(
-                    child: Tooltip(
-                      message: unreadNavigation
-                          ? commandTooltip(
-                              DesktopCommand.unread,
-                              'Следующее непрочитанное',
-                            )
-                          : 'Следующее',
-                      excludeFromSemantics: true,
-                      child: TextButton.icon(
-                        onPressed: !commandBusy && canNavigate(1)
-                            ? () => navigate(1)
-                            : null,
-                        icon: const Icon(Icons.chevron_right),
-                        label: const Text('Следующее'),
-                      ),
+                  TextButton(
+                    onPressed: searchBusy
+                        ? cancelSearch
+                        : () => setState(() => resetSearch(clearQuery: true)),
+                    child: Text(
+                      searchBusy ? 'Отменить поиск' : 'Закрыть поиск',
                     ),
                   ),
                 ],
               ),
-            ),
-          ),
-    body: Column(
-      children: [
-        if (searchQuery.isNotEmpty)
-          Wrap(
-            crossAxisAlignment: WrapCrossAlignment.center,
-            children: [
-              Text('Поиск: $searchQuery'),
-              TextButton(
-                onPressed: loading ? null : findNext,
-                child: const Text('Найти далее'),
+            if (searchNotice != null)
+              Padding(
+                padding: const EdgeInsets.all(8),
+                child: Text(searchNotice!),
               ),
-              TextButton(
-                onPressed: searchBusy
-                    ? cancelSearch
-                    : () => setState(() => resetSearch(clearQuery: true)),
-                child: Text(searchBusy ? 'Отменить поиск' : 'Закрыть поиск'),
+            if (unreadNavigation &&
+                !loading &&
+                !canNavigate(1) &&
+                error == null)
+              const Padding(
+                padding: EdgeInsets.all(8),
+                child: Text('Дальнейших непрочитанных сообщений нет'),
               ),
-            ],
-          ),
-        if (searchNotice != null)
-          Padding(padding: const EdgeInsets.all(8), child: Text(searchNotice!)),
-        if (unreadNavigation && !loading && !canNavigate(1) && error == null)
-          const Padding(
-            padding: EdgeInsets.all(8),
-            child: Text('Дальнейших непрочитанных сообщений нет'),
-          ),
-        if (!canRead)
-          Padding(
-            padding: const EdgeInsets.all(16),
-            child: Text(
-              canPost
-                  ? "Разрешена только отправка сообщений"
-                  : "Нет доступа к конференции",
-            ),
-          ),
-        if (loading) const LinearProgressIndicator(),
-        if (error != null)
-          Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              children: [
-                Text(error!),
-                TextButton(
-                  onPressed: loading ? null : retry,
-                  child: const Text('Повторить'),
+            if (!canRead)
+              Padding(
+                padding: const EdgeInsets.all(16),
+                child: Text(
+                  canPost
+                      ? "Разрешена только отправка сообщений"
+                      : "Нет доступа к конференции",
                 ),
-              ],
-            ),
-          ),
-        if (personalMailbox && mailboxUpdatedAt != null && error == null)
-          Text(
-            'Обновлено с сервера: ${mailboxUpdatedAt!.toIso8601String().substring(11, 19)}',
-            style: Theme.of(context).textTheme.labelSmall,
-          ),
-        if (personalMailbox && threadId != null)
-          TextButton(
-            onPressed: loading ? null : () => load(),
-            child: const Text('Все письма'),
-          ),
-        if (personalMailbox &&
-            selected == null &&
-            threadId == null &&
-            lastOpenedMessageId != null &&
-            error == null)
-          TextButton.icon(
-            onPressed: loading ? null : continueReading,
-            icon: const Icon(Icons.bookmark_outline),
-            label: const Text('Продолжить с последнего открытого письма'),
-          ),
-        if (selected != null && filteredSelection)
-          Expanded(
-            child: SingleChildScrollView(
-              child: Padding(
-                padding: const EdgeInsets.all(24),
+              ),
+            if (loading) const LinearProgressIndicator(),
+            if (error != null)
+              Padding(
+                padding: const EdgeInsets.all(16),
                 child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      selected!.subject,
-                      style: Theme.of(context).textTheme.titleLarge,
-                    ),
-                    Text('${selected!.fromName} <${selected!.fromAddress}>'),
-                    Text(
-                      filteredSelection && selected!.isCollapsed
-                          ? 'Письмо свернуто персональным фильтром'
-                          : 'Правило больше не действует. Письмо доступно к чтению.',
-                    ),
-                    for (final id in selected!.matchedFilterIds)
-                      Text(_filterReason(id)),
-                    FilledButton(
-                      onPressed: commandBusy ? null : revealPersonalMessage,
-                      child: Text(
-                        selected!.isCollapsed ? 'Показать' : 'Открыть',
-                      ),
-                    ),
+                    Text(error!),
                     TextButton(
-                      onPressed: commandBusy
-                          ? null
-                          : () => managePersonalFilters(),
-                      child: const Text('Управление правилами'),
+                      onPressed: loading ? null : retry,
+                      child: const Text('Повторить'),
                     ),
                   ],
                 ),
               ),
-            ),
-          ),
-        if (selected != null && !filteredSelection)
-          Expanded(
-            child: SingleChildScrollView(
-              controller: bodyController,
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Tooltip(
-                    message: commandTooltip(DesktopCommand.list, 'К списку'),
-                    excludeFromSemantics: true,
-                    child: TextButton(
-                      onPressed: commandReason(DesktopCommand.list) == null
-                          ? returnToList
-                          : null,
-                      child: const Text('К списку'),
+            if (personalMailbox && mailboxUpdatedAt != null && error == null)
+              Text(
+                'Обновлено с сервера: ${mailboxUpdatedAt!.toIso8601String().substring(11, 19)}',
+                style: Theme.of(context).textTheme.labelSmall,
+              ),
+            if (personalMailbox && threadId != null)
+              TextButton(
+                onPressed: loading ? null : () => load(),
+                child: const Text('Все письма'),
+              ),
+            if (personalMailbox &&
+                selected == null &&
+                threadId == null &&
+                lastOpenedMessageId != null &&
+                error == null)
+              TextButton.icon(
+                onPressed: loading ? null : continueReading,
+                icon: const Icon(Icons.bookmark_outline),
+                label: const Text('Продолжить с последнего открытого письма'),
+              ),
+            if (selected != null && filteredSelection)
+              Expanded(
+                child: SingleChildScrollView(
+                  child: Padding(
+                    padding: const EdgeInsets.all(24),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          selected!.subject,
+                          style: Theme.of(context).textTheme.titleLarge,
+                        ),
+                        Text(
+                          '${selected!.fromName} <${selected!.fromAddress}>',
+                        ),
+                        Text(
+                          filteredSelection && selected!.isCollapsed
+                              ? 'Письмо свернуто персональным фильтром'
+                              : 'Правило больше не действует. Письмо доступно к чтению.',
+                        ),
+                        for (final id in selected!.matchedFilterIds)
+                          Text(_filterReason(id)),
+                        FilledButton(
+                          onPressed: commandBusy ? null : revealPersonalMessage,
+                          child: Text(
+                            selected!.isCollapsed ? 'Показать' : 'Открыть',
+                          ),
+                        ),
+                        TextButton(
+                          onPressed: commandBusy
+                              ? null
+                              : () => managePersonalFilters(),
+                          child: const Text('Управление правилами'),
+                        ),
+                      ],
                     ),
                   ),
-                  if (personalMailbox &&
-                      selected!.direction != MailDirection.unspecified)
-                    Text(
-                      selected!.direction == MailDirection.outgoing
-                          ? 'Исходящее'
-                          : 'Входящее',
-                    ),
-                  if (searchResult == null) ...[
-                    Text(
-                      'От: ${_correspondent(selected!.fromName, selected!.fromAddress)}',
-                    ),
-                    Text(
-                      'К: ${_correspondent(selected!.toName, selected!.toAddress)}',
-                    ),
-                  ] else ...[
-                    correspondent(
-                      'От:',
-                      selected!.fromName,
-                      selected!.fromAddress,
-                      1,
-                      2,
-                    ),
-                    correspondent(
-                      'К:',
-                      selected!.toName,
-                      selected!.toAddress,
-                      3,
-                      4,
-                    ),
-                  ],
-                  Text(selected!.date.toLocal().toString().split('.').first),
-                  if (searchResult == null)
-                    Text(
-                      selected!.subject,
-                      style: Theme.of(context).textTheme.titleLarge,
-                    )
-                  else
-                    searchHeader(
-                      selected!.subject,
-                      5,
-                      style: Theme.of(context).textTheme.titleLarge,
-                    ),
-                  const Divider(),
-                  UueBody(
-                    key: ValueKey(
-                      '${selected!.id}:${selected!.body.hashCode}:${repository.epoch}',
-                    ),
-                    repository: repository.uue,
-                    conference: conferenceId,
-                    message: selected!,
-                    searchRanges: searchResult?.matches[6] ?? const [],
-                    revealSearch: revealSearch && searchResult?.firstField == 6,
-                  ),
-                  Wrap(
+                ),
+              ),
+            if (selected != null && !filteredSelection)
+              Expanded(
+                child: SingleChildScrollView(
+                  controller: bodyController,
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      if (canPost)
-                        Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Tooltip(
-                              message: commandTooltip(
+                      Tooltip(
+                        message: commandTooltip(
+                          DesktopCommand.list,
+                          'К списку',
+                        ),
+                        excludeFromSemantics: true,
+                        child: TextButton(
+                          onPressed: commandReason(DesktopCommand.list) == null
+                              ? returnToList
+                              : null,
+                          child: const Text('К списку'),
+                        ),
+                      ),
+                      if (personalMailbox &&
+                          selected!.direction != MailDirection.unspecified)
+                        Text(
+                          selected!.direction == MailDirection.outgoing
+                              ? 'Исходящее'
+                              : 'Входящее',
+                        ),
+                      if (searchResult == null) ...[
+                        Text(
+                          'От: ${_correspondent(selected!.fromName, selected!.fromAddress)}',
+                        ),
+                        Text(
+                          'К: ${_correspondent(selected!.toName, selected!.toAddress)}',
+                        ),
+                      ] else ...[
+                        correspondent(
+                          'От:',
+                          selected!.fromName,
+                          selected!.fromAddress,
+                          1,
+                          2,
+                        ),
+                        correspondent(
+                          'К:',
+                          selected!.toName,
+                          selected!.toAddress,
+                          3,
+                          4,
+                        ),
+                      ],
+                      Text(
+                        selected!.date.toLocal().toString().split('.').first,
+                      ),
+                      if (searchResult == null)
+                        Text(
+                          selected!.subject,
+                          style: Theme.of(context).textTheme.titleLarge,
+                        )
+                      else
+                        searchHeader(
+                          selected!.subject,
+                          5,
+                          style: Theme.of(context).textTheme.titleLarge,
+                        ),
+                      const Divider(),
+                      UueBody(
+                        key: ValueKey(
+                          '${selected!.id}:${selected!.body.hashCode}:${repository.epoch}',
+                        ),
+                        repository: repository.uue,
+                        conference: conferenceId,
+                        message: selected!,
+                        searchRanges: searchResult?.matches[6] ?? const [],
+                        revealSearch:
+                            revealSearch && searchResult?.firstField == 6,
+                      ),
+                      MessageActions(
+                        actions: [
+                          if (canPost)
+                            MessageAction(
+                              label: kind.replyLabel,
+                              icon: Icons.reply,
+                              tooltip: commandTooltip(
                                 DesktopCommand.reply,
                                 kind.replyLabel,
                               ),
-                              excludeFromSemantics: true,
-                              child: TextButton(
-                                onPressed:
-                                    commandReason(DesktopCommand.reply) == null
-                                    ? () => compose(reply: true)
-                                    : null,
-                                child: Text(kind.replyLabel),
-                              ),
+                              onPressed:
+                                  commandReason(DesktopCommand.reply) == null
+                                  ? () => compose(reply: true)
+                                  : null,
+                              variantsLabel: 'Вид ответа',
+                              onVariant:
+                                  commandReason(DesktopCommand.reply) == null
+                                  ? (quoted) =>
+                                        compose(reply: true, quoted: quoted)
+                                  : null,
                             ),
-                            PopupMenuButton<bool>(
-                              tooltip: 'Вид ответа',
-                              enabled:
-                                  commandReason(DesktopCommand.reply) == null,
-                              icon: const Icon(Icons.arrow_drop_down),
-                              onSelected: (quoted) =>
-                                  compose(reply: true, quoted: quoted),
-                              itemBuilder: (_) => const [
-                                PopupMenuItem(
-                                  value: true,
-                                  child: Text('С цитатой'),
-                                ),
-                                PopupMenuItem(
-                                  value: false,
-                                  child: Text('Без цитаты'),
-                                ),
-                              ],
+                          if (canRead && kind == AreaKind.echo) ...[
+                            MessageAction(
+                              label: 'Переслать',
+                              icon: Icons.forward,
+                              onPressed: commandBusy
+                                  ? null
+                                  : () => compose(forward: true),
                             ),
-                          ],
-                        ),
-
-                      if (canRead && kind == AreaKind.echo)
-                        TextButton(
-                          onPressed: loading
-                              ? null
-                              : () => compose(forward: true),
-                          child: const Text('Переслать'),
-                        ),
-                      if (canRead && kind == AreaKind.echo)
-                        for (final personal in [true, false])
-                          Wrap(
-                            crossAxisAlignment: WrapCrossAlignment.center,
-                            children: [
-                              TextButton(
-                                onPressed: loading
+                            for (final personal in [true, false])
+                              MessageAction(
+                                label: personal
+                                    ? 'Ответить лично'
+                                    : 'Ответить в другую область…',
+                                icon: personal
+                                    ? Icons.person_outline
+                                    : Icons.reply_all,
+                                onPressed: commandBusy
                                     ? null
                                     : () => compose(
                                         crossAreaReply: true,
                                         personalOnly: personal,
                                       ),
-                                child: Text(
-                                  personal
-                                      ? 'Ответить лично'
-                                      : 'Ответить в другую область…',
-                                ),
-                              ),
-                              PopupMenuButton<bool>(
-                                tooltip: personal
+                                variantsLabel: personal
                                     ? 'Вид личного ответа'
                                     : 'Вид ответа в другую область',
-                                enabled: !loading,
-                                onSelected: (quoted) => compose(
-                                  crossAreaReply: true,
-                                  personalOnly: personal,
-                                  quoted: quoted,
-                                ),
-                                itemBuilder: (_) => const [
-                                  PopupMenuItem(
-                                    value: true,
-                                    child: Text('С цитатой'),
-                                  ),
-                                  PopupMenuItem(
-                                    value: false,
-                                    child: Text('Без цитаты'),
-                                  ),
-                                ],
+                                onVariant: commandBusy
+                                    ? null
+                                    : (quoted) => compose(
+                                        crossAreaReply: true,
+                                        personalOnly: personal,
+                                        quoted: quoted,
+                                      ),
                               ),
-                            ],
+                          ],
+                          MessageAction(
+                            label: 'Цепочка сообщений',
+                            icon: Icons.account_tree_outlined,
+                            onPressed: commandBusy
+                                ? null
+                                : () => load(thread: true),
                           ),
-                      TextButton(
-                        onPressed: loading ? null : () => load(thread: true),
-                        child: const Text('Цепочка сообщений'),
+                        ],
                       ),
                     ],
                   ),
-                ],
+                ),
               ),
-            ),
-          ),
-        if (selected == null && messages.isNotEmpty)
-          Expanded(
-            child: ListView.builder(
-              key: const PageStorageKey('message-list'),
-              controller: listController,
-              itemCount: messages.length + (hasMore ? 1 : 0),
-              itemBuilder: (context, index) {
-                if (index == messages.length) {
-                  return TextButton(
-                    onPressed: loading ? null : () => load(more: true),
-                    child: const Text('Загрузить ещё'),
-                  );
-                }
-                final message = messages[index];
-                return ListTile(
-                  title: Text(
-                    message.subject,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                  subtitle: Text(
-                    '${personalMailbox && message.direction != MailDirection.unspecified ? (message.direction == MailDirection.outgoing ? 'Исходящее · ' : 'Входящее · ') : ''}${message.fromName}\n${(message.isCollapsed ? "Письмо свернуто персональным фильтром" : message.bodyPreview ?? "").replaceAll(RegExp(r'\s+'), ' ').trim()}',
-                    maxLines: 3,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                  isThreeLine: true,
-                  leading: Icon(message.isRead ? Icons.drafts : Icons.mail),
-                  trailing: canRead && !activeConference.unsupportedFormat
-                      ? Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            if (message.isCollapsed)
-                              TextButton(
-                                onPressed: commandBusy
-                                    ? null
-                                    : () => showFilteredRow(message),
-                                child: const Text('Показать'),
-                              ),
-                            PopupMenuButton<String>(
-                              tooltip: 'Действия письма',
-                              enabled: !commandBusy,
-                              onSelected: (action) {
-                                if (action == 'technical') {
-                                  showTechnicalData(message.id);
-                                } else if (action == 'show') {
-                                  showFilteredRow(message);
-                                } else {
-                                  managePersonalFilters(message, action);
-                                }
-                              },
-                              itemBuilder: (_) => [
+            if (selected == null && messages.isNotEmpty)
+              Expanded(
+                child: ListView.builder(
+                  key: const PageStorageKey('message-list'),
+                  controller: listController,
+                  itemCount: messages.length + (hasMore ? 1 : 0),
+                  itemBuilder: (context, index) {
+                    if (index == messages.length) {
+                      return TextButton(
+                        onPressed: loading ? null : () => load(more: true),
+                        child: const Text('Загрузить ещё'),
+                      );
+                    }
+                    final message = messages[index];
+                    return ListTile(
+                      title: Text(
+                        message.subject,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      subtitle: Text(
+                        '${personalMailbox && message.direction != MailDirection.unspecified ? (message.direction == MailDirection.outgoing ? 'Исходящее · ' : 'Входящее · ') : ''}${message.fromName}\n${(message.isCollapsed ? "Письмо свернуто персональным фильтром" : message.bodyPreview ?? "").replaceAll(RegExp(r'\s+'), ' ').trim()}',
+                        maxLines: 3,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      isThreeLine: true,
+                      leading: Icon(message.isRead ? Icons.drafts : Icons.mail),
+                      trailing: canRead && !activeConference.unsupportedFormat
+                          ? Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
                                 if (message.isCollapsed)
-                                  const PopupMenuItem(
-                                    value: 'show',
-                                    child: Text('Показать'),
+                                  TextButton(
+                                    onPressed: commandBusy
+                                        ? null
+                                        : () => showFilteredRow(message),
+                                    child: const Text('Показать'),
                                   ),
-                                if (kind == AreaKind.echo)
-                                  for (final entry in {
-                                    'author': 'Свернуть по автору',
-                                    'address': 'Свернуть по адресу',
-                                    'subject': 'Свернуть по теме',
-                                  }.entries)
-                                    PopupMenuItem(
-                                      value: entry.key,
-                                      child: Text(entry.value),
+                                PopupMenuButton<String>(
+                                  tooltip: 'Действия письма',
+                                  enabled: !commandBusy,
+                                  onSelected: (action) {
+                                    if (action == 'technical') {
+                                      showTechnicalData(message.id);
+                                    } else if (action == 'show') {
+                                      showFilteredRow(message);
+                                    } else {
+                                      managePersonalFilters(message, action);
+                                    }
+                                  },
+                                  itemBuilder: (_) => [
+                                    if (message.isCollapsed)
+                                      const PopupMenuItem(
+                                        value: 'show',
+                                        child: Text('Показать'),
+                                      ),
+                                    if (kind == AreaKind.echo)
+                                      for (final entry in {
+                                        'author': 'Свернуть по автору',
+                                        'address': 'Свернуть по адресу',
+                                        'subject': 'Свернуть по теме',
+                                      }.entries)
+                                        PopupMenuItem(
+                                          value: entry.key,
+                                          child: Text(entry.value),
+                                        ),
+                                    const PopupMenuItem(
+                                      value: 'technical',
+                                      child: Text('Технические данные'),
                                     ),
-                                const PopupMenuItem(
-                                  value: 'technical',
-                                  child: Text('Технические данные'),
+                                  ],
                                 ),
                               ],
-                            ),
-                          ],
-                        )
-                      : null,
-                  onTap: loading ? null : () => open(message),
-                );
-              },
-            ),
-          ),
-        if (canRead &&
-            selected == null &&
-            !loading &&
-            error == null &&
-            messages.isEmpty)
-          const Expanded(child: Center(child: Text('Сообщений нет'))),
-      ],
-    ),
-  );
+                            )
+                          : null,
+                      onTap: loading ? null : () => open(message),
+                    );
+                  },
+                ),
+              ),
+            if (canRead &&
+                selected == null &&
+                !loading &&
+                error == null &&
+                messages.isEmpty)
+              const Expanded(child: Center(child: Text('Сообщений нет'))),
+          ],
+        ),
+      ),
+    );
+  }
 }
 
 class _ComposeScreen extends StatefulWidget {
@@ -2221,6 +2241,7 @@ class _ComposeScreenState extends State<_ComposeScreen> {
     return await showDialog<bool>(
           context: context,
           builder: (context) => AlertDialog(
+            scrollable: true,
             title: const Text('Закрыть незавершённую отправку?'),
             content: const Text(
               'Часть копий могла сохраниться. После закрытия повтор из этого редактора будет недоступен.',
@@ -2390,6 +2411,7 @@ class _ComposeScreenState extends State<_ComposeScreen> {
       final confirmed = await showDialog<bool>(
         context: context,
         builder: (context) => AlertDialog(
+          scrollable: true,
           title: const Text('Опубликовать ответ в эхе?'),
           content: Text(
             'Ответ в ${target.name} будет доступен всем участникам эхи.',
@@ -2613,6 +2635,17 @@ class _ComposeScreenState extends State<_ComposeScreen> {
     child: buildComposer(context),
   );
 
+  Widget sendButton() => ElevatedButton(
+    onPressed: sending || !templateReady ? null : send,
+    child: Text(
+      sending
+          ? 'Сохранение...'
+          : uncertain
+          ? 'Повторить отправку'
+          : 'Отправить',
+    ),
+  );
+
   Widget buildComposer(BuildContext context) => PopScope(
     canPop: allowClose || crosspostAreas.isEmpty || (!sending && !uncertain),
     onPopInvokedWithResult: (didPop, result) async {
@@ -2655,183 +2688,180 @@ class _ComposeScreenState extends State<_ComposeScreen> {
             ),
         ],
       ),
-      bottomNavigationBar: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.all(12),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              if (error != null) Text(error!),
-              ElevatedButton(
-                onPressed: sending || !templateReady ? null : send,
+      bottomNavigationBar: MediaQuery.viewInsetsOf(context).bottom > 0
+          ? null
+          : SafeArea(
+              child: AdaptiveContent(
+                maxWidth: AdaptiveContent.formWidth,
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: sendButton(),
+                ),
+              ),
+            ),
+      body: AdaptiveContent(
+        maxWidth: AdaptiveContent.formWidth,
+        child: ListView(
+          controller: composerScroll,
+          padding: const EdgeInsets.all(16),
+          children: [
+            if (error != null) Text(error!),
+
+            if (!templateReady && templateError == null)
+              const LinearProgressIndicator(),
+            if (templateError != null) ...[
+              Text(templateError!),
+              TextButton(
+                onPressed: () => setState(() {
+                  templateReady = true;
+                  templateError = null;
+                }),
+                child: const Text('Использовать штатное оформление'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.pushNamed(context, '/settings'),
+                child: const Text('Открыть настройки шаблона'),
+              ),
+            ],
+            if (widget.forward && customTemplate)
+              const Text(
+                'Шаблон применён при открытии. После смены эхи проверьте оформление вручную.',
+              ),
+            Text(
+              '${targetKind == AreaKind.echo
+                  ? 'Эха'
+                  : targetKind == AreaKind.netmail
+                  ? 'Netmail'
+                  : targetKind.groupLabel}: ${destination?.name ?? (widget.forward ? "не выбрана" : widget.conferenceName)}',
+            ),
+            if (widget.crossAreaReply && targetKind == AreaKind.netmail)
+              const Text('Личный ответ получателю через Netmail.'),
+            if (widget.crossAreaReply && destinationTypeChanged)
+              const Text(
+                'Шаблон уже применён. После смены типа области проверьте оформление вручную.',
+              ),
+            if (crosspostAreas.isNotEmpty) ...[
+              Text(
+                'Кросспостинг: ${crosspostAreas.map((a) => a.name).join(', ')}',
+              ),
+              const Text('Блок в начале каждой копии:'),
+              SelectableText(
+                crosspostHeader(primaryName, crosspostAreas),
+                style: ftnTextStyle(Theme.of(context).colorScheme),
+              ),
+            ],
+            if (widget.original != null &&
+                !widget.forward &&
+                targetKind == AreaKind.echo)
+              const Text(
+                'Ответ будет опубликован в эхе и доступен всем участникам.',
+              ),
+            if (widget.forward || widget.crossAreaReply) ...[
+              Text(
+                'Источник: ${widget.conferenceName} (${widget.conferenceId})',
+              ),
+              TextButton(
+                onPressed: !templateReady || sending || uncertain
+                    ? null
+                    : changeDestination,
                 child: Text(
-                  sending
-                      ? 'Сохранение...'
-                      : uncertain
-                      ? 'Повторить отправку'
-                      : 'Отправить',
+                  widget.crossAreaReply
+                      ? 'Изменить область назначения'
+                      : 'Изменить эху назначения',
                 ),
               ),
             ],
-          ),
-        ),
-      ),
-      body: ListView(
-        controller: composerScroll,
-        padding: const EdgeInsets.all(16),
-        children: [
-          if (!templateReady && templateError == null)
-            const LinearProgressIndicator(),
-          if (templateError != null) ...[
-            Text(templateError!),
-            TextButton(
-              onPressed: () => setState(() {
-                templateReady = true;
-                templateError = null;
-              }),
-              child: const Text('Использовать штатное оформление'),
+            TextField(
+              controller: toName,
+              style: TextStyle(color: Theme.of(context).colorScheme.onSurface),
+              enabled:
+                  templateReady &&
+                  !sending &&
+                  !uncertain &&
+                  (widget.original == null ||
+                      widget.forward ||
+                      widget.crossAreaReply),
+              decoration: const InputDecoration(labelText: 'Получатель'),
             ),
-            TextButton(
-              onPressed: () => Navigator.pushNamed(context, '/settings'),
-              child: const Text('Открыть настройки шаблона'),
+            TextField(
+              controller: toAddress,
+              style: TextStyle(color: Theme.of(context).colorScheme.onSurface),
+              enabled:
+                  templateReady &&
+                  !sending &&
+                  !uncertain &&
+                  (widget.original == null ||
+                      widget.forward ||
+                      widget.crossAreaReply),
+              decoration: const InputDecoration(
+                labelText: 'FTN-адрес получателя',
+              ),
             ),
-          ],
-          if (widget.forward && customTemplate)
-            const Text(
-              'Шаблон применён при открытии. После смены эхи проверьте оформление вручную.',
+            TextField(
+              controller: subject,
+              enabled: templateReady && !sending && !uncertain,
+              decoration: const InputDecoration(labelText: 'Тема'),
             ),
-          Text(
-            '${targetKind == AreaKind.echo
-                ? 'Эха'
-                : targetKind == AreaKind.netmail
-                ? 'Netmail'
-                : targetKind.groupLabel}: ${destination?.name ?? (widget.forward ? "не выбрана" : widget.conferenceName)}',
-          ),
-          if (widget.crossAreaReply && targetKind == AreaKind.netmail)
-            const Text('Личный ответ получателю через Netmail.'),
-          if (widget.crossAreaReply && destinationTypeChanged)
-            const Text(
-              'Шаблон уже применён. После смены типа области проверьте оформление вручную.',
-            ),
-          if (crosspostAreas.isNotEmpty) ...[
-            Text(
-              'Кросспостинг: ${crosspostAreas.map((a) => a.name).join(', ')}',
-            ),
-            const Text('Блок в начале каждой копии:'),
-            SelectableText(
-              crosspostHeader(primaryName, crosspostAreas),
+            TextField(
+              controller: body,
               style: ftnTextStyle(Theme.of(context).colorScheme),
+              enabled: templateReady && !sending && !uncertain,
+              minLines: 6,
+              maxLines: null,
+              decoration: const InputDecoration(labelText: 'Текст'),
             ),
-          ],
-          if (widget.original != null &&
-              !widget.forward &&
-              targetKind == AreaKind.echo)
-            const Text(
-              'Ответ будет опубликован в эхе и доступен всем участникам.',
-            ),
-          if (widget.forward || widget.crossAreaReply) ...[
-            Text('Источник: ${widget.conferenceName} (${widget.conferenceId})'),
-            TextButton(
-              onPressed: !templateReady || sending || uncertain
-                  ? null
-                  : changeDestination,
-              child: Text(
-                widget.crossAreaReply
-                    ? 'Изменить область назначения'
-                    : 'Изменить эху назначения',
-              ),
-            ),
-          ],
-          TextField(
-            controller: toName,
-            style: TextStyle(color: Theme.of(context).colorScheme.onSurface),
-            enabled:
-                templateReady &&
-                !sending &&
-                !uncertain &&
-                (widget.original == null ||
-                    widget.forward ||
-                    widget.crossAreaReply),
-            decoration: const InputDecoration(labelText: 'Получатель'),
-          ),
-          TextField(
-            controller: toAddress,
-            style: TextStyle(color: Theme.of(context).colorScheme.onSurface),
-            enabled:
-                templateReady &&
-                !sending &&
-                !uncertain &&
-                (widget.original == null ||
-                    widget.forward ||
-                    widget.crossAreaReply),
-            decoration: const InputDecoration(
-              labelText: 'FTN-адрес получателя',
-            ),
-          ),
-          TextField(
-            controller: subject,
-            enabled: templateReady && !sending && !uncertain,
-            decoration: const InputDecoration(labelText: 'Тема'),
-          ),
-          TextField(
-            controller: body,
-            style: ftnTextStyle(Theme.of(context).colorScheme),
-            enabled: templateReady && !sending && !uncertain,
-            minLines: 6,
-            maxLines: null,
-            decoration: const InputDecoration(labelText: 'Текст'),
-          ),
-          if (widget.kind == AreaKind.echo ||
-              widget.kind == AreaKind.netmail) ...[
-            if (crosspostAreas.isNotEmpty)
-              const Text(
-                'Чтобы прикрепить UUE-файл, сначала снимите выбор эх кросспостинга.',
-              ),
-            TextButton.icon(
-              onPressed:
-                  sending ||
-                      uncertain ||
-                      uueLimits == null ||
-                      crosspostAreas.isNotEmpty
-                  ? null
-                  : pickFile,
-              icon: const Icon(Icons.attach_file),
-              label: Text(
-                uueLoading ? 'Проверка UUE...' : 'Прикрепить файл UUE',
-              ),
-            ),
-            if (!uueLoading && uueLimits == null)
-              if (uueError != null)
-                TextButton(
-                  onPressed: loadUueLimits,
-                  child: Text('$uueError. Повторить'),
-                )
-              else
-                const Text('Сервер не поддерживает отправку UUE'),
-            if (attachment != null)
-              Card(
-                child: ListTile(
-                  leading: const Icon(Icons.insert_drive_file),
-                  title: Text(attachment!.name),
-                  subtitle: Text(
-                    '${attachment!.bytes.length} байт · примерно ${((attachment!.bytes.length * 62 / 45 + body.text.length + 256) / ((uueLimits?.partBytes ?? 32768) - 512)).ceil()} частей${sending ? " · загружено $uploaded байт" : ""}',
-                  ),
-                  trailing: IconButton(
-                    tooltip: 'Убрать файл',
-                    onPressed: sending || uncertain
-                        ? null
-                        : () => setState(() {
-                            attachment = null;
-                            frozenUue = null;
-                            operationId = MessageRepository.newOperationId();
-                          }),
-                    icon: const Icon(Icons.close),
-                  ),
+            if (widget.kind == AreaKind.echo ||
+                widget.kind == AreaKind.netmail) ...[
+              if (crosspostAreas.isNotEmpty)
+                const Text(
+                  'Чтобы прикрепить UUE-файл, сначала снимите выбор эх кросспостинга.',
+                ),
+              TextButton.icon(
+                onPressed:
+                    sending ||
+                        uncertain ||
+                        uueLimits == null ||
+                        crosspostAreas.isNotEmpty
+                    ? null
+                    : pickFile,
+                icon: const Icon(Icons.attach_file),
+                label: Text(
+                  uueLoading ? 'Проверка UUE...' : 'Прикрепить файл UUE',
                 ),
               ),
+              if (!uueLoading && uueLimits == null)
+                if (uueError != null)
+                  TextButton(
+                    onPressed: loadUueLimits,
+                    child: Text('$uueError. Повторить'),
+                  )
+                else
+                  const Text('Сервер не поддерживает отправку UUE'),
+              if (attachment != null)
+                Card(
+                  child: ListTile(
+                    leading: const Icon(Icons.insert_drive_file),
+                    title: Text(attachment!.name),
+                    subtitle: Text(
+                      '${attachment!.bytes.length} байт · примерно ${((attachment!.bytes.length * 62 / 45 + body.text.length + 256) / ((uueLimits?.partBytes ?? 32768) - 512)).ceil()} частей${sending ? " · загружено $uploaded байт" : ""}',
+                    ),
+                    trailing: IconButton(
+                      tooltip: 'Убрать файл',
+                      onPressed: sending || uncertain
+                          ? null
+                          : () => setState(() {
+                              attachment = null;
+                              frozenUue = null;
+                              operationId = MessageRepository.newOperationId();
+                            }),
+                      icon: const Icon(Icons.close),
+                    ),
+                  ),
+                ),
+            ],
+            if (MediaQuery.viewInsetsOf(context).bottom > 0) sendButton(),
           ],
-        ],
+        ),
       ),
     ),
   );

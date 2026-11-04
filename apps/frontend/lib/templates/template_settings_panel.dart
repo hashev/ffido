@@ -107,6 +107,7 @@ class _TemplateSettingsPanelState extends State<TemplateSettingsPanel>
   void help() => showDialog<void>(
     context: context,
     builder: (context) => AlertDialog(
+      scrollable: true,
       title: const Text('Совместимость с GoldED'),
       content: SizedBox(
         width: 650,
@@ -243,6 +244,7 @@ class _TemplatePreviewState extends State<TemplatePreview> {
     final diagnostics = TemplateEngine().validate(widget.bundle.text);
     final cursor = result.cursor.clamp(0, result.body.length);
     return AlertDialog(
+      scrollable: true,
       title: const Text('Предпросмотр — примерные данные'),
       content: SizedBox(
         width: 650,
@@ -252,6 +254,7 @@ class _TemplatePreviewState extends State<TemplatePreview> {
             mainAxisSize: MainAxisSize.min,
             children: [
               DropdownButton<TemplateAction>(
+                itemHeight: null,
                 key: const Key('template-preview-action'),
                 value: action,
                 isExpanded: true,
@@ -266,6 +269,7 @@ class _TemplatePreviewState extends State<TemplatePreview> {
                     .toList(),
               ),
               DropdownButton<AreaKind>(
+                itemHeight: null,
                 value: kind,
                 isExpanded: true,
                 onChanged: (v) => setState(() => kind = v!),

@@ -167,13 +167,15 @@ void main() {
         expect(find.byType(SelectableText).evaluate().length, lessThan(30));
         final scrollable = find
             .descendant(
-              of: find.byType(MessageTechnicalDialog),
+              of: find.byType(ListView),
               matching: find.byType(Scrollable),
             )
             .first;
         final state = tester.state<ScrollableState>(scrollable);
         state.position.jumpTo(10000000);
         await tester.pumpAndSettle();
+        expect(state.position.pixels, greaterThan(100000));
+        expect(find.byType(SelectableText).evaluate().length, lessThan(30));
         expect(tester.takeException(), isNull);
         await tester.tap(find.text('Закрыть'));
         await tester.pumpAndSettle();

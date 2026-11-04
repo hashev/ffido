@@ -1,3 +1,5 @@
+import '../widgets/adaptive_layout.dart';
+
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -109,66 +111,68 @@ class _CrosspostDestinationsState extends State<CrosspostDestinations> {
         ),
       ],
     ),
-    body: Column(
-      children: [
-        ListTile(
-          title: Text('Исходная эха: ${widget.primaryName}'),
-          subtitle: Text('Выбрано дополнительных эх: ${selected.length}/20'),
-          leading: const Icon(Icons.check_box),
-        ),
-        Padding(
-          padding: const EdgeInsets.all(16),
-          child: TextField(
-            controller: search,
-            decoration: const InputDecoration(labelText: 'Поиск эхи'),
-            onChanged: (_) {
-              ++version;
-              debounce?.cancel();
-              setState(() {
-                rows = [];
-                loading = true;
-                hasMore = false;
-              });
-              debounce = Timer(const Duration(milliseconds: 300), () => load());
-            },
+    body: AdaptiveContent(
+      maxWidth: AdaptiveContent.listWidth,
+      child: ListView(
+        children: [
+          ListTile(
+            title: Text('Исходная эха: ${widget.primaryName}'),
+            subtitle: Text('Выбрано дополнительных эх: ${selected.length}/20'),
+            leading: const Icon(Icons.check_box),
           ),
-        ),
-        if (loading) const LinearProgressIndicator(),
-        if (error != null)
-          TextButton(
-            onPressed: () => load(more: offset > 0 && rows.isNotEmpty),
-            child: Text('$error. Повторить'),
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: TextField(
+              controller: search,
+              decoration: const InputDecoration(labelText: 'Поиск эхи'),
+              onChanged: (_) {
+                ++version;
+                debounce?.cancel();
+                setState(() {
+                  rows = [];
+                  loading = true;
+                  hasMore = false;
+                });
+                debounce = Timer(
+                  const Duration(milliseconds: 300),
+                  () => load(),
+                );
+              },
+            ),
           ),
-        if (!loading && error == null && rows.isEmpty)
-          const Text('Нет доступных для публикации эх'),
-        Expanded(
-          child: ListView(
-            children: [
-              for (final area in rows)
-                CheckboxListTile(
-                  title: Text(area.name),
-                  subtitle: Text(area.id),
-                  value: selected.containsKey(area.id),
-                  onChanged:
-                      !selected.containsKey(area.id) && selected.length >= 20
-                      ? null
-                      : (checked) => setState(() {
-                          if (checked == true) {
-                            selected[area.id] = area;
-                          } else {
-                            selected.remove(area.id);
-                          }
-                        }),
-                ),
-              if (hasMore)
-                TextButton(
-                  onPressed: loading ? null : () => load(more: true),
-                  child: const Text('Загрузить ещё'),
-                ),
-            ],
-          ),
-        ),
-      ],
+          if (loading) const LinearProgressIndicator(),
+          if (error != null)
+            TextButton(
+              onPressed: () => load(more: offset > 0 && rows.isNotEmpty),
+              child: Text('$error. Повторить'),
+            ),
+          if (!loading && error == null && rows.isEmpty)
+            const Text('Нет доступных для публикации эх'),
+          ...[
+            for (final area in rows)
+              CheckboxListTile(
+                title: Text(area.name),
+                subtitle: Text(area.id),
+                value: selected.containsKey(area.id),
+                onChanged:
+                    !selected.containsKey(area.id) && selected.length >= 20
+                    ? null
+                    : (checked) => setState(() {
+                        if (checked == true) {
+                          selected[area.id] = area;
+                        } else {
+                          selected.remove(area.id);
+                        }
+                      }),
+              ),
+            if (hasMore)
+              TextButton(
+                onPressed: loading ? null : () => load(more: true),
+                child: const Text('Загрузить ещё'),
+              ),
+          ],
+        ],
+      ),
     ),
   );
 }

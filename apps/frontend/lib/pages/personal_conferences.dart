@@ -1,3 +1,5 @@
+import '../widgets/adaptive_layout.dart';
+
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -400,151 +402,167 @@ class PersonalConferencesState extends State<PersonalConferences>
           ),
       ],
     ),
-    body: Column(
-      children: [
-        if (widget.catalog)
-          Padding(
-            padding: const EdgeInsets.all(16),
-            child: TextField(
-              controller: search,
-              decoration: InputDecoration(
-                hintText: 'Поиск конференций...',
-                prefixIcon: const Icon(Icons.search),
-                suffixIcon: search.text.isEmpty
-                    ? null
-                    : IconButton(
-                        tooltip: 'Очистить поиск',
-                        icon: const Icon(Icons.clear),
-                        onPressed: () {
-                          search.clear();
-                          searchChanged('');
-                        },
-                      ),
-              ),
-              onChanged: searchChanged,
-            ),
-          ),
-        if (loading) const LinearProgressIndicator(),
-        if (bookmarkError != null)
-          Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              children: [
-                Text(bookmarkError!),
-                TextButton(
-                  onPressed: retryBookmark,
-                  child: const Text('Повторить изменение закладки'),
-                ),
-              ],
-            ),
-          ),
-        if (error != null)
-          Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              children: [
-                Text(error!),
-                TextButton(
-                  onPressed:
-                      retryUpdate ??
-                      () => load(more: entries.isNotEmpty && hasMore),
-                  child: const Text('Повторить'),
-                ),
-              ],
-            ),
-          ),
-        if (!loading && error == null && entries.isEmpty)
-          Expanded(
-            child: Center(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    widget.history
-                        ? 'История просмотров пуста'
-                        : widget.catalog
-                        ? 'Конференции не найдены'
-                        : 'Нет закладок',
-                  ),
-                  if (!widget.history &&
-                      !widget.catalog &&
-                      widget.onChooseAreas != null)
-                    TextButton(
-                      onPressed: widget.onChooseAreas,
-                      child: const Text('Выбрать эхи'),
-                    ),
-                ],
-              ),
-            ),
-          ),
-        if (entries.isNotEmpty)
-          Expanded(
-            child: RefreshIndicator(
-              onRefresh: load,
-              child: ListView.builder(
-                controller: controller,
-                itemCount: entries.length + (hasMore ? 1 : 0),
-                itemBuilder: (context, index) {
-                  if (index == entries.length) {
-                    return TextButton(
-                      onPressed: loading ? null : () => load(more: true),
-                      child: const Text('Загрузить ещё'),
-                    );
-                  }
-                  final e = entries[index], c = e.conference;
-                  if (widget.history) {
-                    return ListTile(
-                      title: Text(c.name),
-                      subtitle: Text('${c.kind.groupLabel} · ${c.description}'),
-                      trailing: e.date == null
-                          ? null
-                          : Text(e.date!.toLocal().toString()),
-                      onTap: () => open(e),
-                    );
-                  }
-                  return Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      if (index == 0 ||
-                          entries[index - 1].conference.kind != c.kind)
-                        Padding(
-                          padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
-                          child: Text(
-                            c.kind.groupLabel,
-                            style: Theme.of(context).textTheme.titleMedium,
+    body: AdaptiveContent(
+      maxWidth: AdaptiveContent.listWidth,
+      child: LayoutBuilder(
+        builder: (context, constraints) => Column(
+          children: [
+            ConstrainedBox(
+              constraints: BoxConstraints(maxHeight: constraints.maxHeight / 2),
+              child: SingleChildScrollView(
+                child: Column(
+                  children: [
+                    if (widget.catalog)
+                      Padding(
+                        padding: const EdgeInsets.all(16),
+                        child: TextField(
+                          controller: search,
+                          decoration: InputDecoration(
+                            hintText: 'Поиск конференций...',
+                            prefixIcon: const Icon(Icons.search),
+                            suffixIcon: search.text.isEmpty
+                                ? null
+                                : IconButton(
+                                    tooltip: 'Очистить поиск',
+                                    icon: const Icon(Icons.clear),
+                                    onPressed: () {
+                                      search.clear();
+                                      searchChanged('');
+                                    },
+                                  ),
                           ),
+                          onChanged: searchChanged,
                         ),
-                      ConferenceCard(
-                        conference: FidoConference(
-                          id: c.id,
-                          name: c.name,
-                          description: c.description,
-                          unreadCount: c.unreadCount,
-                          icon: Icons.forum,
-                          isBookmarked: !widget.catalog || c.isBookmarked,
-                          canRead: c.canRead,
-                          canPost: c.canPost,
-                          kind: c.kind,
-                          personalMailbox: c.personalMailbox,
-                          storageFormat: c.storageFormat,
-                          unsupportedFormat: c.unsupportedFormat,
-                          statisticsKnown: c.statisticsKnown,
-                        ),
-                        showStatistics: !widget.catalog,
-                        showZeroCount: true,
-                        onTap: () => open(e),
-                        onBookmark: c.canRead || !widget.catalog
-                            ? () => toggle(e)
-                            : null,
-                        bookmarkPending: pending.contains(c.id),
                       ),
-                    ],
-                  );
-                },
+                    if (loading) const LinearProgressIndicator(),
+                    if (bookmarkError != null)
+                      Padding(
+                        padding: const EdgeInsets.all(16),
+                        child: Column(
+                          children: [
+                            Text(bookmarkError!),
+                            TextButton(
+                              onPressed: retryBookmark,
+                              child: const Text('Повторить изменение закладки'),
+                            ),
+                          ],
+                        ),
+                      ),
+                    if (error != null)
+                      Padding(
+                        padding: const EdgeInsets.all(16),
+                        child: Column(
+                          children: [
+                            Text(error!),
+                            TextButton(
+                              onPressed:
+                                  retryUpdate ??
+                                  () =>
+                                      load(more: entries.isNotEmpty && hasMore),
+                              child: const Text('Повторить'),
+                            ),
+                          ],
+                        ),
+                      ),
+                  ],
+                ),
               ),
             ),
-          ),
-      ],
+            if (!loading && error == null && entries.isEmpty)
+              Expanded(
+                child: Center(
+                  child: SingleChildScrollView(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          widget.history
+                              ? 'История просмотров пуста'
+                              : widget.catalog
+                              ? 'Конференции не найдены'
+                              : 'Нет закладок',
+                        ),
+                        if (!widget.history &&
+                            !widget.catalog &&
+                            widget.onChooseAreas != null)
+                          TextButton(
+                            onPressed: widget.onChooseAreas,
+                            child: const Text('Выбрать эхи'),
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            if (entries.isNotEmpty)
+              Expanded(
+                child: RefreshIndicator(
+                  onRefresh: load,
+                  child: ListView.builder(
+                    controller: controller,
+                    itemCount: entries.length + (hasMore ? 1 : 0),
+                    itemBuilder: (context, index) {
+                      if (index == entries.length) {
+                        return TextButton(
+                          onPressed: loading ? null : () => load(more: true),
+                          child: const Text('Загрузить ещё'),
+                        );
+                      }
+                      final e = entries[index], c = e.conference;
+                      if (widget.history) {
+                        return ListTile(
+                          title: Text(c.name),
+                          subtitle: Text(
+                            '${c.kind.groupLabel} · ${c.description}${e.date == null ? '' : '\n${e.date!.toLocal()}'}',
+                          ),
+                          onTap: () => open(e),
+                        );
+                      }
+                      return Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          if (index == 0 ||
+                              entries[index - 1].conference.kind != c.kind)
+                            Padding(
+                              padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
+                              child: Text(
+                                c.kind.groupLabel,
+                                style: Theme.of(context).textTheme.titleMedium,
+                              ),
+                            ),
+                          ConferenceCard(
+                            conference: FidoConference(
+                              id: c.id,
+                              name: c.name,
+                              description: c.description,
+                              unreadCount: c.unreadCount,
+                              icon: Icons.forum,
+                              isBookmarked: !widget.catalog || c.isBookmarked,
+                              canRead: c.canRead,
+                              canPost: c.canPost,
+                              kind: c.kind,
+                              personalMailbox: c.personalMailbox,
+                              storageFormat: c.storageFormat,
+                              unsupportedFormat: c.unsupportedFormat,
+                              statisticsKnown: c.statisticsKnown,
+                            ),
+                            showStatistics: !widget.catalog,
+                            showZeroCount: true,
+                            onTap: () => open(e),
+                            onBookmark: c.canRead || !widget.catalog
+                                ? () => toggle(e)
+                                : null,
+                            bookmarkPending: pending.contains(c.id),
+                          ),
+                        ],
+                      );
+                    },
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
     ),
   );
   void searchChanged(String value) {
