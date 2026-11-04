@@ -119,6 +119,8 @@ int Serve(Client& client) {
         const auto arguments = params.value("arguments", Json::object());
         const auto key = id.dump();
         auto context = std::make_shared<CallContext>();
+        if (name == "ffido_list_areas")
+          context->deadline = std::chrono::system_clock::now() + std::chrono::seconds(30);
         {
           std::lock_guard lock(active_mutex);
           if (active.size() >= 4 || active.contains(key)) {
