@@ -10,7 +10,7 @@
 ## 2. Проверки изменения
 
 - [x] 2.1 Выполнить корневые CMake configure/build и полный CTest с HPT, форматирование и применимые clang-tidy проверки; зафиксировать результаты в `docs/testing.md` и проверить `git diff --check`.
-- [ ] 2.2 Подготовить версию `1.0.21` в `apps/frontend/pubspec.yaml`, сохранив принятую схему build number; проверить release-tools и требуемые проверки Flutter/CI без изменений protobuf и прав профилей.
+- [x] 2.2 Подготовить версию `1.0.21` в `apps/frontend/pubspec.yaml`, сохранив принятую схему build number; проверить release-tools и требуемые проверки Flutter/CI без изменений protobuf и прав профилей.
 
 ## Workflow follow-up
 
