@@ -95,18 +95,21 @@ std::expected<domain::ArchiveSearchResponse, domain::ApiError> MessageService::S
   auto filters = metadata_->GetPersonalFilters(user);
   if (!filters)
     return std::unexpected(filters.error());
-  // A try-lock bounds contention instead of letting queued searches ignore deadlines.
-  std::unique_lock lock(archive_mutex_, std::try_to_lock);
-  if (!lock.owns_lock())
-    return std::unexpected(domain::ApiError{domain::ErrorCode::kResource, "Archive search busy", {}});
+  // The registry protects lookup only; each cursor owns its scan and memory reservation.
+  std::unique_lock lock(archive_mutex_);
   const auto now = std::chrono::steady_clock::now();
-  std::erase_if(archive_scans_, [&](const auto& pair) { return pair.second.expires <= now; });
+  std::erase_if(archive_scans_, [&](const auto& pair) {
+    if (pair.second->expires > now)
+      return false;
+    pair.second->retired = true;
+    return true;
+  });
   std::string cursor = request.cursor;
   request.cursor.clear();
   auto it = archive_scans_.find(cursor);
   if (cursor.empty()) {
     const auto count = std::count_if(archive_scans_.begin(), archive_scans_.end(),
-                                     [&](const auto& p) { return p.second.user == user; });
+                                     [&](const auto& p) { return p.second->user == user; });
     if (archive_scans_.size() >= 64 || count >= 16)
       return std::unexpected(Resource());
     std::array<unsigned char, 24> random{};
@@ -117,18 +120,42 @@ std::expected<domain::ArchiveSearchResponse, domain::ApiError> MessageService::S
       cursor += hex[c >> 4];
       cursor += hex[c & 15];
     }
-    ArchiveScan scan;
+    auto owner = std::make_shared<ArchiveScan>();
+    auto& scan = *owner;
+    scan.budget = archive_bytes_;
     scan.request = request;
     scan.user = user;
     scan.filters_revision = filters->revision;
     scan.expires = now + archive_ttl_;
-    it = archive_scans_.emplace(cursor, std::move(scan)).first;
-  } else if (it == archive_scans_.end() || it->second.user != user) {
+    scan.base_bytes = sizeof(ArchiveScan) + scan.user.capacity() + cursor.capacity() + scan.request.query.capacity() +
+                      scan.request.cursor.capacity() + scan.request.conferences.capacity() * sizeof(std::string) +
+                      request.conferences.size() * (sizeof(ArchiveFingerprint) + 128) + 16384;
+    for (const auto& area : scan.request.conferences)
+      scan.base_bytes += area.capacity();
+    if (!scan.Reserve(scan.base_bytes))
+      return std::unexpected(Resource());
+    scan.fingerprints.reserve(request.conferences.size());
+    it = archive_scans_.emplace(cursor, std::move(owner)).first;
+  } else if (it == archive_scans_.end() || it->second->user != user) {
     return std::unexpected(Stale());
   }
-  auto& scan = it->second;
+  auto owner = it->second;
+  std::unique_lock cursor_lock(owner->mutex, std::try_to_lock);
+  if (!cursor_lock.owns_lock())
+    return std::unexpected(domain::ApiError{domain::ErrorCode::kResource, "Archive cursor busy", {}});
+  lock.unlock();
+  if (owner->retired)
+    return std::unexpected(Stale());
+  auto& scan = *owner;
+  const auto discard = [&] {
+    std::lock_guard registry(archive_mutex_);
+    owner->retired = true;
+    auto found = archive_scans_.find(cursor);
+    if (found != archive_scans_.end() && found->second == owner)
+      archive_scans_.erase(found);
+  };
   if (scan.filters_revision != filters->revision) {
-    archive_scans_.erase(it);
+    discard();
     return std::unexpected(Stale());
   }
   if (scan.request.conferences != request.conferences || scan.request.query != request.query ||
@@ -136,7 +163,7 @@ std::expected<domain::ArchiveSearchResponse, domain::ApiError> MessageService::S
       scan.request.from != request.from || scan.request.to != request.to || scan.filters_revision != filters->revision)
     return std::unexpected(Stale());
   const auto fail = [&](domain::ApiError error) -> std::expected<domain::ArchiveSearchResponse, domain::ApiError> {
-    archive_scans_.erase(it);
+    discard();
     return std::unexpected(std::move(error));
   };
   // Verify every selected base at each boundary; never retain file leases in cursors.
@@ -212,6 +239,14 @@ std::expected<domain::ArchiveSearchResponse, domain::ApiError> MessageService::S
       if (found) {
         if (scan.hits.size() >= archive_max_hits_)
           return fail(Resource());
+        if (scan.hits.size() == scan.hits.capacity()) {
+          const auto capacity = std::min(archive_max_hits_, std::max<size_t>(64, scan.hits.capacity() * 2));
+          if (capacity >
+                  (32 * 1024 * 1024 - std::min<size_t>(scan.base_bytes, 32 * 1024 * 1024)) / sizeof(ArchiveHit) ||
+              !scan.Reserve(scan.base_bytes + capacity * sizeof(ArchiveHit)))
+            return fail(Resource());
+          scan.hits.reserve(capacity);
+        }
         scan.hits.push_back({header->date_written, number, scan.area});
       }
     }
@@ -220,22 +255,6 @@ std::expected<domain::ArchiveSearchResponse, domain::ApiError> MessageService::S
       scan.number = 0;
     }
   }
-  size_t global_bytes = 0;
-  for (const auto& [key, value] : archive_scans_) {
-    size_t bytes = sizeof(ArchiveScan) + value.hits.capacity() * sizeof(ArchiveHit) + value.user.capacity() +
-                   key.capacity() + value.request.query.capacity() + value.request.cursor.capacity() +
-                   value.request.conferences.capacity() * sizeof(std::string) +
-                   value.fingerprints.capacity() * sizeof(ArchiveFingerprint) + 16384;
-    for (const auto& area : value.request.conferences)
-      bytes += area.capacity();
-    for (const auto& fingerprint : value.fingerprints)
-      bytes += fingerprint.generation.capacity();
-    if (bytes > 32 * 1024 * 1024)
-      return fail(Resource());
-    global_bytes += bytes;
-  }
-  if (global_bytes > 128 * 1024 * 1024)
-    return fail(Resource());
   domain::ArchiveSearchResponse response;
   if (scan.area == request.conferences.size()) {
     if (!scan.sorted) {
@@ -300,8 +319,10 @@ std::expected<domain::ArchiveSearchResponse, domain::ApiError> MessageService::S
     return fail(verified.error());
   if (!RequestActive())
     return fail(SearchInterrupted());
+  if (owner->retired)
+    return fail(Stale());
   if (response.complete)
-    archive_scans_.erase(it);
+    discard();
   else {
     response.next_cursor = cursor;
     response.incomplete_reason = scan.sorted ? "page_limit" : "scan_budget";

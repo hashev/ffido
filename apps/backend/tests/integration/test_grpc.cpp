@@ -1,4 +1,7 @@
 #include <gtest/gtest.h>
+#ifdef __APPLE__
+#include <mach/mach.h>
+#endif
 #include <spawn.h>
 #include <sqlite3.h>
 #include <sys/resource.h>
@@ -12,6 +15,7 @@
 #include "../support/echo_access.hpp"
 #include "../support/jam_wire_record.hpp"
 #include "../support/mcp_process.hpp"
+#include "../support/sqlite_timing.hpp"
 #include "../support/temp_directory.hpp"
 #include "../support/tls_certificate.hpp"
 #include "service/grpc_runtime.hpp"
@@ -37,6 +41,9 @@ protected:
   std::unique_ptr<grpc::Server> server;
   std::unique_ptr<wire::Ffido::Stub> client;
   std::string a, b, address;
+  virtual int MaxConcurrent() const {
+    return 16;
+  }
   virtual int AreaCount() const {
     return 1;
   }
@@ -98,7 +105,7 @@ protected:
     issued = auth.Provision("B", domain::Profile{"Борис", "2:5015/1.2", "", "2026-01-01T00:00:00Z"}, expiry);
     ASSERT_TRUE(issued);
     b = *issued;
-    service = std::make_unique<service::GrpcService>(catalog, metadata, AccessPolicy(), Encoding());
+    service = std::make_unique<service::GrpcService>(catalog, metadata, AccessPolicy(), Encoding(), MaxConcurrent());
     grpc::SslServerCredentialsOptions tls;
     tls.pem_key_cert_pairs.push_back(
         {test::ReadFile(temp.path() / "key.pem"), test::ReadFile(temp.path() / "certificate.pem")});
@@ -141,6 +148,223 @@ protected:
   }
 };
 }  // namespace
+namespace {
+size_t ProcessThreadCount() {
+#ifdef __APPLE__
+  thread_act_array_t threads = nullptr;
+  mach_msg_type_number_t count = 0;
+  if (task_threads(mach_task_self(), &threads, &count) != KERN_SUCCESS)
+    return 0;
+  for (mach_msg_type_number_t i = 0; i < count; ++i)
+    mach_port_deallocate(mach_task_self(), threads[i]);
+  vm_deallocate(mach_task_self(), reinterpret_cast<vm_address_t>(threads), count * sizeof(thread_t));
+  return count;
+#else
+  return std::distance(std::filesystem::directory_iterator("/proc/self/task"), std::filesystem::directory_iterator{});
+#endif
+}
+double ProcessCpuMilliseconds() {
+  rusage usage{};
+  getrusage(RUSAGE_SELF, &usage);
+  return 1000.0 * (usage.ru_utime.tv_sec + usage.ru_stime.tv_sec) +
+         0.001 * (usage.ru_utime.tv_usec + usage.ru_stime.tv_usec);
+}
+class CancelMonitorTest : public GrpcTest {
+  class Probe : public wire::Ffido::Service {
+  public:
+    service::GrpcService* backend = nullptr;
+    grpc::Status ListMessages(grpc::ServerContext* context, const wire::ListMessagesRequest* request,
+                              wire::ListMessagesResponse* response) override {
+      {
+        std::lock_guard lock(mutex_);
+        ++started_;
+        changed_.notify_all();
+      }
+      auto status = backend->ListMessages(context, request, response);
+      {
+        std::lock_guard lock(mutex_);
+        ++finished_;
+        changed_.notify_all();
+      }
+      return status;
+    }
+    bool Started(int count) {
+      std::unique_lock lock(mutex_);
+      return changed_.wait_for(lock, std::chrono::seconds(1), [&] { return started_ == count; });
+    }
+    bool Finished(int count) {
+      std::unique_lock lock(mutex_);
+      return changed_.wait_for(lock, std::chrono::seconds(1), [&] { return finished_ == count; });
+    }
+    void Reset() {
+      std::lock_guard lock(mutex_);
+      started_ = finished_ = 0;
+    }
+
+  private:
+    std::mutex mutex_;
+    std::condition_variable changed_;
+    int started_ = 0, finished_ = 0;
+  };
+
+protected:
+  Probe probe_;
+  grpc::Service* RegisteredService() override {
+    probe_.backend = service.get();
+    return &probe_;
+  }
+  int MaxConcurrent() const override {
+    return 64;
+  }
+};
+}  // namespace
+TEST_F(CancelMonitorTest, OfferedConcurrencyThreadCpuAndCancellationFixture) {
+  for (int count : {1, 16, 64}) {
+    for (int sample = 0; sample < 20; ++sample) {
+      probe_.Reset();
+      auto lease = storage::JamAccess::Open(*catalog, "RU.TEST", false, service::RequestDeadline());
+      ASSERT_TRUE(lease);
+      const auto baseline_threads = ProcessThreadCount();
+      std::vector<std::unique_ptr<grpc::ClientContext>> contexts;
+      std::vector<std::future<std::pair<grpc::Status, std::chrono::steady_clock::time_point>>> pending;
+      for (int i = 0; i < count; ++i) {
+        auto context = std::make_unique<grpc::ClientContext>();
+        Auth(*context, a);
+        context->set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(30));
+        auto* raw = context.get();
+        contexts.push_back(std::move(context));
+        pending.push_back(std::async(std::launch::async, [&, raw] {
+          wire::ListMessagesRequest request;
+          request.set_conference_id("RU.TEST");
+          request.mutable_page()->set_limit(1);
+          request.set_sort(wire::MESSAGE_SORT_DATE_ASCENDING);
+          wire::ListMessagesResponse response;
+          auto status = client->ListMessages(raw, request, &response);
+          return std::pair{status, std::chrono::steady_clock::now()};
+        }));
+      }
+      EXPECT_TRUE(probe_.Started(count));
+      // Sample only after the offered handlers have reached the backend.
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      const auto loaded_threads = ProcessThreadCount();
+      const auto cpu_before = ProcessCpuMilliseconds();
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      const auto cpu_ms = ProcessCpuMilliseconds() - cpu_before;
+      const auto cancelled_at = std::chrono::steady_clock::now();
+      for (const auto& context : contexts)
+        context->TryCancel();
+      std::vector<double> latency;
+      int cancelled = 0, rejected = 0;
+      for (auto& call : pending) {
+        auto [status, finished] = call.get();
+        if (status.error_code() == grpc::StatusCode::CANCELLED) {
+          ++cancelled;
+          latency.push_back(std::chrono::duration<double, std::milli>(finished - cancelled_at).count());
+        } else {
+          ++rejected;
+          EXPECT_EQ(status.error_code(), grpc::StatusCode::RESOURCE_EXHAUSTED);
+        }
+      }
+      // Client CANCELLED may precede server completion and slot release.
+      // Every handler must retire before releasing the owner or starting a new sample.
+      EXPECT_TRUE(probe_.Finished(count));
+      lease->reset();
+      EXPECT_GT(cancelled, 0);
+      std::cout << "CANCEL_MONITOR_BENCH "
+                << nlohmann::json{{"offered", count},
+                                  {"sample", sample},
+                                  {"threads_before", baseline_threads},
+                                  {"threads_loaded", loaded_threads},
+                                  {"process_cpu_ms_per_100ms", cpu_ms},
+                                  {"client_cancel_ms", latency},
+                                  {"cancelled", cancelled},
+                                  {"rejected", rejected}}
+                       .dump()
+                << '\n';
+    }
+  }
+}
+namespace {
+class BulkMetadataGrpcTest : public GrpcTest {
+  void SetUp() override {
+    auto extension = reinterpret_cast<void (*)()>(test::TraceConnection);
+    ASSERT_EQ(sqlite3_auto_extension(extension), SQLITE_OK);
+    GrpcTest::SetUp();
+    EXPECT_EQ(sqlite3_cancel_auto_extension(extension), 1);
+  }
+};
+}  // namespace
+TEST_F(BulkMetadataGrpcTest, BulkTransactionAndExternalWriterControlRpcLatencyFixture) {
+  sqlite3* db = nullptr;
+  ASSERT_EQ(sqlite3_open((temp.path() / "metadata.db").c_str(), &db), SQLITE_OK);
+  std::unique_ptr<sqlite3, decltype(&sqlite3_close)> writer(db, sqlite3_close);
+  std::vector<uint32_t> numbers;
+  for (uint32_t i = 1; i <= 10000; ++i)
+    numbers.push_back(i);
+  for (bool external : {false, true}) {
+    for (int sample = 0; sample < 20; ++sample) {
+      ASSERT_EQ(sqlite3_exec(db, "DELETE FROM read_status", nullptr, nullptr, nullptr), SQLITE_OK);
+      if (external)
+        ASSERT_EQ(sqlite3_exec(db, "BEGIN IMMEDIATE", nullptr, nullptr, nullptr), SQLITE_OK);
+      std::promise<void> began;
+      test::SqlTiming timing;
+      timing.began = &began;
+      const auto id = "rpc-bulk-" + std::to_string(external) + "-" + std::to_string(sample);
+      auto bulk = std::async(std::launch::async, [&] {
+        return test::TimedSql(timing, [&] { return metadata->MarkConferenceRead("A", id, "RU.TEST", "g", numbers); });
+      });
+      const auto entered = began.get_future().wait_for(std::chrono::seconds(1));
+      if (entered != std::future_status::ready) {
+        if (external)
+          EXPECT_EQ(sqlite3_exec(db, "ROLLBACK", nullptr, nullptr, nullptr), SQLITE_OK);
+        EXPECT_TRUE(bulk.get());
+        FAIL() << "bulk BEGIN watchdog";
+      }
+      std::vector<std::future<std::pair<grpc::Status, double>>> calls;
+      for (int kind = 0; kind < 3; ++kind)
+        calls.push_back(std::async(std::launch::async, [&, kind] {
+          const auto start = std::chrono::steady_clock::now();
+          grpc::ClientContext context;
+          Auth(context, b);
+          context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(5));
+          wire::GetConferenceRequest reference;
+          reference.set_conference_id("RU.TEST");
+          google::protobuf::Empty empty;
+          wire::SessionInfo session;
+          wire::Conference area;
+          auto status = kind == 0   ? client->RestoreSession(&context, empty, &session)
+                        : kind == 1 ? client->AddBookmark(&context, reference, &empty)
+                                    : client->GetConference(&context, reference, &area);
+          return std::pair{status,
+                           std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count()};
+        }));
+      if (external) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        EXPECT_EQ(sqlite3_exec(db, "COMMIT", nullptr, nullptr, nullptr), SQLITE_OK);
+      }
+      auto committed = bulk.get();
+      std::vector<double> latency;
+      int errors = 0;
+      for (auto& call : calls) {
+        const auto [status, ms] = call.get();
+        EXPECT_TRUE(status.ok()) << status.error_message();
+        errors += !status.ok();
+        latency.push_back(ms);
+      }
+      ASSERT_TRUE(committed);
+      EXPECT_EQ(committed->marked_count, 10000);
+      std::cout << "BULK_RPC_BENCH "
+                << nlohmann::json{{"external_writer", external},
+                                  {"sample", sample},
+                                  {"rpc_ms", latency},
+                                  {"errors", errors},
+                                  {"bulk_ms", timing.elapsed_ms},
+                                  {"sqlite_begin_ms", timing.begin_ms}}
+                       .dump()
+                << '\n';
+    }
+  }
+}
 TEST_F(GrpcTest, TechnicalDataReturnsRawBytesWithoutReadingOrChangingStorage) {
   wire::MessageReference reference;
   {
@@ -2273,6 +2497,11 @@ TEST_F(BudgetMcpGrpcTest, CatalogCancellationReleasesSlotAndEofCancelsActiveCall
   proxy->blocked = true;
   send_catalog(2);
   ASSERT_TRUE(proxy->WaitForEntry());
+  send_catalog(2);
+  const auto duplicate = mcp.Read();
+  EXPECT_EQ(duplicate.at("id"), 2);
+  EXPECT_TRUE(duplicate.at("result").at("isError"));
+  EXPECT_NE(duplicate.dump().find("RESOURCE_EXHAUSTED"), std::string::npos);
   auto started = std::chrono::steady_clock::now();
   mcp.Send({{"jsonrpc", "2.0"}, {"method", "notifications/cancelled"}, {"params", {{"requestId", 2}}}});
   EXPECT_TRUE(mcp.Read().at("result").at("isError"));
@@ -2391,9 +2620,12 @@ public:
     std::unique_lock lock(mutex_);
     if (pause_preview_) {
       preview_ready_ = true;
+      ++preview_count_;
       wake_.notify_all();
       while (!context->IsCancelled())
         wake_.wait_for(lock, std::chrono::milliseconds(5));
+      ++preview_cancelled_;
+      wake_.notify_all();
       return {grpc::StatusCode::CANCELLED, "cancelled"};
     }
     return status;
@@ -2415,11 +2647,25 @@ public:
     std::unique_lock lock(mutex_);
     while (!context->IsCancelled())
       wake_.wait_for(lock, std::chrono::milliseconds(5));
+    read_cancelled_ = true;
+    wake_.notify_all();
     return {grpc::StatusCode::CANCELLED, "cancelled"};
+  }
+  bool WaitForReadCancellation() {
+    std::unique_lock lock(mutex_);
+    return wake_.wait_for(lock, std::chrono::seconds(1), [&] { return read_cancelled_; });
   }
   void PausePreview() {
     std::lock_guard lock(mutex_);
     pause_preview_ = true;
+  }
+  bool WaitForPreviews(int count) {
+    std::unique_lock lock(mutex_);
+    return wake_.wait_for(lock, std::chrono::seconds(1), [&] { return preview_count_ >= count; });
+  }
+  bool WaitForPreviewCancellation() {
+    std::unique_lock lock(mutex_);
+    return wake_.wait_for(lock, std::chrono::seconds(1), [&] { return preview_cancelled_ > 0; });
   }
   bool WaitForPreview() {
     std::unique_lock lock(mutex_);
@@ -2435,7 +2681,8 @@ private:
   std::atomic<bool> lost_ = false;
   std::mutex mutex_;
   std::condition_variable wake_;
-  bool reading_ = false, pause_preview_ = false, preview_ready_ = false;
+  bool reading_ = false, read_cancelled_ = false, pause_preview_ = false, preview_ready_ = false;
+  int preview_count_ = 0, preview_cancelled_ = 0;
 };
 class LossyMcpGrpcTest : public McpGrpcTest {
 protected:
@@ -2479,6 +2726,134 @@ TEST_F(LossyMcpGrpcTest, LostSendResponseThenRestartRepeatsTheSameDurableOperati
   auto after = messages.GetMessages("RU.TEST", {}, "oldest", "A");
   ASSERT_TRUE(after);
   EXPECT_EQ(after->total, 1);
+}
+TEST_F(LossyMcpGrpcTest, IndependentDraftPreparationDoesNotWaitForAnotherPreview) {
+  test::McpProcess mcp(ConfigureMcp().string());
+  mcp.Initialize();
+  proxy->PausePreview();
+  for (int id : {2, 3}) {
+    mcp.Send({{"jsonrpc", "2.0"},
+              {"id", id},
+              {"method", "tools/call"},
+              {"params",
+               {{"name", "ffido_prepare_message"},
+                {"arguments", {{"area_id", "RU.TEST"}, {"subject", "Fixture"}, {"body", "draft"}}}}}});
+    ASSERT_TRUE(proxy->WaitForPreviews(id - 1));
+  }
+  mcp.Send({{"jsonrpc", "2.0"}, {"method", "notifications/cancelled"}, {"params", {{"requestId", 3}}}});
+  EXPECT_TRUE(proxy->WaitForPreviewCancellation());
+  auto cancelled = mcp.Read();
+  EXPECT_EQ(cancelled.at("id"), 3);
+  EXPECT_TRUE(cancelled.at("result").at("isError"));
+  mcp.Send({{"jsonrpc", "2.0"},
+            {"id", 4},
+            {"method", "tools/call"},
+            {"params",
+             {{"name", "ffido_get_message"},
+              {"arguments", {{"reference", {{"conference_id", "RU.TEST"}, {"message_id", "g#42"}}}}}}}});
+  EXPECT_TRUE(proxy->WaitForReading());
+  mcp.Send({{"jsonrpc", "2.0"}, {"method", "notifications/cancelled"}, {"params", {{"requestId", 4}}}});
+  EXPECT_TRUE(proxy->WaitForReadCancellation());
+  EXPECT_EQ(mcp.Read().at("id"), 4);
+  mcp.Send({{"jsonrpc", "2.0"}, {"id", 5}, {"method", "ping"}});
+  EXPECT_EQ(mcp.Read().at("id"), 5);
+  mcp.Send({{"jsonrpc", "2.0"}, {"method", "notifications/cancelled"}, {"params", {{"requestId", 2}}}});
+  EXPECT_EQ(mcp.Read().at("id"), 2);
+  mcp.Finish();
+  service::ConferenceService areas(catalog, metadata, AccessPolicy());
+  EXPECT_EQ(areas.GetConference("RU.TEST", "A")->total_count, 0);
+}
+TEST_F(LossyMcpGrpcTest, BackpressureDoesNotDelayServerCancellation) {
+  test::McpProcess mcp(ConfigureMcp().string());
+  mcp.Initialize();
+  mcp.Send({{"jsonrpc", "2.0"},
+            {"id", 2},
+            {"method", "tools/call"},
+            {"params",
+             {{"name", "ffido_get_message"},
+              {"arguments", {{"reference", {{"conference_id", "RU.TEST"}, {"message_id", "g#42"}}}}}}}});
+  ASSERT_TRUE(proxy->WaitForReading());
+  for (int id = 100; id < 124; ++id)
+    mcp.Send({{"jsonrpc", "2.0"}, {"id", id}, {"method", "tools/list"}});
+  mcp.Send({{"jsonrpc", "2.0"}, {"method", "notifications/cancelled"}, {"params", {{"requestId", 2}}}});
+  // Observe the backend before allowing any output consumption.
+  EXPECT_TRUE(proxy->WaitForReadCancellation());
+  std::set<int> ids;
+  for (int i = 0; i < 25; ++i)
+    ids.insert(mcp.Read().at("id").get<int>());
+  EXPECT_EQ(ids.size(), 25u);
+  EXPECT_TRUE(ids.contains(2));
+  mcp.Send({{"jsonrpc", "2.0"}, {"id", 200}, {"method", "ping"}});
+  EXPECT_EQ(mcp.Read().at("id"), 200);
+  mcp.Finish();
+}
+TEST_F(LossyMcpGrpcTest, CancellationReachesBackendWhileAnotherWorkerOwnsSerializer) {
+  const auto config = ConfigureMcp();
+  const auto ready = temp.path() / "serializer-ready";
+  const auto release = temp.path() / "serializer-release";
+  test::McpProcess mcp(
+      config.string(),
+      {{"FFIDO_TEST_SERIALIZE_READY", ready.string()}, {"FFIDO_TEST_SERIALIZE_RELEASE", release.string()}},
+      FFIDO_MCP_SERIALIZATION_PROBE);
+  struct Release {
+    std::filesystem::path path;
+    ~Release() {
+      std::ofstream output(path);
+      output << "release";
+    }
+  } cleanup{release};
+  mcp.Initialize();
+  mcp.Send({{"jsonrpc", "2.0"},
+            {"id", 2},
+            {"method", "tools/call"},
+            {"params",
+             {{"name", "ffido_get_message"},
+              {"arguments", {{"reference", {{"conference_id", "RU.TEST"}, {"message_id", "g#42"}}}}}}}});
+  ASSERT_TRUE(proxy->WaitForReading());
+  mcp.Send({{"jsonrpc", "2.0"},
+            {"id", 3},
+            {"method", "tools/call"},
+            {"params",
+             {{"name", "ffido_prepare_message"},
+              {"arguments", {{"area_id", "RU.TEST"}, {"subject", "Synthetic"}, {"body", "Draft"}}}}}});
+  const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+  while (!std::filesystem::exists(ready) && std::chrono::steady_clock::now() < until)
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  EXPECT_TRUE(std::filesystem::exists(ready));
+  mcp.Send({{"jsonrpc", "2.0"}, {"id", 4}, {"method", "ping"}});
+  mcp.Send({{"jsonrpc", "2.0"}, {"method", "notifications/cancelled"}, {"params", {{"requestId", 2}}}});
+  // The other response still holds serialization_mutex at this observation.
+  EXPECT_TRUE(proxy->WaitForReadCancellation());
+  {
+    std::ofstream output(release);
+    output << "release";
+  }
+  std::set<int> ids;
+  for (int i = 0; i < 3; ++i)
+    ids.insert(mcp.Read().at("id").get<int>());
+  EXPECT_EQ(ids, (std::set<int>{2, 3, 4}));
+  mcp.Finish();
+}
+TEST_F(McpGrpcTest, ClosedOutputAndPendingOutputAtEofHaveBoundedShutdown) {
+  for (bool close : {false, true}) {
+    test::McpProcess mcp(ConfigureMcp().string());
+    mcp.Initialize();
+    if (close)
+      mcp.CloseOutput();
+    for (int id = 100; id < (close ? 101 : 124); ++id)
+      mcp.Send({{"jsonrpc", "2.0"}, {"id", id}, {"method", "tools/list"}});
+    EXPECT_NO_THROW(mcp.Finish(1, std::chrono::seconds(3)));
+  }
+}
+TEST_F(McpGrpcTest, OutputFloodTerminatesInsteadOfGrowingOrWaitingForInput) {
+  test::McpProcess mcp(ConfigureMcp().string());
+  mcp.Initialize();
+  try {
+    for (int id = 100; id < 200; ++id)
+      mcp.Send({{"jsonrpc", "2.0"}, {"id", id}, {"method", "tools/list"}});
+  } catch (const std::runtime_error&) { /* Closed input after bounded output failure. */
+  }
+  EXPECT_NO_THROW(mcp.Finish(1, std::chrono::seconds(3)));
 }
 TEST_F(LossyMcpGrpcTest, PingAndCancellationWorkDuringAnActiveGrpcCall) {
   const auto config = ConfigureMcp();
@@ -2669,6 +3044,10 @@ TEST_F(McpGrpcTest, RawTechnicalBytesAndLargeBodiesHaveExplicitRepresentationsAn
   auto large = mcp.Call(3, "ffido_get_message", {{"reference", reference}});
   EXPECT_TRUE(large.at("isError"));
   EXPECT_NE(large.dump().find("RESOURCE_EXHAUSTED"), std::string::npos);
+  auto near_limit = mcp.Call(5, "ffido_get_message", {{"reference", reference}, {"body_limit", 32000}});
+  ASSERT_FALSE(near_limit.at("isError").get<bool>());
+  EXPECT_GT(near_limit.dump().size(), 384 * 1024u);
+  EXPECT_LT(near_limit.dump().size(), 512 * 1024u);
   auto block = mcp.Call(4, "ffido_get_message", {{"reference", reference}, {"body_limit", 1024}});
   ASSERT_FALSE(block.at("isError").get<bool>());
   const auto data = block.at("structuredContent").at("data");
@@ -2678,6 +3057,47 @@ TEST_F(McpGrpcTest, RawTechnicalBytesAndLargeBodiesHaveExplicitRepresentationsAn
   mcp.Finish();
 }
 
+TEST_F(McpGrpcTest, SecretFsyncFailurePreservesDraftAndDoesNotDuplicatePublication) {
+  for (const std::string stage : {"prepared", "attempted", "completed"}) {
+    const auto config = ConfigureMcp();
+    const auto root = std::filesystem::canonical(temp.path() / "mcp-state").string();
+    std::map<std::string, std::string> environment{{"FFIDO_TEST_SYNC_ROOT", root}, {"FFIDO_TEST_SYNC_STATE", stage}};
+#ifdef __APPLE__
+    environment["DYLD_INSERT_LIBRARIES"] = FFIDO_MCP_FAULT_LIBRARY;
+#else
+    environment["LD_PRELOAD"] = FFIDO_MCP_FAULT_LIBRARY;
+#endif
+    test::McpProcess mcp(config.string(), environment);
+    mcp.Initialize();
+    auto prepared = mcp.Call(2, "ffido_prepare_message",
+                             {{"area_id", "RU.TEST"}, {"subject", "Fault " + stage}, {"body", "Synthetic text"}});
+    if (stage == "prepared") {
+      EXPECT_TRUE(prepared.at("isError").get<bool>());
+      prepared = mcp.Call(3, "ffido_prepare_message",
+                          {{"area_id", "RU.TEST"}, {"subject", "Fault " + stage}, {"body", "Synthetic text"}});
+    }
+    ASSERT_FALSE(prepared.at("isError").get<bool>()) << prepared.dump();
+    const auto draft = prepared.at("structuredContent").at("data").at("draft_id").get<std::string>();
+    const auto path = temp.path() / "mcp-state" / (draft + ".json");
+    const auto before = nlohmann::json::parse(test::ReadFile(path));
+    const auto sent = mcp.Call(10, "ffido_send_message", {{"draft_id", draft}, {"confirm", true}});
+    EXPECT_EQ(sent.at("isError").get<bool>(), stage != "prepared");
+    service::ConferenceService areas(catalog, metadata, AccessPolicy());
+    EXPECT_EQ(areas.GetConference("RU.TEST", "A")->total_count, stage == "attempted"   ? 1
+                                                                : stage == "completed" ? 3
+                                                                                       : 1);
+    const auto repeated = mcp.Call(11, "ffido_send_message", {{"draft_id", draft}, {"confirm", true}});
+    ASSERT_FALSE(repeated.at("isError").get<bool>()) << repeated.dump();
+    const auto after = nlohmann::json::parse(test::ReadFile(path));
+    EXPECT_EQ(before.at("request").at("operation_id"), after.at("request").at("operation_id"));
+    EXPECT_EQ(after.at("state"), "completed");
+    for (const auto& entry : std::filesystem::directory_iterator(temp.path() / "mcp-state"))
+      EXPECT_FALSE(entry.path().filename().string().starts_with(".tmp-"));
+    mcp.Finish();
+  }
+  service::ConferenceService areas(catalog, metadata, AccessPolicy());
+  EXPECT_EQ(areas.GetConference("RU.TEST", "A")->total_count, 3);
+}
 TEST_F(McpGrpcTest, ConcurrentSendUsesOneOperationAndRevokedLocalPostPermissionBlocksReplay) {
   const auto config = ConfigureMcp();
   std::string draft;
@@ -2688,7 +3108,7 @@ TEST_F(McpGrpcTest, ConcurrentSendUsesOneOperationAndRevokedLocalPostPermissionB
         mcp.Call(2, "ffido_prepare_message", {{"area_id", "RU.TEST"}, {"subject", "Тема"}, {"body", "Text"}});
     ASSERT_FALSE(prepared.at("isError").get<bool>());
     draft = prepared.at("structuredContent").at("data").at("draft_id");
-    for (int id : {3, 4})
+    for (int id : {3, 4, 5})
       mcp.Send({{"jsonrpc", "2.0"},
                 {"id", id},
                 {"method", "tools/call"},
@@ -2698,6 +3118,10 @@ TEST_F(McpGrpcTest, ConcurrentSendUsesOneOperationAndRevokedLocalPostPermissionB
     ASSERT_FALSE(second.at("isError").get<bool>());
     EXPECT_EQ(first.at("structuredContent").at("data").at("message"),
               second.at("structuredContent").at("data").at("message"));
+    const auto third = mcp.Read().at("result");
+    ASSERT_FALSE(third.at("isError").get<bool>());
+    EXPECT_EQ(first.at("structuredContent").at("data").at("message"),
+              third.at("structuredContent").at("data").at("message"));
     mcp.Finish();
   }
   auto value = nlohmann::json::parse(test::ReadFile(config));

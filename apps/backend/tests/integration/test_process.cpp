@@ -240,8 +240,17 @@ TEST_F(ProcessTest, SignalsDrainStartedWritesAndRestartKeepsCommittedMessages) {
     ASSERT_TRUE(observed);
     ASSERT_EQ(kill(process.pid, signal), 0);
     EXPECT_EQ(process.Wait(), 0);
-    for (auto& request : requests)
-      request.get();
+    for (auto& request : requests) {
+      const auto status = request.get();
+      // A drained commit can succeed or lose its response during shutdown.
+      // Bounded admission may also reject a concurrent request before commit.
+      // Durable operations below determine which writes actually committed.
+      EXPECT_TRUE(status.ok() || status.error_code() == grpc::StatusCode::UNAVAILABLE ||
+                  status.error_code() == grpc::StatusCode::CANCELLED ||
+                  status.error_code() == grpc::StatusCode::DEADLINE_EXCEEDED ||
+                  status.error_code() == grpc::StatusCode::RESOURCE_EXHAUSTED)
+          << status.error_code();
+    }
     auto pending = metadata->PendingOperations();
     ASSERT_TRUE(pending);
     EXPECT_TRUE(pending->empty());

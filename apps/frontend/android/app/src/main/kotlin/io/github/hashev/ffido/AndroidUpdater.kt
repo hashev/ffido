@@ -26,6 +26,7 @@ class AndroidUpdater(private val activity: Activity, messenger: BinaryMessenger)
     private val state = activity.getSharedPreferences("ffido_installer", Context.MODE_PRIVATE)
     private var pending: MethodChannel.Result? = null
     private var apk: File? = null
+    private var reported: Map<String, Any?>? = null
     init {
         active = WeakReference(this)
         channel.setMethodCallHandler { call, result ->
@@ -38,6 +39,7 @@ class AndroidUpdater(private val activity: Activity, messenger: BinaryMessenger)
                         val file = File(call.argument<String>("path") ?: error("Не указан APK")).canonicalFile
                         require(file.isFile && file.extension == "apk" && file.length() in 1..(2L * 1024 * 1024 * 1024)) { "Неверный APK" }
                         require(file.path.startsWith(activity.cacheDir.canonicalPath + File.separator)) { "APK должен находиться в закрытом кеше приложения" }
+                        reported = null
                         state.edit().clear().putString("outcome", "preparing").commit()
                         apk = file; pending = result
                         if (Build.VERSION.SDK_INT >= 26 && !activity.packageManager.canRequestPackageInstalls()) {
@@ -45,7 +47,7 @@ class AndroidUpdater(private val activity: Activity, messenger: BinaryMessenger)
                         } else submit()
                     } catch (error: Exception) {
                         apk = null; pending = null
-                        saveOutcome(activity, PackageInstaller.STATUS_FAILURE)
+                        reported = saveOutcome(activity, PackageInstaller.STATUS_FAILURE)
                         result.error("install", "Не удалось подготовить установку", null)
                     }
                 }
@@ -61,8 +63,20 @@ class AndroidUpdater(private val activity: Activity, messenger: BinaryMessenger)
         val fields = saveOutcome(activity, status, outcome)
         val result = pending
         pending = null; apk?.delete(); apk = null
-        if (result != null) result.success(fields)
-        else channel.invokeMethod("installResult", fields)
+        if (result != null) { reported = fields; result.success(fields) }
+        else if (reported != fields) { reported = fields; channel.invokeMethod("installResult", fields) }
+    }
+    private fun recovered(fields: Map<String, Any?>): Map<String, Any?>? {
+        val result = pending
+        if (result != null) {
+            pending = null; apk?.delete(); apk = null
+            reported = fields
+            result.success(fields)
+            return null
+        }
+        if (reported == fields) return null
+        reported = fields
+        return fields
     }
     @Suppress("DEPRECATION")
     private fun recover(): Map<String, Any?>? {
@@ -71,15 +85,15 @@ class AndroidUpdater(private val activity: Activity, messenger: BinaryMessenger)
             val installed = activity.packageManager.getPackageInfo(activity.packageName, 0)
             val version = if (Build.VERSION.SDK_INT >= 28) installed.longVersionCode else installed.versionCode.toLong()
             val target = state.getLong("targetVersion", -1)
-            if (target > 0 && version == target) return saveOutcome(activity, PackageInstaller.STATUS_SUCCESS)
+            if (target > 0 && version == target) return recovered(saveOutcome(activity, PackageInstaller.STATUS_SUCCESS))
             val session = state.getInt("session", -1)
             if (pending != null || (session >= 0 && activity.packageManager.packageInstaller.getSessionInfo(session) != null)) {
                 return mapOf("outcome" to "pending", "status" to null)
             }
             // Missing session/callback is not proof of an antivirus rejection.
-            return saveOutcome(activity, null, "unknown")
+            return recovered(saveOutcome(activity, null, "unknown"))
         }
-        return mapOf("outcome" to outcome, "status" to if (state.contains("status")) state.getInt("status", 0) else null)
+        return recovered(mapOf("outcome" to outcome, "status" to if (state.contains("status")) state.getInt("status", 0) else null))
     }
     fun detach() {
         if (active?.get() === this) active = null
@@ -122,7 +136,7 @@ class AndroidUpdater(private val activity: Activity, messenger: BinaryMessenger)
                 activity.runOnUiThread {
                     val result = pending
                     pending = null; apk?.delete(); apk = null
-                    saveOutcome(activity, PackageInstaller.STATUS_FAILURE)
+                    reported = saveOutcome(activity, PackageInstaller.STATUS_FAILURE)
                     // Only our validation errors are suitable for display; I/O paths are private.
                     val safe = when (error.message) {
                         "Другой пакет или понижение версии", "Подпись APK отличается от установленной", "Неверный APK" -> error.message

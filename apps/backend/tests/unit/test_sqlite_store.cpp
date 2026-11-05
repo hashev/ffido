@@ -1,11 +1,16 @@
 #include <gtest/gtest.h>
 
+#include <array>
 #include <filesystem>
 #include <fstream>
 #include <future>
+#include <nlohmann/json.hpp>
+#include <thread>
 
+#include "../support/sqlite_timing.hpp"
 #include "../support/temp_directory.hpp"
 #include "domain/profile.hpp"
+#include "service/auth_service.hpp"
 #include "storage/metadata_store.hpp"
 
 namespace fs = std::filesystem;
@@ -1099,4 +1104,115 @@ TEST_F(SQLiteStoreTest, PersonalFiltersUnsignedRevisionAndSqlFailure) {
   EXPECT_EQ(store_->GetPersonalFilters("A")->revision, 1);
   other.Exec("UPDATE personal_filters SET rules='invalid JSON' WHERE user_id='A'");
   EXPECT_FALSE(store_->GetPersonalFilters("A"));
+}
+
+TEST_F(SQLiteStoreTest, BatchedReadCountUsesOnlyLiveSnapshotUserAndGeneration) {
+  ASSERT_TRUE(store_->SaveProfile("batch-a", {"A", "2:1/1", "", ""}));
+  ASSERT_TRUE(store_->SaveProfile("batch-b", {"B", "2:1/2", "", ""}));
+  std::vector<uint32_t> numbers;
+  for (uint32_t number = 1; number <= 201; ++number) {
+    numbers.push_back(number);
+    if (number % 2 == 1)
+      ASSERT_TRUE(store_->MarkMessageRead("batch-a", {"echo", "g", std::to_string(number)}));
+  }
+  ASSERT_TRUE(store_->MarkMessageRead("batch-a", {"echo", "g", "99999"}));
+  ASSERT_TRUE(store_->MarkMessageRead("batch-a", {"echo", "old", "2"}));
+  ASSERT_TRUE(store_->MarkMessageRead("batch-b", {"echo", "g", "2"}));
+  EXPECT_EQ(store_->GetReadCountForMessages("batch-a", "echo", "g", numbers, {}).value(), 101);
+  EXPECT_EQ(store_->GetReadCountForMessages("batch-b", "echo", "g", numbers, {}).value(), 1);
+  EXPECT_EQ(store_->GetReadCountForMessages("batch-a", "other", "g", numbers, {}).value(), 0);
+  EXPECT_EQ(store_->GetReadCountForMessages("batch-a", "echo", "g", {}, {}).value(), 0);
+  EXPECT_FALSE(store_->GetReadCountForMessages("batch-a", "echo", "g", {2, 1}, {}));
+  EXPECT_FALSE(store_->GetReadCountForMessages("batch-a", "echo", "g", {1, 1}, {}));
+  EXPECT_FALSE(store_->GetReadCountForMessages("batch-a", "echo", "g", numbers, [] { return false; }));
+  RawDb other(db_path_);
+  other.Exec("DROP TABLE read_status");
+  EXPECT_FALSE(store_->GetReadCountForMessages("batch-a", "echo", "g", numbers, {}));
+}
+
+using test::SqlTiming;
+using test::TimedSql;
+using test::TraceConnection;
+
+TEST_F(SQLiteStoreTest, BulkReadContentionSeparatesExternalBusyAndMetadataWait) {
+  store_.reset();
+  auto extension = reinterpret_cast<void (*)()>(TraceConnection);
+  ASSERT_EQ(sqlite3_auto_extension(extension), SQLITE_OK);
+  store_ = storage::CreateSQLiteStore(db_path_);
+  auto initialized = store_->Init();
+  EXPECT_EQ(sqlite3_cancel_auto_extension(extension), 1);
+  ASSERT_TRUE(initialized);
+  service::AuthService auth(store_);
+  const auto expiry =
+      std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count() +
+      3600;
+  auto token = auth.Provision("bulk-A", {"A", "2:1/1", "", ""}, expiry);
+  ASSERT_TRUE(token);
+  token = auth.Provision("control-B", {"B", "2:1/2", "", ""}, expiry);
+  ASSERT_TRUE(token);
+  std::vector<uint32_t> numbers;
+  for (uint32_t i = 1; i <= 10000; ++i)
+    numbers.push_back(i);
+  RawDb writer(db_path_);
+  for (bool external : {false, true}) {
+    for (int sample = 0; sample < 20; ++sample) {
+      writer.Exec("DELETE FROM read_status");
+      if (external)
+        writer.Exec("BEGIN IMMEDIATE");
+      std::promise<void> began;
+      SqlTiming bulk;
+      bulk.began = &began;
+      const auto operation = "bulk-bench-" + std::to_string(external) + "-" + std::to_string(sample);
+      auto owner = std::async(std::launch::async, [&] {
+        return TimedSql(bulk, [&] { return store_->MarkConferenceRead("bulk-A", operation, "echo", "g", numbers); });
+      });
+      const auto entered = began.get_future().wait_for(std::chrono::seconds(1));
+      if (entered != std::future_status::ready) {
+        if (external)
+          writer.Exec("ROLLBACK");
+        EXPECT_TRUE(owner.get());
+        FAIL() << "bulk did not enter BEGIN within watchdog";
+      }
+      std::array<SqlTiming, 3> controls;
+      auto authentication = std::async(
+          std::launch::async, [&] { return TimedSql(controls[0], [&] { return auth.ValidateToken(*token); }); });
+      auto bookmark = std::async(std::launch::async, [&] {
+        return TimedSql(controls[1], [&] { return store_->AddBookmark("control-B", "echo"); });
+      });
+      auto reading = std::async(std::launch::async, [&] {
+        return TimedSql(controls[2], [&] { return store_->IsMessageRead("control-B", {"echo", "g", "1"}); });
+      });
+      if (external) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        writer.Exec("COMMIT");
+      }
+      auto committed = owner.get();
+      EXPECT_TRUE(authentication.get());
+      EXPECT_TRUE(bookmark.get());
+      auto read = reading.get();
+      ASSERT_TRUE(read);
+      EXPECT_FALSE(*read);
+      ASSERT_TRUE(committed);
+      EXPECT_EQ(committed->marked_count, 10000);
+      auto replay = store_->MarkConferenceRead("bulk-A", operation, "echo", "g", {});
+      ASSERT_TRUE(replay);
+      EXPECT_EQ(replay->marked_count, 10000);
+      std::vector<double> waits, elapsed;
+      for (const auto& control : controls) {
+        waits.push_back(std::chrono::duration<double, std::milli>(control.first - control.started).count());
+        elapsed.push_back(control.elapsed_ms);
+      }
+      std::cout << "BULK_BENCH "
+                << nlohmann::json{{"external_writer", external},
+                                  {"sample", sample},
+                                  {"messages", numbers.size()},
+                                  {"bulk_ms", bulk.elapsed_ms},
+                                  {"bulk_sql_statements", bulk.statements},
+                                  {"sqlite_begin_ms", bulk.begin_ms},
+                                  {"control_pre_sql_ms", waits},
+                                  {"control_elapsed_ms", elapsed}}
+                       .dump()
+                << '\n';
+    }
+  }
 }

@@ -188,8 +188,18 @@ std::shared_ptr<grpc::ClientContext> CallContext::Next() {
 void CallContext::Cancel() {
   std::lock_guard lock(mutex);
   cancelled = true;
+  wake.notify_all();
   if (current)
     current->TryCancel();
+}
+void CallContext::Acquire(std::unique_lock<std::timed_mutex>& lock) {
+  std::unique_lock guard(mutex);
+  while (!cancelled && std::chrono::system_clock::now() < deadline) {
+    if (lock.try_lock())
+      return;
+    wake.wait_until(guard, std::min(deadline, std::chrono::system_clock::now() + std::chrono::milliseconds(10)));
+  }
+  throw Error(cancelled ? "GRPC_1" : "GRPC_4", "MCP operation no longer active");
 }
 void Client::Login() {
   if (!isatty(STDIN_FILENO))

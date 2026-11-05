@@ -124,7 +124,10 @@ final class ManagedUpdater: NSObject, SPUUserDriver, SPUUpdaterDelegate {
   }
   private func receiveMessages() {
     guard let files = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) else { return }
-    for file in files where file.lastPathComponent.hasPrefix("message-") && file.pathExtension == "json" {
+    let messages = files.filter { $0.lastPathComponent.hasPrefix("message-") && $0.pathExtension == "json" }
+    // Completed cycles remove their files; retain deduplication only for live messages.
+    seenMessages.formIntersection(messages.map { $0.lastPathComponent })
+    for file in messages {
       guard !seenMessages.contains(file.lastPathComponent), let data = try? Data(contentsOf: file), data.count <= 4096,
             let values = try? JSONSerialization.jsonObject(with: data) as? [String: String] else { continue }
       seenMessages.insert(file.lastPathComponent)

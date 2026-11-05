@@ -13,11 +13,13 @@ class MemoryStore implements SessionStore {
   final values = <String, String>{};
   bool failWrites = false, failDelete = false;
   Future<String?> Function(String)? onRead;
+  Future<void> Function(String)? onWrite;
   @override
   Future<String?> read(String endpoint) async =>
       onRead == null ? values[endpoint] : await onRead!(endpoint);
   @override
   Future<void> write(String endpoint, String secret) async {
+    await onWrite?.call(endpoint);
     if (failWrites) throw StateError('unavailable');
     values[endpoint] = secret;
   }
@@ -74,6 +76,146 @@ void main() {
     store.values[client.endpoint.toString()] = 'a' * 64;
   });
   tearDown(() => client.dispose());
+  test(
+    'late restore cannot undo offline logout from another manager',
+    () async {
+      final read = Completer<String?>();
+      store.onRead = (_) => read.future;
+      final pending = SessionManager(client, prefs, store: store).restore();
+      final cancelled = expectLater(
+        pending,
+        throwsA(isA<CancelledException>()),
+      );
+      client.offlineLogout = true;
+      await SessionManager(client, prefs, store: store).logout();
+      read.complete('a' * 64);
+      await cancelled;
+      expect(client.hasToken, isFalse);
+      expect(client.session, isNull);
+    },
+  );
+  test(
+    'late write cannot enable restoration after logout, queue recovers',
+    () async {
+      final entered = Completer<void>(), release = Completer<void>();
+      store.onWrite = (_) async {
+        if (!entered.isCompleted) {
+          entered.complete();
+          await release.future;
+        }
+      };
+      final old = SessionManager(client, prefs, store: store).connect(
+        endpoint: client.endpoint.toString(),
+        name: 'Old',
+        address: '2:1/2',
+        password: 'old',
+      );
+      final cancelled = expectLater(old, throwsA(isA<CancelledException>()));
+      await entered.future;
+      client.offlineLogout = true;
+      final logout = SessionManager(client, prefs, store: store).logout();
+      expect(client.hasToken, isFalse);
+      release.complete();
+      await logout;
+      await cancelled;
+      final endpoint = client.endpoint.toString();
+      expect(store.values[endpoint], isNull);
+      expect(prefs.getBool('ffido_session_disabled:$endpoint'), isTrue);
+      expect(
+        await SessionManager(
+          client,
+          prefs,
+          store: store,
+        ).savedPassword(endpoint, '2:1/2'),
+        isNull,
+      );
+      await SessionManager(client, prefs, store: store).connect(
+        endpoint: endpoint,
+        name: 'New',
+        address: '2:1/3',
+        password: 'new',
+      );
+      expect(client.session!.profile.name, 'New');
+      expect(prefs.getBool('ffido_session_disabled:$endpoint'), isNull);
+      expect(
+        await SessionManager(
+          client,
+          prefs,
+          store: store,
+        ).savedPassword(endpoint, '2:1/3'),
+        'new',
+      );
+    },
+  );
+  for (final endpoint in ['same', 'other']) {
+    test(
+      'connect logout connect preserves newest storage on $endpoint server',
+      () async {
+        final entered = Completer<void>(), release = Completer<void>();
+        store.onWrite = (_) async {
+          if (!entered.isCompleted) {
+            entered.complete();
+            await release.future;
+          }
+        };
+        final oldEndpoint = client.endpoint.toString();
+        final old = SessionManager(client, prefs, store: store).connect(
+          endpoint: oldEndpoint,
+          name: 'Old',
+          address: '2:1/2',
+          password: 'old',
+        );
+        final cancelled = expectLater(old, throwsA(isA<CancelledException>()));
+        await entered.future;
+        client.offlineLogout = true;
+        final logout = SessionManager(client, prefs, store: store).logout();
+        final target = endpoint == 'same' ? oldEndpoint : 'https://new.invalid';
+        final newest = SessionManager(client, prefs, store: store).connect(
+          endpoint: target,
+          name: 'New',
+          address: '2:1/3',
+          password: 'new',
+        );
+        release.complete();
+        await cancelled;
+        await logout;
+        await newest;
+        expect(client.session!.profile.address, '2:1/3');
+        expect(client.hasToken, isTrue);
+        expect(
+          await SessionManager(
+            client,
+            prefs,
+            store: store,
+          ).savedPassword(target, '2:1/3'),
+          'new',
+        );
+        if (target != oldEndpoint) {
+          expect(store.values[oldEndpoint], isNull);
+          expect(prefs.getBool('ffido_session_disabled:$oldEndpoint'), isTrue);
+        }
+      },
+    );
+  }
+  for (final change in ['endpoint', 'dispose', 'clear']) {
+    test('pending secret read is discarded on $change', () async {
+      final read = Completer<String?>();
+      store.onRead = (_) => read.future;
+      final pending = SessionManager(client, prefs, store: store).restore();
+      final cancelled = expectLater(
+        pending,
+        throwsA(isA<CancelledException>()),
+      );
+      if (change == 'endpoint') {
+        await client.configure(endpoint: 'https://other.invalid');
+      }
+      if (change == 'dispose') await client.dispose();
+      if (change == 'clear') await client.clearAuthToken();
+      read.complete('a' * 64);
+      await cancelled;
+      expect(client.hasToken, isFalse);
+    });
+  }
   test('restart restores secret for exactly its server', () async {
     await SessionManager(client, prefs, store: store).restore();
     expect(client.hasToken, isTrue);
