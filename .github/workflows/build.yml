@@ -227,6 +227,7 @@ jobs:
           path: |
             build/android-update-qa-api${{ matrix.api }}/*.json
             build/android-update-qa-api${{ matrix.api }}/*.log
+            build/android-update-qa-api${{ matrix.api }}/*.xml
             ${{ runner.temp }}/ffido-emulator.log
           if-no-files-found: ignore
   backend:

@@ -373,6 +373,31 @@ def run(args):
                 device('shell', 'am', 'start', '-W', '-a', 'android.settings.SETTINGS')
                 wait(destroyed)
                 device('shell', 'input', 'keyevent', 'KEYCODE_BACK')
+            def cancel_recreated_installer():
+                def cancelled():
+                    # The translucent installer can still be transitioning after Back.
+                    # Do not bring FFIDO forward until the OS callback persisted cancellation.
+                    path = '/data/user/0/'+PACKAGE+'/shared_prefs/ffido_installer.xml'
+                    try:
+                        state = ET.fromstring(device('shell', 'su', '0', 'cat', path))
+                    except subprocess.CalledProcessError as error:
+                        if 'No such file' in (error.output or ''):
+                            return False  # SharedPreferences may be replacing its atomic file.
+                        raise
+                    outcome = next((item.text for item in state if item.get('name') == 'outcome'), None)
+                    if outcome == 'cancelled':
+                        return True
+                    if outcome not in ('pending', 'preparing'):
+                        raise AssertionError('Unexpected installer outcome: '+str(outcome))
+                    button = next((node for node in nodes()
+                                   if node.get('package', '').endswith('.packageinstaller')
+                                   and node.get('text', '').casefold() == 'cancel'
+                                   and node.get('enabled') == 'true'), None)
+                    if button is not None:
+                        left, top, right, bottom = map(int, re.findall(r'\d+', button.get('bounds')))
+                        device('shell', 'input', 'tap', str((left+right)//2), str((top+bottom)//2))
+                    return False
+                wait(cancelled)
             def close_document_picker():
                 # The first Back can hide the filename keyboard rather than close the picker.
                 for _ in range(3):
@@ -386,7 +411,7 @@ def run(args):
                 wait(lambda: any(node.get('text', '').casefold() == 'cancel' for node in nodes()))
                 # The installer is on top and Android destroys the old FlutterActivity.
                 destroy_activity()
-                click('Cancel')
+                cancel_recreated_installer()
                 device('shell', 'am', 'start', '-W', '-n', PACKAGE+'/.MainActivity')
                 wait(lambda: any(row.get('result') == 'cancelled' for row in records()[count:]))
                 assert len([row for row in records()[count:] if row.get('result') == 'cancelled']) == 1
@@ -449,6 +474,7 @@ def run(args):
                 (directory/'stream-cleanup.log').write_text(str(error))
         try:
             (directory/'device-all.log').write_text(device('logcat', '-d'))
+            (directory/'activity-state.log').write_text(device('shell', 'dumpsys', 'activity', 'activities'))
         except (subprocess.SubprocessError, OSError) as error:
             (directory/'diagnostics-error.log').write_text(str(error))
         try:

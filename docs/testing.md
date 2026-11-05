@@ -3362,3 +3362,28 @@ watcher lifecycle проверены. Непроверенные конфигу�
 (локально только27.1), Linux/Windows desktop builds и Linux x86_64 Android CI;
 production certificate/Play Protect acceptance не выполнялся. Это не выпуск
 релиза. Коммит, публикация и развёртывание на amster2 не выполнялись.
+
+### Release 1.0.24: Android35 CI follow-up
+
+Первый PR44 CI (42046956619, bb816df) прошёл все jobs, кроме native lifecycle
+Android35 x86_64. Packaged launch успешен, но после recreation тест сразу после
+tap Cancel делал am start FFIDO, не дождавшись OS callback. В артефакте новый
+Dart engine восстановил `pending`, cancelled не появился; лог показывает принудительное
+перемещение installer task в фон. Это не подтверждённая системная отмена, и
+принимать её за выполненную нельзя.
+
+Harness теперь повторяет нажатие только доступной системной кнопки Cancel
+при сохранённом pending/preparing и ждёт `cancelled`, записанный настоящим
+receiver в синтетические installer preferences. Только затем выводит FFIDO
+вперёд и сохраняет прежний assert ровно одного Dart cancelled результата.
+Unexpected terminal outcome и timeout остаются ошибками; skip/новых разрешённых
+status нет. Эти preferences читаются только на явно выбранном rootable QA
+эмуляторе, не содержат пользовательских credentials и не переписываются тестом.
+В CI-артефакты добавлены window.xml и activity-state.log для следующей диагностики.
+
+На Android35 ARM64 с размером 320×640/density160 полный новый сценарий прошёл
+12/12 на свежих release QA A/B текущего исходника. Result:
+`build/hardening-native/pr44-cancel-ack-small35-final/result.json`. Emulator settings
+восстановлены, одноразовый emulator остановлен. Python3.12 update64/release101,
+actionlint и diff-check прошли. Production Kotlin/Dart/C++ этим follow-up не менялись;
+официальная CI-матрица повторяется на следующем SHA.
