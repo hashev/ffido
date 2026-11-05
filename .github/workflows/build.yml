@@ -404,15 +404,17 @@ jobs:
             --build-arg "FFIDO_STABLE=$(jq -r .stable build/identity.json)"
           )
           cache=type=gha,version=2,scope=ffido-server-amd64
+          verification_cache="$cache-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           docker buildx build "${build_args[@]}" \
             --cache-from "$cache" --cache-to "$cache,mode=max" \
+            --cache-to "$verification_cache,mode=max" \
             --output type=oci,dest=build/container/image.tar .
           # A new daemon has no local layers, so this verifies the exported cache.
           cache_builder=ffido-cache-check
           trap 'docker buildx rm --force "$cache_builder" >/dev/null 2>&1 || true' EXIT
           docker buildx create --name "$cache_builder" --driver docker-container
           timeout 600s docker buildx build --builder "$cache_builder" "${build_args[@]}" \
-            --cache-from "$cache" --target builder --output type=cacheonly .
+            --cache-from "$verification_cache" --target builder --output type=cacheonly .
       - uses: ./.github/actions/docker-native-cache
         if: always() && steps.docker-native.outcome == 'success'
         with:
