@@ -1,5 +1,6 @@
 #pragma once
 #include <array>
+#include <atomic>
 #include <expected>
 #include <map>
 #include <memory>
@@ -105,6 +106,29 @@ private:
     size_t area = 0;
   };
   struct ArchiveScan {
+    std::mutex mutex;
+    std::atomic<bool> retired{false};
+    std::shared_ptr<std::atomic<size_t>> budget;
+    size_t base_bytes = 0, reserved_bytes = 0;
+    bool Reserve(size_t bytes) {
+      if (bytes > 32 * 1024 * 1024)
+        return false;
+      if (bytes <= reserved_bytes)
+        return true;
+      const auto extra = bytes - reserved_bytes;
+      auto total = budget->load();
+      do {
+        if (total > 128 * 1024 * 1024 - extra)
+          return false;
+      } while (!budget->compare_exchange_weak(total, total + extra));
+      reserved_bytes = bytes;
+      return true;
+    }
+    ~ArchiveScan() {
+      if (budget)
+        budget->fetch_sub(reserved_bytes);
+    }
+
     domain::ArchiveSearchRequest request;
     std::string user;
     uint64_t filters_revision = 0;
@@ -116,7 +140,8 @@ private:
   };
   static std::expected<ArchiveFingerprint, domain::ApiError> Fingerprint(storage::JamAccess& access);
   std::mutex archive_mutex_;
-  std::map<std::string, ArchiveScan> archive_scans_;
+  std::map<std::string, std::shared_ptr<ArchiveScan>> archive_scans_;
+  std::shared_ptr<std::atomic<size_t>> archive_bytes_ = std::make_shared<std::atomic<size_t>>(0);
   size_t archive_scan_budget_ = 100000, archive_max_hits_ = 100000;
   std::chrono::seconds archive_ttl_{600};
   std::expected<domain::MessageDetail, domain::ApiError> FilteredDetail(storage::JamAccess& access,

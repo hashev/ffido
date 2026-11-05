@@ -53,7 +53,10 @@ class ConferenceCard extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           children: [
             if (showStatistics &&
-                conference.kind == AreaKind.echo &&
+                (conference.kind == AreaKind.echo ||
+                    (conference.canRead &&
+                        (conference.kind == AreaKind.netmail ||
+                            conference.kind == AreaKind.local))) &&
                 (showZeroCount ||
                     conference.unreadCount > 0 ||
                     !conference.statisticsKnown))

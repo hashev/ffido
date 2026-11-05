@@ -3,6 +3,8 @@
 #include <openssl/evp.h>
 
 #include <memory>
+
+#include "storage/work_metrics.hpp"
 namespace fidoback::service {
 std::expected<storage::TokenDigest, domain::ApiError> Sha256(std::string_view bytes) {
   // Resolve the provider once with C++ static initialization synchronization.
@@ -14,6 +16,10 @@ std::expected<storage::TokenDigest, domain::ApiError> Sha256(std::string_view by
   if (!method || EVP_Digest(bytes.data(), bytes.size(), digest.data(), &length, method.get(), nullptr) != 1 ||
       length != digest.size())
     return std::unexpected(domain::ApiError::Server("Digest processing failed"));
+  if (storage::work_metrics) {
+    ++storage::work_metrics->hash_calls;
+    storage::work_metrics->hash_bytes += bytes.size();
+  }
   return digest;
 }
 }  // namespace fidoback::service

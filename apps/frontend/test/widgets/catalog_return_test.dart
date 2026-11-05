@@ -214,4 +214,133 @@ void main() {
     expect(state.search.text, 'echo');
     expect(state.entries, hasLength(40));
   });
+
+  for (final target in [
+    (wire.AreaKind.AREA_KIND_NETMAIL, false, 'Netmail'),
+    (wire.AreaKind.AREA_KIND_NETMAIL, true, 'Ящик поинта'),
+    (wire.AreaKind.AREA_KIND_LOCAL, false, 'personal.mail'),
+  ]) {
+    for (final operation in [
+      'read',
+      'mark-unread',
+      'retry',
+      'session',
+      'denied',
+    ]) {
+      testWidgets('${target.$3} refresh after $operation stays scoped', (
+        t,
+      ) async {
+        var read = false, fail = false, denied = false;
+        Completer<wire.Conference>? pending;
+        wire.Conference current([int? count]) =>
+            area('private-id', count ?? (read ? 0 : 1))
+              ..name = target.$3
+              ..kind = target.$1
+              ..personalMailbox = target.$2;
+        final api = FakeTransport()
+          ..supportsLightweightConferenceCatalog = true;
+        api.conferences = (_) async => wire.ListConferencesResponse(
+          conferences: [current(), area('other', 8)],
+        );
+        api.messages = (_) async => wire.ListMessagesResponse(
+          messages: [wire.Message(id: 'g#1', subject: 'Letter', isRead: read)],
+        );
+        api.message = (r) async {
+          read = true;
+          return wire.Message(
+            id: r.messageId,
+            subject: 'Letter',
+            body: 'Body',
+            isRead: true,
+          );
+        };
+        api.unread = (_) async {
+          read = false;
+          return Empty();
+        };
+        api.conference = (_) async {
+          if (denied) {
+            throw const ApiException(message: 'Denied', statusCode: 7);
+          }
+          if (fail) throw const NetworkException();
+          if (pending != null) return pending.future;
+          return current();
+        };
+        await start(t, api);
+        await t.tap(find.text(target.$3));
+        await t.pumpAndSettle();
+        if (api.calls.whereType<wire.MessageReference>().isEmpty) {
+          await t.tap(find.text('Letter'));
+          await t.pumpAndSettle();
+        }
+        expect(read, isTrue);
+        if (operation == 'mark-unread') {
+          await t.tap(find.byTooltip('Действия области'));
+          await t.pumpAndSettle();
+          await t.tap(find.text('Пометить непрочитанным'));
+          await t.pumpAndSettle();
+          expect(api.unreadCalls, hasLength(1));
+          expect(read, isFalse);
+        }
+        final before = api.calls.whereType<wire.GetConferenceRequest>().length;
+        if (operation == 'retry') fail = true;
+        if (operation == 'denied') denied = true;
+        if (operation == 'session') pending = Completer<wire.Conference>();
+        await t.pageBack();
+        await t.pumpAndSettle();
+        if (operation == 'retry') {
+          expect(
+            find.textContaining('Не удалось обновить счётчик'),
+            findsOneWidget,
+          );
+          expect(
+            api.calls.whereType<wire.GetConferenceRequest>(),
+            hasLength(before + 1),
+          );
+          fail = false;
+          await t.tap(find.text('Повторить'));
+          await t.pumpAndSettle();
+          expect(
+            api.calls.whereType<wire.GetConferenceRequest>(),
+            hasLength(before + 2),
+          );
+        }
+        if (operation == 'session') {
+          api.conferences = (_) async =>
+              wire.ListConferencesResponse(conferences: [area('other', 8)]);
+          api.switchSession();
+          await t.pumpAndSettle();
+          pending!.complete(current(99));
+          await t.pumpAndSettle();
+          expect(find.text(target.$3), findsNothing);
+          expect(find.text('99'), findsNothing);
+        } else if (operation == 'denied') {
+          expect(find.text(target.$3), findsNothing);
+        } else {
+          final tile = find
+              .ancestor(
+                of: find.text(target.$3),
+                matching: find.byType(ListTile),
+              )
+              .first;
+          expect(
+            find.descendant(of: tile, matching: find.text(read ? '0' : '1')),
+            findsOneWidget,
+          );
+        }
+        expect(find.text('8'), findsOneWidget);
+        expect(
+          api.calls.whereType<wire.GetConferenceRequest>().every(
+            (r) => r.conferenceId == 'private-id',
+          ),
+          isTrue,
+        );
+        expect(
+          api.calls.whereType<wire.ListConferencesRequest>(),
+          hasLength(operation == 'session' ? 2 : 1),
+        );
+        expect(t.takeException(), isNull);
+      });
+    }
+  }
 }

@@ -105,6 +105,13 @@ public:
                                                                               std::string_view conference_id,
                                                                               std::string_view generation) = 0;
 
+  // Count only the sorted, unique live numbers from the caller's locked JAM snapshot.
+  virtual std::expected<int64_t, domain::ApiError> GetReadCountForMessages(std::string_view user,
+                                                                           std::string_view conference,
+                                                                           std::string_view generation,
+                                                                           const std::vector<uint32_t>& numbers,
+                                                                           const std::function<bool()>& active) = 0;
+
   virtual std::expected<ReadingPosition, domain::ApiError> RecordMessageView(std::string_view user, ReadKey key) = 0;
 
   virtual std::expected<ReadingPosition, domain::ApiError> LastOpened(std::string_view user,

@@ -1056,8 +1056,11 @@ std::expected<domain::CreateCrosspostResponse, domain::ApiError> MessageService:
       registry[key] = send_mutex = std::make_shared<std::timed_mutex>();
   }
   std::unique_lock lock(*send_mutex, std::defer_lock);
-  if (!lock.try_lock_until(RequestDeadline()))
-    return std::unexpected(ApiError{domain::ErrorCode::kDeadline, "Crosspost operation busy", {}});
+  if (!AcquireRequestLock(lock))
+    return std::unexpected(
+        ApiError{RequestCancellation().stop_requested() ? domain::ErrorCode::kCancelled : domain::ErrorCode::kDeadline,
+                 "Crosspost operation busy",
+                 {}});
   std::sort(additional.begin(), additional.end(), [](std::string_view a, std::string_view b) {
     auto fold = [](unsigned char c) { return c >= 'A' && c <= 'Z' ? c + ('a' - 'A') : int(c); };
     const auto order = std::lexicographical_compare_three_way(

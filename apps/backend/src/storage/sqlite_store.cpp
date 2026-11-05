@@ -1,5 +1,6 @@
 #include <openssl/evp.h>
 
+#include <algorithm>
 #include <array>
 #include <charconv>
 #include <limits>
@@ -1108,6 +1109,45 @@ public:
     return 0;
   }
 
+  std::expected<int64_t, domain::ApiError> GetReadCountForMessages(std::string_view user, std::string_view conference,
+                                                                   std::string_view generation,
+                                                                   const std::vector<uint32_t>& numbers,
+                                                                   const std::function<bool()>& active) override {
+    if (!std::is_sorted(numbers.begin(), numbers.end()) ||
+        std::adjacent_find(numbers.begin(), numbers.end()) != numbers.end())
+      return std::unexpected(domain::ApiError::Validation("Message numbers must be sorted and unique"));
+    std::lock_guard lock(mutex_);
+    if (!db_)
+      return std::unexpected(SqliteError(nullptr, "read count"));
+    if (numbers.empty())
+      return 0;
+    constexpr size_t batch = 100;
+    std::string sql =
+        "SELECT COUNT(*) FROM read_status WHERE user_id=? AND conference_id=? AND generation=? AND message_id IN (";
+    for (size_t i = 0; i < batch; ++i)
+      sql += i ? ",?" : "?";
+    sql += ")";
+    StatementGuard query(prepare(sql.c_str()));
+    if (!query.get())
+      return std::unexpected(SqliteError(db_.get(), "batch read count"));
+    int64_t count = 0;
+    for (size_t start = 0; start < numbers.size(); start += batch) {
+      if (active && !active())
+        return std::unexpected(domain::ApiError{domain::ErrorCode::kCancelled, "Read count cancelled", {}});
+      sqlite3_reset(query.get());
+      sqlite3_clear_bindings(query.get());
+      if (!query.Bind(1, user) || !query.Bind(2, conference) || !query.Bind(3, generation))
+        return std::unexpected(SqliteError(db_.get(), "batch read binding"));
+      for (size_t i = 0; i < std::min(batch, numbers.size() - start); ++i)
+        if (!query.Bind(static_cast<int>(i) + 4, std::to_string(numbers[start + i])))
+          return std::unexpected(SqliteError(db_.get(), "batch read number"));
+      if (sqlite3_step(query.get()) != SQLITE_ROW)
+        return std::unexpected(SqliteError(db_.get(), "batch read query"));
+      count += sqlite3_column_int64(query.get(), 0);
+    }
+    return count;
+  }
+
   std::expected<std::optional<BulkReadResult>, domain::ApiError> FindBulkReadUnlocked(std::string_view user,
                                                                                       std::string_view operation,
                                                                                       std::string_view conference) {
@@ -1155,15 +1195,14 @@ public:
     StatementGuard insert(
         prepare("INSERT INTO read_status(user_id,conference_id,generation,message_id) VALUES(?,?,?,?) "
                 "ON CONFLICT(user_id,conference_id,generation,message_id) DO NOTHING"));
-    if (!insert.get())
+    if (!insert.get() || !insert.Bind(1, user) || !insert.Bind(2, conference) || !insert.Bind(3, generation))
       return rollback(SqliteError(db_.get(), "bulk prepare"));
     for (auto number : numbers) {
       if (active && !active())
         return rollback({domain::ErrorCode::kCancelled, "Bulk read cancelled before commit", {}});
       sqlite3_reset(insert.get());
-      sqlite3_clear_bindings(insert.get());
-      if (!insert.Bind(1, user) || !insert.Bind(2, conference) || !insert.Bind(3, generation) ||
-          !insert.Bind(4, std::to_string(number)) || sqlite3_step(insert.get()) != SQLITE_DONE)
+      // reset preserves the three invariant bindings; only the message number changes.
+      if (!insert.Bind(4, std::to_string(number)) || sqlite3_step(insert.get()) != SQLITE_DONE)
         return rollback(SqliteError(db_.get(), "bulk insert"));
       result.marked_count += sqlite3_changes(db_.get());
     }

@@ -506,6 +506,60 @@ TEST_F(JamRecoveryTest, CommitJournalFailureLeavesCompleteFilesRecoverable) {
   ConfirmOldAndState(OperationState::kCommitted);
 }
 
+class MissingRecoveryOwnerTest : public JamRecoveryTest,
+                                 public ::testing::WithParamInterface<std::tuple<std::string, bool>> {};
+
+TEST_P(MissingRecoveryOwnerTest, RestartKeepsIntentWithoutTouchingUnsupportedOrRemovedArea) {
+  auto access = JamAccess::Open(*catalog, "echo", true, Deadline());
+  ASSERT_TRUE(access);
+  auto operation = Plan(**access);
+  access->reset();
+  catalog.reset();
+  EchoAreaConfig area;
+  area.name = "local";
+  area.filename = "base";
+  area.kind = AreaKind::kLocal;
+  area.msgbase_type = "JAM";
+  auto original = JamCatalog::Build(temp.path(), {area});
+  ASSERT_TRUE(original);
+  operation.conference = (*original)->areas().begin()->first;
+  ASSERT_TRUE(metadata->PrepareOperation(operation));
+  original->reset();
+  metadata.reset();
+  metadata = CreateSQLiteStore(temp.path() / "metadata.db");
+  ASSERT_TRUE(metadata->Init());
+  const auto& [format, reject] = GetParam();
+  area.msgbase_type = format;
+  auto changed = JamCatalog::Build(temp.path(),
+                                   format.empty() ? std::vector<EchoAreaConfig>{} : std::vector<EchoAreaConfig>{area});
+  ASSERT_TRUE(changed);
+  const auto before =
+      std::array{Contents(base.string() + ".jhr"), Contents(base.string() + ".jdt"), Contents(base.string() + ".jdx")};
+  sqlite3* db = nullptr;
+  ASSERT_EQ(sqlite3_open((temp.path() / "metadata.db").c_str(), &db), SQLITE_OK);
+  if (reject)
+    ASSERT_EQ(sqlite3_exec(db,
+                           "CREATE TRIGGER reject_quarantine BEFORE UPDATE ON operations BEGIN "
+                           "SELECT RAISE(ABORT,'private'); END",
+                           nullptr, nullptr, nullptr),
+              SQLITE_OK);
+  JamWriter writer(metadata);
+  auto recovered = writer.RecoverAll(**changed, Deadline());
+  ASSERT_FALSE(recovered);
+  EXPECT_EQ(recovered.error().code, reject ? domain::ErrorCode::kServer : domain::ErrorCode::kPrecondition);
+  auto saved = metadata->FindOperation("A", operation.id);
+  ASSERT_TRUE(saved);
+  ASSERT_TRUE(*saved);
+  EXPECT_EQ((*saved)->state, reject ? OperationState::kPending : OperationState::kQuarantine);
+  EXPECT_EQ(Contents(base.string() + ".jhr"), before[0]);
+  EXPECT_EQ(Contents(base.string() + ".jdt"), before[1]);
+  EXPECT_EQ(Contents(base.string() + ".jdx"), before[2]);
+  sqlite3_close(db);
+}
+
+INSTANTIATE_TEST_SUITE_P(ChangedFormat, MissingRecoveryOwnerTest,
+                         ::testing::Combine(::testing::Values("Squish", "MSG", ""), ::testing::Bool()));
+
 TEST_F(JamRecoveryTest, UnknownAreaQuarantinesJournalAndMissingJournalFails) {
   auto access = JamAccess::Open(*catalog, "echo", true, Deadline());
   ASSERT_TRUE(access);

@@ -70,6 +70,24 @@ class UpdateQA extends StatefulWidget {
 class _UpdateQAState extends State<UpdateQA> {
   String message = '';
   bool busy = false;
+  Future<void> save() async {
+    setState(() => busy = true);
+    try {
+      final saved = await const MethodChannel('org.ffido/files')
+          .invokeMethod<bool>('saveUue', {
+            'name': 'ffido-lifecycle.bin',
+            'bytes': Uint8List.fromList([70, 70, 73, 68, 79]),
+          });
+      message = saved == true ? 'save_saved' : 'save_cancelled';
+    } catch (error) {
+      message = 'save_error';
+    }
+    debugPrint(
+      'FFIDO_UPDATE_QA ${jsonEncode({'stage': stage, 'action': 'save', 'result': message})}',
+    );
+    if (mounted) setState(() => busy = false);
+  }
+
   Future<void> install(String name) async {
     setState(() {
       busy = true;
@@ -160,6 +178,10 @@ class _UpdateQAState extends State<UpdateQA> {
       children: [
         Text(jsonEncode(widget.record)),
         Text(message),
+        ElevatedButton(
+          onPressed: busy ? null : save,
+          child: const Text('Save synthetic file'),
+        ),
         for (final name in ['B', 'foreign-key', 'foreign-id', 'A', 'lower'])
           ElevatedButton(
             onPressed: busy ? null : () => install(name),

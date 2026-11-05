@@ -295,6 +295,9 @@ def run(args):
         wait(lambda: device('shell', 'getprop', 'sys.boot_completed').strip() == '1')
         api = int(device('shell', 'getprop', 'ro.build.version.sdk').strip())
         device('reverse', f'tcp:{port}', f'tcp:{port}')
+        # A failed prior run can leave an installer dialog for an obsolete session.
+        for installer in ('com.android.packageinstaller', 'com.google.android.packageinstaller'):
+            device('shell', 'am', 'force-stop', installer)
         # Do not silently replace a real device install: this emulator is explicit.
         device('uninstall', PACKAGE) if PACKAGE in device('shell', 'pm', 'list', 'packages', PACKAGE) else None
         device('install', str(web/'A.apk'))
@@ -338,6 +341,99 @@ def run(args):
         count = len(records()); click('Cancel')
         assert wait(lambda: result_since(count)) == 'cancelled'
         checks.extend(['pending_user_action', 'installer_cancelled'])
+        if args.native_lifecycle:
+            assert 'uid=0' in device('shell', 'su', '0', 'id')
+            helper = directory/'lifecycle-helper'
+            helper.mkdir()
+            environment = dict(os.environ)
+            if args.java_home: environment['JAVA_HOME'] = str(args.java_home.resolve())
+            java_bin = pathlib.Path(environment['JAVA_HOME'])/'bin' if environment.get('JAVA_HOME') else None
+            javac = str(java_bin/'javac') if java_bin else shutil.which('javac')
+            subprocess.run([javac, '--release', '8', '-d', str(helper), str(ROOT/'scripts/update/AndroidLifecycle.java')], env=environment, check=True, timeout=60)
+            subprocess.run([str(args.sdk.resolve()/'build-tools'/args.build_tools/'d8'), '--min-api', '24', '--output', str(helper), str(helper/'AndroidLifecycle.class')], env=environment, check=True, timeout=60)
+            with zipfile.ZipFile(helper/'lifecycle.jar', 'w') as archive:
+                archive.write(helper/'classes.dex', 'classes.dex')
+            remote = '/data/local/tmp/ffido-lifecycle.jar'
+            device('push', str(helper/'lifecycle.jar'), remote)
+            def always_finish(enabled):
+                # Setting the database key alone does not update ActivityManager.
+                # This test-only app_process helper calls the same system setter as
+                # Developer options, without driving an unrelated settings screen.
+                value = str(enabled).lower()
+                assert ('always_finish='+value) in device('shell', 'su', '0', 'env', 'CLASSPATH='+remote, 'app_process', '/system/bin', 'AndroidLifecycle', value)
+            def destroyed():
+                state = device('shell', 'dumpsys', 'activity', 'activities')
+                match = re.search(r'packageName=io\.github\.hashev\.ffido\b.*?(?:state=(\w+))', state, re.S)
+                return match is None or match[1] == 'DESTROYED'
+            def destroy_activity():
+                if destroyed():
+                    return
+                # Modern installers are translucent: the Activity is still visible
+                # and always-finish only destroys it after a fullscreen overlay.
+                device('shell', 'am', 'start', '-W', '-a', 'android.settings.SETTINGS')
+                wait(destroyed)
+                device('shell', 'input', 'keyevent', 'KEYCODE_BACK')
+            def cancel_recreated_installer():
+                def cancelled():
+                    # The translucent installer can still be transitioning after Back.
+                    # Do not bring FFIDO forward until the OS callback persisted cancellation.
+                    path = '/data/user/0/'+PACKAGE+'/shared_prefs/ffido_installer.xml'
+                    try:
+                        state = ET.fromstring(device('shell', 'su', '0', 'cat', path))
+                    except subprocess.CalledProcessError as error:
+                        if 'No such file' in (error.output or ''):
+                            return False  # SharedPreferences may be replacing its atomic file.
+                        raise
+                    outcome = next((item.text for item in state if item.get('name') == 'outcome'), None)
+                    if outcome == 'cancelled':
+                        return True
+                    if outcome not in ('pending', 'preparing'):
+                        raise AssertionError('Unexpected installer outcome: '+str(outcome))
+                    button = next((node for node in nodes()
+                                   if node.get('package', '').endswith('.packageinstaller')
+                                   and node.get('text', '').casefold() == 'cancel'
+                                   and node.get('enabled') == 'true'), None)
+                    if button is not None:
+                        left, top, right, bottom = map(int, re.findall(r'\d+', button.get('bounds')))
+                        device('shell', 'input', 'tap', str((left+right)//2), str((top+bottom)//2))
+                    return False
+                wait(cancelled)
+            def close_document_picker():
+                # The first Back can hide the filename keyboard rather than close the picker.
+                for _ in range(3):
+                    if not any(node.get('package', '').endswith('.documentsui') for node in nodes()):
+                        return
+                    device('shell', 'input', 'keyevent', 'KEYCODE_BACK')
+                wait(lambda: not any(node.get('package', '').endswith('.documentsui') for node in nodes()))
+            try:
+                always_finish(True)
+                count = len(records()); click('Install B')
+                wait(lambda: any(node.get('text', '').casefold() == 'cancel' for node in nodes()))
+                # The installer is on top and Android destroys the old FlutterActivity.
+                destroy_activity()
+                cancel_recreated_installer()
+                device('shell', 'am', 'start', '-W', '-n', PACKAGE+'/.MainActivity')
+                wait(lambda: any(row.get('result') == 'cancelled' for row in records()[count:]))
+                assert len([row for row in records()[count:] if row.get('result') == 'cancelled']) == 1
+                assert any(row.get('preferences') and row.get('secureSession') for row in records()[count:])
+                checks.append('activity_recreation_recovers_one_installer_result')
+                count = len(records()); click('Save synthetic file')
+                wait(lambda: any(node.get('package', '').endswith('.documentsui') for node in nodes()))
+                destroy_activity()
+                close_document_picker()
+                device('shell', 'am', 'start', '-W', '-n', PACKAGE+'/.MainActivity')
+                wait(lambda: any(row.get('preferences') and row.get('secureSession') for row in records()[count:]))
+                assert not any(row.get('result') == 'save_saved' for row in records()[count:])
+                checks.append('activity_recreation_abandons_document_without_false_success')
+            finally:
+                always_finish(False)
+                device('shell', 'rm', '-f', remote)
+            count = len(records()); click('Save synthetic file')
+            wait(lambda: any(node.get('package', '').endswith('.documentsui') for node in nodes()))
+            close_document_picker()
+            assert wait(lambda: result_since(count)) == 'save_cancelled'
+            assert len([row for row in records()[count:] if row.get('action') == 'save']) == 1
+            checks.append('document_cancel_returns_once_after_recreation')
         if args.process_restart:
             # am kill deliberately spares processes referenced by a pending installer.
             # Root is used only on an explicitly selected disposable QA emulator;
@@ -378,6 +474,7 @@ def run(args):
                 (directory/'stream-cleanup.log').write_text(str(error))
         try:
             (directory/'device-all.log').write_text(device('logcat', '-d'))
+            (directory/'activity-state.log').write_text(device('shell', 'dumpsys', 'activity', 'activities'))
         except (subprocess.SubprocessError, OSError) as error:
             (directory/'diagnostics-error.log').write_text(str(error))
         try:
@@ -400,6 +497,7 @@ if __name__ == '__main__':
     parser.add_argument('--prepare-only', action='store_true')
     parser.add_argument('--fixtures', type=pathlib.Path)
     parser.add_argument('--process-restart', action='store_true', help='Also verify process death on a rootable disposable QA emulator')
+    parser.add_argument('--native-lifecycle', action='store_true', help='Verify Activity destruction during installer and document picker on a rootable disposable emulator')
     parser.add_argument('--production-keys', type=pathlib.Path, help='Read production keys in place, only on the selected disposable emulator')
     args = parser.parse_args()
     if args.production_keys: args.production_keys = args.production_keys.resolve()

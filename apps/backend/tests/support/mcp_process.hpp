@@ -8,15 +8,18 @@
 #include <unistd.h>
 
 #include <chrono>
+#include <map>
 #include <nlohmann/json.hpp>
 #include <stdexcept>
 #include <string>
 #include <utility>
+#include <vector>
 extern char** environ;
 namespace fidoback::test {
 class McpProcess {
 public:
-  explicit McpProcess(const std::string& config) {
+  explicit McpProcess(const std::string& config, const std::map<std::string, std::string>& overrides = {},
+                      const std::string& binary = FFIDO_MCP_BINARY) {
     int input[2], output[2];
     if (pipe(input) != 0 || pipe(output) != 0)
       throw std::runtime_error("MCP pipe");
@@ -26,8 +29,20 @@ public:
     posix_spawn_file_actions_init(&actions);
     posix_spawn_file_actions_adddup2(&actions, input[0], STDIN_FILENO);
     posix_spawn_file_actions_adddup2(&actions, output[1], STDOUT_FILENO);
-    char* argv[]{const_cast<char*>(FFIDO_MCP_BINARY), const_cast<char*>(config.c_str()), nullptr};
-    const int error = posix_spawn(&pid_, argv[0], &actions, nullptr, argv, environ);
+    char* argv[]{const_cast<char*>(binary.c_str()), const_cast<char*>(config.c_str()), nullptr};
+    std::vector<std::string> environment;
+    for (auto current = environ; *current; ++current) {
+      const std::string value(*current);
+      if (!overrides.contains(value.substr(0, value.find('='))))
+        environment.push_back(value);
+    }
+    for (const auto& [key, value] : overrides)
+      environment.push_back(key + "=" + value);
+    std::vector<char*> entries;
+    for (auto& value : environment)
+      entries.push_back(value.data());
+    entries.push_back(nullptr);
+    const int error = posix_spawn(&pid_, argv[0], &actions, nullptr, argv, entries.data());
     posix_spawn_file_actions_destroy(&actions);
     close(input[0]);
     close(output[1]);
@@ -52,13 +67,26 @@ public:
   void Send(const nlohmann::json& value) {
     Raw(value.dump() + "\n");
   }
-  void Finish() {
+  void CloseOutput() {
+    close(output_);
+    output_ = -1;
+  }
+  void Finish(int expected = 0, std::chrono::milliseconds timeout = std::chrono::seconds(10)) {
     close(input_);
     input_ = -1;
     int status = 0;
-    if (waitpid(pid_, &status, 0) != pid_ || !WIFEXITED(status) || WEXITSTATUS(status) != 0)
-      throw std::runtime_error("MCP did not exit cleanly on EOF");
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    for (;;) {
+      const auto result = waitpid(pid_, &status, WNOHANG);
+      if (result == pid_)
+        break;
+      if (result < 0 || std::chrono::steady_clock::now() >= deadline)
+        throw std::runtime_error("MCP exit watchdog");
+      poll(nullptr, 0, 5);
+    }
     pid_ = -1;
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != expected)
+      throw std::runtime_error("MCP unexpected EOF exit status");
   }
   void Raw(std::string_view bytes) {
     struct BlockPipeSignal {

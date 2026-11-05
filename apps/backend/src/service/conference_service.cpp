@@ -73,17 +73,15 @@ std::expected<domain::Conference, domain::ApiError> ConferenceService::Describe(
   if (!numbers)
     return storage_failure(storage::JamAccessError{numbers.error()});
   result.total_count = static_cast<int64_t>(numbers->size());
+  auto read = metadata_->GetReadCountForMessages(user, id, (*access)->generation(), *numbers, RequestActive);
+  if (!read)
+    return std::unexpected(read.error());
+  result.unread_count = result.total_count - *read;
   uint32_t latest = 0;
   for (auto number : *numbers) {
     auto message = (*access)->messages().GetHeader(number);
     if (!message)
       return storage_failure(storage::JamAccessError{message.error()});
-    const auto key_number = std::to_string(number);
-    auto read = metadata_->IsMessageRead(user, {id, (*access)->generation(), key_number});
-    if (!read)
-      return std::unexpected(read.error());
-    if (!*read)
-      ++result.unread_count;
     latest = std::max(latest, message->date_written);
   }
   if (!numbers->empty())

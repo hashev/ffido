@@ -3,11 +3,14 @@
 #include <sys/file.h>
 #include <sys/resource.h>
 
+#include <cstdlib>
 #include <fstream>
 #include <future>
 
 #include "../support/echo_access.hpp"
 #include "../support/jam_wire_record.hpp"
+#include "../support/resource_usage.hpp"
+#include "../support/sqlite_timing.hpp"
 #include "../support/temp_directory.hpp"
 #include "../support/tls_certificate.hpp"
 #include "ftn/uue.hpp"
@@ -100,6 +103,155 @@ protected:
   }
 };
 }  // namespace
+class CatalogWorkloadTest : public ServicesTest, public ::testing::WithParamInterface<std::pair<int, int>> {};
+TEST_P(CatalogWorkloadTest, CatalogStatisticsAndRegistryPerformanceFixture) {
+  const auto [area_count, message_count] = GetParam();
+  {
+    std::vector<EchoAreaConfig> areas;
+    for (int i = 0; i < area_count; ++i) {
+      EchoAreaConfig area;
+      area.name = "BENCH." + std::to_string(i);
+      area.filename = "bench-" + std::to_string(i);
+      area.msgbase_type = "JAM";
+      const auto path = temp.path() / area.filename;
+      msgapi::JamBaseHeader header{};
+      header.signature = msgapi::kJamSignature;
+      header.base_msg_num = 42;
+      header.date_created = 123;
+      header.password_crc = UINT32_MAX;
+      header.active_msgs = message_count;
+      auto base = msgapi::jam_wire::Encode(header);
+      std::ofstream jhr(path.string() + ".jhr", std::ios::binary), jdx(path.string() + ".jdx", std::ios::binary);
+      std::ofstream jdt(path.string() + ".jdt", std::ios::binary);
+      jhr.write(reinterpret_cast<const char*>(base.data()), base.size());
+      for (int n = 0; n < message_count; ++n) {
+        msgapi::JamMessageHeader item{};
+        item.signature = msgapi::kJamSignature;
+        item.revision = 1;
+        item.message_number = 42 + n;
+        item.date_written = 100 + n;
+        item.password_crc = UINT32_MAX;
+        auto bytes = msgapi::jam_wire::Encode(item);
+        auto index = msgapi::jam_wire::Encode(msgapi::JamIndexRecord{0, uint32_t(1024 + 76 * n)});
+        jhr.write(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+        jdx.write(reinterpret_cast<const char*>(index.data()), index.size());
+      }
+      areas.push_back(std::move(area));
+    }
+    std::vector<double> builds;
+    nlohmann::json build_work = nlohmann::json::array();
+    for (int repeat = 0; repeat < 20; ++repeat) {
+      storage::WorkMetrics work;
+      storage::WorkScope observe(work);
+      const auto begin = std::chrono::steady_clock::now();
+      auto built = storage::JamCatalog::Build(temp.path(), areas);
+      ASSERT_TRUE(built);
+      EXPECT_EQ(work.jam_opens, static_cast<uint64_t>(3 * area_count));
+      build_work.push_back({{"jam_opens", work.jam_opens},
+                            {"mutex_wait_ns", work.jam_mutex_wait_ns},
+                            {"byte_lock_wait_ns", work.jam_byte_lock_wait_ns}});
+      builds.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin).count());
+    }
+    std::cout << "REGISTRY_BENCH "
+              << nlohmann::json{{"areas", area_count},
+                                {"messages_per_area", message_count},
+                                {"milliseconds", builds},
+                                {"work", build_work}}
+                     .dump()
+              << '\n';
+    if (message_count == 0)
+      return;
+    auto built = storage::JamCatalog::Build(temp.path(), areas);
+    ASSERT_TRUE(built);
+    auto owned = std::shared_ptr<storage::JamCatalog>(std::move(*built));
+    ASSERT_EQ(sqlite3_auto_extension(reinterpret_cast<void (*)()>(test::TraceConnection)), SQLITE_OK);
+    auto measured_metadata = storage::CreateSQLiteStore(temp.path() / "catalog-bench.db");
+    ASSERT_TRUE(measured_metadata->Init());
+    sqlite3_reset_auto_extension();
+    ASSERT_TRUE(measured_metadata->SaveProfile("A", domain::Profile{"A", "2:5015/1.1", "", "2026-01-01T00:00:00Z"}));
+    service::ConferenceService service(owned, measured_metadata, test::EchoAccess(*owned, temp.path()));
+    std::vector<double> timings;
+    nlohmann::json samples = nlohmann::json::array();
+    for (int repeat = 0; repeat < 20; ++repeat) {
+      const auto begin = std::chrono::steady_clock::now();
+      storage::WorkMetrics work;
+      storage::WorkScope observe(work);
+      test::SqlTiming sql;
+      auto response = test::TimedSql(sql, [&] { return service.GetConferences({0, 20}, {}, "A"); });
+      ASSERT_TRUE(response);
+      ASSERT_EQ(response->total, area_count);
+      for (const auto& item : response->conferences) {
+        EXPECT_EQ(item.total_count, message_count);
+        EXPECT_EQ(item.unread_count, message_count);
+      }
+      EXPECT_GT(sql.statements, 0u);
+      EXPECT_GT(work.read_bytes, 0u);
+      samples.push_back({{"sql", sql.statements},
+                         {"jam_opens", work.jam_opens},
+                         {"read_calls", work.read_calls},
+                         {"read_bytes", work.read_bytes},
+                         {"mutex_wait_ns", work.jam_mutex_wait_ns},
+                         {"byte_lock_wait_ns", work.jam_byte_lock_wait_ns}});
+      timings.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin).count());
+    }
+    std::cout << "STATISTICS_BENCH "
+              << nlohmann::json{{"areas", area_count},
+                                {"messages_per_area", message_count},
+                                {"milliseconds", timings},
+                                {"rows", std::min(area_count, 20)},
+                                {"work", samples}}
+                     .dump()
+              << '\n';
+    for (int parallel : {1, 16, 64}) {
+      const auto begin = std::chrono::steady_clock::now();
+      std::vector<std::future<nlohmann::json>> requests;
+      for (int i = 0; i < parallel; ++i)
+        requests.push_back(std::async(std::launch::async, [&] {
+          service::RequestBudget budget{std::chrono::steady_clock::now() + std::chrono::seconds(5), {}};
+          service::RequestScope scope(budget);
+          storage::WorkMetrics work;
+          storage::WorkScope observe(work);
+          test::SqlTiming sql;
+          const auto start = std::chrono::steady_clock::now();
+          auto response = test::TimedSql(sql, [&] { return service.GetConferences({0, 20}, {}, "A"); });
+          return nlohmann::json{
+              {"ok", response.has_value()},
+              {"code", response ? 0 : int(response.error().code)},
+              {"milliseconds",
+               std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count()},
+              {"sql", sql.statements},
+              {"jam_opens", work.jam_opens},
+              {"read_bytes", work.read_bytes},
+              {"mutex_wait_ns", work.jam_mutex_wait_ns},
+              {"byte_lock_wait_ns", work.jam_byte_lock_wait_ns}};
+        }));
+      int completed = 0;
+      nlohmann::json outcomes = nlohmann::json::array();
+      for (auto& request : requests) {
+        auto outcome = request.get();
+        if (outcome.at("ok").get<bool>())
+          ++completed;
+        outcomes.push_back(std::move(outcome));
+      }
+      std::cout << "STATISTICS_LOAD "
+                << nlohmann::json{{"areas", area_count},
+                                  {"parallel", parallel},
+                                  {"completed", completed},
+                                  {"errors", parallel - completed},
+                                  {"work", outcomes},
+                                  {"milliseconds",
+                                   std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin)
+                                       .count()}}
+                       .dump()
+                << '\n';
+    }
+  }
+}
+INSTANTIATE_TEST_SUITE_P(Matrix, CatalogWorkloadTest,
+                         ::testing::Values(std::pair{1, 100}, std::pair{1, 10000}, std::pair{100, 100},
+                                           std::pair{100, 10000}, std::pair{1000, 100}, std::pair{1000, 10000},
+                                           std::pair{5000, 0}));
+
 TEST_F(ServicesTest, EmptyFilterAndPaginationTotals) {
   auto empty = messages->GetMessages("echo.one", {}, "newest", "A");
   ASSERT_TRUE(empty);
@@ -255,11 +407,16 @@ TEST_F(ServicesTest, DeletedSlotsAndExtremePageBoundsKeepRealCounters) {
     ids.push_back(response->id);
   }
   {
+    ASSERT_TRUE(messages->GetMessage("echo.one", ids[1], "A"));
     auto access = storage::JamAccess::Open(*catalog, "echo.one", true,
                                            std::chrono::steady_clock::now() + std::chrono::seconds(1));
     ASSERT_TRUE(access);
     ASSERT_EQ((*access)->messages().DeleteMessage(43), msgapi::JamError::kSuccess);
   }
+  auto counted = conferences->GetConference("echo.one", "A");
+  ASSERT_TRUE(counted);
+  EXPECT_EQ(counted->total_count, 2);
+  EXPECT_EQ(counted->unread_count, 2);
   auto newest = messages->GetMessages("echo.one", {0, 1}, "newest", "A");
   ASSERT_TRUE(newest);
   EXPECT_EQ(newest->total, 2);
@@ -475,6 +632,35 @@ TEST(StorageErrorMapping, LockReasonsRemainDistinctWithoutInternalDiagnostics) {
   }
   EXPECT_EQ(service::JamError(storage::JamAccessError(storage::CatalogError::kNotFound)).code, ErrorCode::kNotFound);
   EXPECT_EQ(service::JamError(storage::JamAccessError(msgapi::JamError::kCorruptedData)).code, ErrorCode::kServer);
+}
+
+TEST_F(ServicesTest, InterruptedJamReadPreservesCancellationWithoutHidingActiveIoErrors) {
+  auto created = messages->CreateMessage("echo.one", Request("cancelled-read"), "A");
+  ASSERT_TRUE(created);
+  const storage::JamAccessError read_error{msgapi::JamError::kReadError};
+  EXPECT_EQ(service::JamError(read_error).code, domain::ErrorCode::kServer);
+  std::stop_source cancelled;
+  service::RequestBudget budget{std::chrono::steady_clock::now() + std::chrono::seconds(5), cancelled.get_token()};
+  {
+    service::RequestScope scope(budget);
+    auto access = storage::JamAccess::Open(*catalog, "echo.one", false, budget.deadline, budget.cancellation);
+    ASSERT_TRUE(access);
+    auto number = service::MessageNumber(**access, created->id);
+    ASSERT_TRUE(number);
+    ASSERT_TRUE((*access)->messages().ReadMessage(*number));
+    EXPECT_EQ(service::JamError(read_error).code, domain::ErrorCode::kServer);
+    cancelled.request_stop();
+    auto interrupted = (*access)->messages().ReadMessage(*number);
+    ASSERT_FALSE(interrupted);
+    EXPECT_EQ(interrupted.error(), msgapi::JamError::kReadError);
+    EXPECT_EQ(service::JamError(storage::JamAccessError{interrupted.error()}).code, domain::ErrorCode::kCancelled);
+    budget.deadline = std::chrono::steady_clock::now();
+    EXPECT_EQ(service::JamError(read_error).code, domain::ErrorCode::kDeadline);
+    EXPECT_EQ(service::JamError(storage::JamAccessError{msgapi::JamError::kCorruptedData}).code,
+              domain::ErrorCode::kServer);
+  }
+  EXPECT_EQ(service::JamError(read_error).code, domain::ErrorCode::kServer);
+  EXPECT_TRUE(metadata->GetHistory("A")->empty());
 }
 
 TEST_F(ServicesTest, OpaqueMessageNumbersRejectAllMalformedSuffixes) {
@@ -1010,6 +1196,417 @@ TEST_F(ServicesTest, UueUploadBoundaryRepeatGapAndChecksumFailBeforeJamMutation)
   EXPECT_FALSE(uue.SendStatus("upload", "B"));
   EXPECT_EQ(messages->GetMessages("echo.one", {}, "oldest", "A")->total, 0);
 }
+TEST_F(ServicesTest, UueExpiredPayloadHeldByReaderStillCountsAgainstQuota) {
+  UueConfig config;
+  config.user_quota_bytes = 5;
+  std::atomic<int> seconds = 0;
+  std::atomic<bool> signal = false;
+  std::promise<void> entered;
+  const auto origin = std::chrono::steady_clock::now();
+  service::UueService uue(
+      catalog, metadata, test::EchoAccess(*catalog, temp.path()), "cp866",
+      [&] {
+        const auto now = origin + std::chrono::seconds(seconds.load());
+        if (signal.exchange(false))
+          entered.set_value();
+        return now;
+      },
+      config);
+  auto first = Request("held-payload");
+  first.body = ftn::uue::Encode("first", "a.bin").value();
+  auto second = Request("other-payload");
+  second.body = ftn::uue::Encode("other", "b.bin").value();
+  ASSERT_TRUE(messages->CreateMessage("echo.one", first, "A"));
+  ASSERT_TRUE(messages->CreateMessage("echo.two", second, "A"));
+  auto a = uue.Search("echo.one", "", 0, 10, "A");
+  auto b = uue.Search("echo.two", "", 0, 10, "A");
+  ASSERT_TRUE(a);
+  ASSERT_TRUE(b);
+  auto attachment = uue.Assemble({a->parts[0].source}, false, "A");
+  ASSERT_TRUE(attachment);
+  auto lease = storage::JamAccess::Open(*catalog, "echo.one", false, service::RequestDeadline());
+  ASSERT_TRUE(lease);
+  signal = true;
+  auto reader = std::async(std::launch::async, [&] { return uue.Chunk(attachment->id, 0, 5, "A"); });
+  entered.get_future().wait();
+  seconds = 600;
+  // The reader owns the old payload and waits on echo.one; echo.two is independent.
+  auto rejected = uue.Assemble({b->parts[0].source}, false, "A");
+  lease->reset();
+  auto read = reader.get();
+  ASSERT_TRUE(read);
+  EXPECT_EQ(read->bytes, "first");
+  ASSERT_FALSE(rejected);
+  EXPECT_EQ(rejected.error().code, domain::ErrorCode::kResource);
+  auto admitted = uue.Assemble({b->parts[0].source}, false, "A");
+  ASSERT_TRUE(admitted);
+  EXPECT_EQ(uue.Chunk(admitted->id, 0, 5, "A")->bytes, "other");
+}
+TEST_F(ServicesTest, UueValidationDeadlinePreservesPayloadForRetry) {
+  service::UueService uue(catalog, metadata, test::EchoAccess(*catalog, temp.path()));
+  auto request = Request("uue-validation-deadline");
+  request.body = ftn::uue::Encode("payload", "a.bin").value();
+  auto sent = messages->CreateMessage("echo.one", request, "A");
+  ASSERT_TRUE(sent);
+  auto file = uue.Assemble({{"echo.one", sent->id, 0}}, false, "A");
+  ASSERT_TRUE(file);
+  auto owner =
+      storage::JamAccess::Open(*catalog, "echo.one", true, std::chrono::steady_clock::now() + std::chrono::seconds(5));
+  ASSERT_TRUE(owner);
+  storage::WorkMetrics work;
+  auto reader = std::async(std::launch::async, [&] {
+    storage::WorkScope observe(work);
+    service::RequestBudget budget{std::chrono::steady_clock::now() + std::chrono::seconds(1), {}};
+    service::RequestScope scope(budget);
+    return uue.Chunk(file->id, 0, 7, "A");
+  });
+  const auto status = reader.wait_for(std::chrono::seconds(3));
+  owner->reset();
+  ASSERT_EQ(status, std::future_status::ready);
+  auto interrupted = reader.get();
+  ASSERT_FALSE(interrupted);
+  EXPECT_EQ(interrupted.error().code, domain::ErrorCode::kDeadline);
+  EXPECT_GT(work.jam_mutex_wait_ns, 0u);  // The deadline occurred inside source validation.
+  auto retry = uue.Chunk(file->id, 0, 7, "A");
+  ASSERT_TRUE(retry);
+  EXPECT_EQ(retry->bytes, "payload");
+  EXPECT_TRUE(retry->eof);
+}
+TEST_F(ServicesTest, UueWorkingReservationsReleaseAfterSuccessErrorCancellationAndEof) {
+  for (const auto outcome : {"success", "bad-block", "cancelled"}) {
+    SCOPED_TRACE(outcome);
+    UueConfig config;
+    config.user_quota_bytes = 3 * 1024 * 1024;
+    config.global_quota_bytes = config.user_quota_bytes;
+    std::atomic<bool> signal = false;
+    std::promise<void> entered, resume;
+    auto resumed = resume.get_future().share();
+    service::UueService uue(
+        catalog, metadata, test::EchoAccess(*catalog, temp.path()), "cp866",
+        [&] {
+          if (signal.exchange(false)) {
+            entered.set_value();
+            if (resumed.wait_for(std::chrono::seconds(5)) != std::future_status::ready)
+              throw std::runtime_error("Assembly fixture watchdog");
+          }
+          return std::chrono::steady_clock::now();
+        },
+        config);
+    auto first = Request(std::string("working-first-") + outcome);
+    first.body = ftn::uue::Encode("first", "a.bin").value();
+    auto second = Request(std::string("working-other-") + outcome);
+    second.body = ftn::uue::Encode("other", "b.bin").value();
+    auto sent_a = messages->CreateMessage("echo.one", first, "A");
+    auto sent_b = messages->CreateMessage("echo.two", second, "A");
+    ASSERT_TRUE(sent_a);
+    ASSERT_TRUE(sent_b);
+    service::UueReference source_a{"echo.one", sent_a->id, 0};
+    const service::UueReference source_b{"echo.two", sent_b->id, 0};
+    auto a = uue.Assemble({source_a}, false, "A"), b = uue.Assemble({source_b}, false, "B");
+    ASSERT_TRUE(a);
+    ASSERT_TRUE(b);
+    if (std::string_view(outcome) == "bad-block")
+      source_a.block = 1;
+    std::stop_source cancelled;
+    signal = true;
+    auto reader = std::async(std::launch::async, [&] {
+      service::RequestBudget budget{std::chrono::steady_clock::now() + std::chrono::seconds(5), cancelled.get_token()};
+      service::RequestScope scope(budget);
+      return uue.Assemble({source_a}, false, "A");
+    });
+    bool released = false;
+    auto release = [&] {
+      if (!released) {
+        released = true;
+        resume.set_value();
+      }
+    };
+    struct Cleanup {
+      std::stop_source& cancellation;
+      decltype(release)& release;
+      ~Cleanup() {
+        cancellation.request_stop();
+        release();
+      }
+    } cleanup{cancelled, release};
+    ASSERT_EQ(entered.get_future().wait_for(std::chrono::seconds(1)), std::future_status::ready);
+    auto rejected = uue.Assemble({source_b}, false, "B");
+    ASSERT_FALSE(rejected);
+    EXPECT_EQ(rejected.error().code, domain::ErrorCode::kResource);
+    if (std::string_view(outcome) == "cancelled")
+      cancelled.request_stop();
+    release();
+    ASSERT_EQ(reader.wait_for(std::chrono::seconds(1)), std::future_status::ready);
+    auto result = reader.get();
+    if (std::string_view(outcome) == "success") {
+      ASSERT_TRUE(result);
+      EXPECT_EQ(result->state, service::UueState::kReady);
+    } else {
+      ASSERT_FALSE(result);
+      EXPECT_EQ(result.error().code, std::string_view(outcome) == "cancelled" ? domain::ErrorCode::kCancelled
+                                                                              : domain::ErrorCode::kValidation);
+    }
+    auto retry = uue.Assemble({source_b}, false, "B");
+    ASSERT_TRUE(retry);
+    auto eof = uue.Chunk(b->id, 5, 5, "B");
+    ASSERT_TRUE(eof);
+    EXPECT_TRUE(eof->eof);
+    EXPECT_TRUE(eof->bytes.empty());
+    EXPECT_FALSE(uue.Chunk(b->id, 6, 5, "B"));
+    EXPECT_FALSE(uue.Assemble({{"echo.two", "missing", 0}}, false, "B"));
+    EXPECT_EQ(uue.Chunk(b->id, 0, 5, "B")->bytes, "other");
+  }
+}
+
+TEST(WorkMetrics, NestedScopesCountActualReadsWithoutLeakingAcrossThreadsOrExceptions) {
+  test::TempDirectory directory;
+  const auto path = directory.path() / "bytes";
+  std::ofstream(path) << "abcdefg";
+  const int fd = open(path.c_str(), O_RDONLY);
+  ASSERT_GE(fd, 0);
+  struct Close {
+    int fd;
+    ~Close() {
+      close(fd);
+    }
+  } close_fd{fd};
+  storage::WorkMetrics outer, inner;
+  char bytes[8]{};
+  {
+    storage::WorkScope observe(outer);
+    EXPECT_EQ(msgapi::JamFileIo::System().Read(fd, bytes, 3, 0), 3);
+    try {
+      storage::WorkScope nested(inner);
+      EXPECT_EQ(msgapi::JamFileIo::System().Read(fd, bytes, 2, 3), 2);
+      throw std::runtime_error("test unwind");
+    } catch (const std::runtime_error&) {
+    }
+    auto other = std::async(std::launch::async, [&] {
+      char copy[8]{};
+      EXPECT_EQ(storage::work_metrics, nullptr);
+      return msgapi::JamFileIo::System().Read(fd, copy, 7, 0);
+    });
+    EXPECT_EQ(other.get(), 7);
+    EXPECT_EQ(msgapi::JamFileIo::System().Read(fd, bytes, 2, 5), 2);
+  }
+  EXPECT_EQ(storage::work_metrics, nullptr);
+  EXPECT_EQ(outer.read_calls, 2u);
+  EXPECT_EQ(outer.read_bytes, 5u);
+  EXPECT_EQ(inner.read_calls, 1u);
+  EXPECT_EQ(inner.read_bytes, 2u);
+}
+
+class UueWorkloadTest : public ServicesTest,
+                        public ::testing::WithParamInterface<std::tuple<size_t, bool, uint32_t, int>> {};
+TEST_P(UueWorkloadTest, UueChunkPerformanceFixture) {
+  const auto [size, single_source, selected_chunk, selected_parallel] = GetParam();
+  std::cout << std::unitbuf << "UUE_SETUP file_bytes=" << size << " single_source=" << single_source << '\n';
+  UueConfig config;
+  if (size > config.max_file_bytes) {
+    config.max_file_bytes = size;
+    config.part_body_bytes = 256 * 1024;
+    config.max_parts = 1024;
+    config.user_quota_bytes = 64 * 1024 * 1024;
+    config.global_quota_bytes = 128 * 1024 * 1024;
+  }
+  service::UueService uue(catalog, metadata, test::EchoAccess(*catalog, temp.path()), "cp866",
+                          std::chrono::steady_clock::now, config);
+  const std::string bytes(size, 'a');
+  std::vector<service::UueReference> sources;
+  if (single_source) {
+    auto created = messages->CreateMessage("echo.one", Request("legacy-bench"), "A");
+    ASSERT_TRUE(created);
+    auto encoded = ftn::uue::Encode(bytes, "bench.bin", {size, 2 * size + 4096, 1});
+    ASSERT_TRUE(encoded);
+    // A legal historical body above the new-publication limit, in our temporary JAM.
+    std::ofstream(temp.path() / "different-file.jdt", std::ios::binary | std::ios::trunc) << *encoded;
+    const auto index = test::ReadFile(temp.path() / "different-file.jdx");
+    const auto offset = test::Wire32(index, 4);
+    auto headers = test::ReadFile(temp.path() / "different-file.jhr");
+    msgapi::jam_wire::Put32(reinterpret_cast<uint8_t*>(headers.data()) + offset + 64, encoded->size());
+    std::ofstream(temp.path() / "different-file.jhr", std::ios::binary | std::ios::trunc) << headers;
+    sources.push_back({"echo.one", created->id, 0});
+  } else if (size > 1024 * 1024) {
+    auto encoded = ftn::uue::Encode(bytes, "bench.bin", {size, 2 * size + 4096, config.max_parts});
+    ASSERT_TRUE(encoded);
+    std::vector<std::string> parts(1);
+    for (size_t offset = 0; offset < encoded->size();) {
+      const auto end = encoded->find('\n', offset) + 1;
+      if (parts.back().size() + end - offset > config.part_body_bytes - 512)
+        parts.emplace_back();
+      parts.back().append(*encoded, offset, end - offset);
+      offset = end;
+    }
+    // Chunk/Assemble are the workload: create numbered historical parts directly,
+    // without timing the independent upload journal/commit serializer.
+    for (size_t i = 0; i < parts.size(); ++i) {
+      auto request = Request("legacy-max-" + std::to_string(i));
+      request.subject = "Legacy benchmark [" + std::to_string(i + 1) + "/" + std::to_string(parts.size()) + "]";
+      request.body = parts[i];
+      auto created = messages->CreateMessage("echo.one", request, "A");
+      ASSERT_TRUE(created);
+      sources.push_back({"echo.one", created->id, 0});
+    }
+    std::cout << "UUE_LEGACY_PARTS_COMPLETE parts=" << parts.size() << '\n';
+  } else {
+    auto request = Request("bench-uue");
+    const auto hash = UueHash(bytes);
+    for (size_t offset = 0; offset < size; offset += 65536)
+      ASSERT_TRUE(uue.Upload(request.operation_id, "bench.bin", size, hash, offset,
+                             std::string_view(bytes).substr(offset, 65536), "A"));
+    std::cout << "UUE_UPLOAD_COMPLETE\n";
+    auto sent = uue.Commit("echo.one", request, "A");
+    ASSERT_TRUE(sent);
+    ASSERT_EQ(sent->state, "completed");
+    std::cout << "UUE_COMMIT_COMPLETE parts=" << sent->messages.size() << '\n';
+    uint32_t after = 0;
+    std::string generation;
+    for (;;) {
+      auto page = uue.Search("echo.one", generation, after, 100, "A");
+      ASSERT_TRUE(page);
+      for (const auto& part : page->parts)
+        if (std::find(sent->messages.begin(), sent->messages.end(), part.source.message) != sent->messages.end())
+          sources.push_back(part.source);
+      if (!page->more)
+        break;
+      ASSERT_GT(page->next, after);
+      after = page->next;
+      generation = page->generation;
+    }
+  }
+  ASSERT_FALSE(sources.empty());
+  storage::WorkMetrics assembly;
+  const auto resident_before = test::ResidentBytes();
+  auto attachment = [&] {
+    storage::WorkScope observe(assembly);
+    return uue.Assemble(sources, false, "A");
+  }();
+  ASSERT_TRUE(attachment);
+  ASSERT_EQ(attachment->state, service::UueState::kReady);
+  ASSERT_EQ(attachment->size, size);
+  ASSERT_EQ(attachment->sha256, UueHash(bytes));
+  std::cout << "UUE_ASSEMBLY "
+            << nlohmann::json{{"file_bytes", size},
+                              {"sources", sources.size()},
+                              {"jam_bytes", assembly.read_bytes},
+                              {"jam_opens", assembly.jam_opens},
+                              {"hash_bytes", assembly.hash_bytes},
+                              {"rss_before", resident_before},
+                              {"rss_after", test::ResidentBytes()},
+                              {"peak_rss", test::PeakResidentBytes()}}
+                   .dump()
+            << '\n';
+  const bool single_sample = std::getenv("FFIDO_UUE_SINGLE_SAMPLE") != nullptr;
+  struct Outcome {
+    int code = 0;
+    uint64_t transferred = 0;
+    storage::WorkMetrics work;
+  };
+  for (uint32_t chunk : {16384u, 65536u}) {
+    for (int parallel : {1, 4, 16}) {
+      if ((selected_chunk && selected_chunk != chunk) || (selected_parallel && selected_parallel != parallel))
+        continue;
+      if (single_sample && (size != 1024 * 1024 || single_source || chunk != 65536 || parallel != 1))
+        continue;
+      attachment = uue.Assemble(sources, false, "A");
+      ASSERT_TRUE(attachment);
+      const auto begin = std::chrono::steady_clock::now();
+      const auto rss_before = test::ResidentBytes();
+      std::vector<size_t> offsets;
+      if (size > 1024 * 1024) {
+        // Maximum-size microbenchmark: every call revalidates the entire file.
+        // Exercise start/middle/end/EOF, while the 1 MiB cases transfer every byte.
+        offsets = {0, size / 2, size - chunk, size};
+      } else {
+        for (size_t offset = 0; offset < size; offset += chunk)
+          offsets.push_back(offset);
+        offsets.push_back(size);
+      }
+      const uint64_t transfer_bytes = size > 1024 * 1024 ? 3 * chunk : size;
+      std::vector<std::future<Outcome>> requests;
+      for (int i = 0; i < parallel; ++i)
+        requests.push_back(std::async(std::launch::async, [&] {
+          Outcome outcome;
+          storage::WorkScope observe(outcome.work);
+          for (size_t offset : offsets) {
+            service::RequestBudget budget{
+                std::chrono::steady_clock::now() + std::chrono::seconds(size > 1024 * 1024 ? 60 : 5), {}};
+            service::RequestScope scope(budget);
+            auto result = uue.Chunk(attachment->id, offset, chunk, "A");
+            if (!result) {
+              outcome.code = int(result.error().code);
+              return outcome;
+            }
+            if (result->bytes != bytes.substr(offset, chunk) ||
+                result->eof != (offset + result->bytes.size() == size)) {
+              outcome.code = -1;
+              return outcome;
+            }
+            outcome.transferred += result->bytes.size();
+          }
+          return outcome;
+        }));
+      int completed = 0;
+      nlohmann::json failures = nlohmann::json::object(), work = nlohmann::json::array();
+      for (auto& request : requests) {
+        auto outcome = request.get();
+        EXPECT_EQ(outcome.work.payload_copy_bytes, outcome.transferred);
+        if (outcome.code == 0) {
+          ++completed;
+          EXPECT_EQ(outcome.transferred, transfer_bytes);
+        } else {
+          const auto key = std::to_string(outcome.code);
+          failures[key] = failures.value(key, 0) + 1;
+          EXPECT_TRUE(outcome.code == int(domain::ErrorCode::kDeadline) ||
+                      outcome.code == int(domain::ErrorCode::kNotFound) ||
+                      outcome.code == int(domain::ErrorCode::kResource) ||
+                      outcome.code == int(domain::ErrorCode::kUnavailable));
+        }
+        work.push_back({{"code", outcome.code},
+                        {"transferred", outcome.transferred},
+                        {"payload_copy_bytes", outcome.work.payload_copy_bytes},
+                        {"cache_hold_ns", outcome.work.cache_hold_ns},
+                        {"hash_bytes", outcome.work.hash_bytes},
+                        {"jam_bytes", outcome.work.read_bytes},
+                        {"jam_opens", outcome.work.jam_opens},
+                        {"mutex_wait_ns", outcome.work.jam_mutex_wait_ns}});
+      }
+      std::cout << "UUE_BENCH "
+                << nlohmann::json{{"file_bytes", size},
+                                  {"chunk_bytes", chunk},
+                                  {"parallel", parallel},
+                                  {"sources", sources.size()},
+                                  {"workload", size > 1024 * 1024 ? "boundary_chunks" : "complete_file"},
+                                  {"transfer_bytes", transfer_bytes},
+                                  {"request_deadline_seconds", size > 1024 * 1024 ? 60 : 5},
+                                  {"completed", completed},
+                                  {"errors", parallel - completed},
+                                  {"error_codes", failures},
+                                  {"milliseconds",
+                                   std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin)
+                                       .count()},
+                                  {"rss_before", rss_before},
+                                  {"rss_after", test::ResidentBytes()},
+                                  {"peak_rss", test::PeakResidentBytes()},
+                                  {"work", work}}
+                       .dump()
+                << '\n';
+      if (parallel == 1)
+        EXPECT_EQ(completed, 1);
+    }
+  }
+}
+INSTANTIATE_TEST_SUITE_P(Matrix, UueWorkloadTest,
+                         ::testing::Values(std::tuple{size_t(4096), false, 0u, 0},
+                                           std::tuple{size_t(1024 * 1024), false, 0u, 0},
+                                           std::tuple{size_t(1024 * 1024), true, 0u, 0},
+                                           std::tuple{size_t(16 * 1024 * 1024), false, 16384u, 1},
+                                           std::tuple{size_t(16 * 1024 * 1024), false, 16384u, 4},
+                                           std::tuple{size_t(16 * 1024 * 1024), false, 16384u, 16},
+                                           std::tuple{size_t(16 * 1024 * 1024), false, 65536u, 1},
+                                           std::tuple{size_t(16 * 1024 * 1024), false, 65536u, 4},
+                                           std::tuple{size_t(16 * 1024 * 1024), false, 65536u, 16}));
+
 TEST_F(ServicesTest, UueCommitPublishesRecoverableMultipartWithExactBytesAndIdempotency) {
   auto policy = test::EchoAccess(*catalog, temp.path());
   service::UueService uue(catalog, metadata, policy);
@@ -1069,6 +1666,139 @@ public:
   }
 };
 }  // namespace
+TEST_F(ServicesTest, CancelledUueWaiterReleasesBeforeOwnerCommitFinishes) {
+  auto policy = test::EchoAccess(*catalog, temp.path());
+  auto io = std::make_shared<UueFaultIo>();
+  std::promise<void> entered, release;
+  auto gate = release.get_future().share();
+  io->after_first = [&] {
+    entered.set_value();
+    gate.wait();
+  };
+  service::UueService uue(catalog, metadata, policy, "cp866", std::chrono::steady_clock::now, {}, io);
+  const std::string bytes(100, 'a');
+  auto request = Request("cancel-wait-uue");
+  ASSERT_TRUE(uue.Upload(request.operation_id, "a.bin", bytes.size(), UueHash(bytes), 0, bytes, "A"));
+  auto owner = std::async(std::launch::async, [&] { return uue.Commit("echo.one", request, "A"); });
+  entered.get_future().wait();
+  std::stop_source stop;
+  std::promise<void> waiting;
+  auto waiter = std::async(std::launch::async, [&] {
+    service::RequestBudget budget{std::chrono::steady_clock::now() + std::chrono::seconds(5), stop.get_token()};
+    service::RequestScope scope(budget);
+    waiting.set_value();
+    return uue.Commit("echo.one", request, "A");
+  });
+  waiting.get_future().wait();
+  stop.request_stop();
+  const auto before_release = waiter.wait_for(std::chrono::seconds(1));
+  release.set_value();
+  auto cancelled = waiter.get();
+  ASSERT_TRUE(owner.get());
+  EXPECT_EQ(before_release, std::future_status::ready);
+  EXPECT_FALSE(cancelled);
+  auto repeat = uue.Commit("echo.one", request, "A");
+  ASSERT_TRUE(repeat);
+  EXPECT_EQ(repeat->saved, 1);
+  EXPECT_EQ(messages->GetMessages("echo.one", {}, "oldest", "A")->total, 1);
+}
+TEST_F(ServicesTest, UueStripeCollisionCancellationAndIndependentBucket) {
+  const auto bucket = [](const std::string& user) { return std::hash<std::string_view>{}(user) % 64; };
+  std::string collision, independent;
+  for (int i = 0; collision.empty() || independent.empty(); ++i) {
+    const auto candidate = "stripe-user-" + std::to_string(i);
+    if (bucket(candidate) == bucket("A"))
+      collision = candidate;
+    else
+      independent = candidate;
+  }
+  ASSERT_TRUE(metadata->SaveProfile(collision, {"Collision", "2:1/3", "", ""}));
+  ASSERT_TRUE(metadata->SaveProfile(independent, {"Independent", "2:1/4", "", ""}));
+  auto io = std::make_shared<UueFaultIo>();
+  std::promise<void> entered, release;
+  auto gate = release.get_future().share();
+  io->after_first = [&] {
+    entered.set_value();
+    gate.wait();
+  };
+  service::UueService uue(catalog, metadata, test::EchoAccess(*catalog, temp.path()), "cp866",
+                          std::chrono::steady_clock::now, {}, io);
+  const std::string bytes = "stripe payload";
+  const auto hash = UueHash(bytes);
+  auto request = Request("stripe-owner");
+  ASSERT_TRUE(uue.Upload(request.operation_id, "a.bin", bytes.size(), hash, 0, bytes, "A"));
+  auto owner = std::async(std::launch::async, [&] { return uue.Commit("echo.one", request, "A"); });
+  entered.get_future().wait();
+  for (const auto& user : {std::string("A"), collision, independent}) {
+    std::stop_source stop;
+    auto waiter = std::async(std::launch::async, [&] {
+      service::RequestBudget budget{std::chrono::steady_clock::now() + std::chrono::seconds(5), stop.get_token()};
+      service::RequestScope scope(budget);
+      return uue.Upload("stripe-waiter", "b.bin", bytes.size(), hash, 0, bytes, user);
+    });
+    const bool separate = user == independent;
+    if (!separate) {
+      EXPECT_EQ(waiter.wait_for(std::chrono::milliseconds(50)), std::future_status::timeout);
+      stop.request_stop();
+    }
+    const auto ready = waiter.wait_for(std::chrono::seconds(1));
+    // Always release the owner on failure so cleanup itself cannot hang.
+    if (ready != std::future_status::ready) {
+      release.set_value();
+      EXPECT_EQ(ready, std::future_status::ready);
+      auto drained = waiter.get();
+      if (drained)
+        EXPECT_EQ(*drained, bytes.size());
+      else
+        EXPECT_EQ(drained.error().code, domain::ErrorCode::kCancelled);
+      EXPECT_TRUE(owner.get());
+      return;
+    }
+    auto result = waiter.get();
+    if (!separate) {
+      EXPECT_FALSE(result);
+      if (!result)
+        EXPECT_EQ(result.error().code, domain::ErrorCode::kCancelled);
+    } else {
+      EXPECT_TRUE(result);
+    }
+  }
+  release.set_value();
+  ASSERT_TRUE(owner.get());
+  EXPECT_EQ(messages->GetMessages("echo.one", {}, "oldest", "A")->total, 1);
+}
+TEST_F(ServicesTest, CancelledCrosspostWaiterReleasesBeforeOwnerPublication) {
+  auto io = std::make_shared<UueFaultIo>();
+  std::promise<void> entered, release;
+  auto gate = release.get_future().share();
+  io->after_first = [&] {
+    entered.set_value();
+    gate.wait();
+  };
+  service::MessageService publisher(catalog, metadata, test::EchoAccess(*catalog, temp.path()), "cp866", io);
+  auto request = Request("cancel-crosspost-wait");
+  auto owner =
+      std::async(std::launch::async, [&] { return publisher.CreateCrosspost("echo.one", request, {"echo.two"}, "A"); });
+  entered.get_future().wait();
+  std::stop_source stop;
+  auto waiter = std::async(std::launch::async, [&] {
+    service::RequestBudget budget{std::chrono::steady_clock::now() + std::chrono::seconds(5), stop.get_token()};
+    service::RequestScope scope(budget);
+    return publisher.CreateCrosspost("echo.one", request, {"echo.two"}, "A");
+  });
+  EXPECT_EQ(waiter.wait_for(std::chrono::milliseconds(50)), std::future_status::timeout);
+  stop.request_stop();
+  const auto ready = waiter.wait_for(std::chrono::seconds(1));
+  release.set_value();
+  auto cancelled = waiter.get();
+  ASSERT_TRUE(owner.get());
+  EXPECT_EQ(ready, std::future_status::ready);
+  ASSERT_FALSE(cancelled);
+  EXPECT_EQ(cancelled.error().code, domain::ErrorCode::kCancelled);
+  ASSERT_TRUE(publisher.CreateCrosspost("echo.one", request, {"echo.two"}, "A"));
+  EXPECT_EQ(conferences->GetConference("echo.one", "A")->total_count, 1);
+  EXPECT_EQ(conferences->GetConference("echo.two", "A")->total_count, 1);
+}
 TEST_F(ServicesTest, UueRestartAfterEachAppendStageAndLostReplyDoesNotDuplicate) {
   auto policy = test::EchoAccess(*catalog, temp.path());
   UueConfig config;
@@ -1580,6 +2310,84 @@ TEST_F(ServicesTest, FindMessageCancelledScanReleasesLeaseWithoutReadState) {
   EXPECT_TRUE(metadata->GetHistory("B")->empty());
 }
 
+TEST_F(ServicesTest, IndependentArchiveCursorDoesNotShareTheBusyBaseLock) {
+  std::vector<double> samples;
+  int rejected = 0;
+  for (int repeat = 0; repeat < 20; ++repeat) {
+    auto lease = storage::JamAccess::Open(*catalog, "echo.one", false, service::RequestDeadline());
+    ASSERT_TRUE(lease);
+    domain::ArchiveSearchRequest first;
+    first.conferences = {"echo.one"};
+    first.query = "needle";
+    std::promise<void> started;
+    auto pending = std::async(std::launch::async, [&] {
+      started.set_value();
+      return messages->SearchArchive(first, "A");
+    });
+    started.get_future().wait();
+    const auto blocked = pending.wait_for(std::chrono::milliseconds(50));
+    domain::ArchiveSearchRequest other;
+    other.conferences = {"echo.two"};
+    other.query = "needle";
+    const auto begin = std::chrono::steady_clock::now();
+    auto independent = messages->SearchArchive(other, "B");
+    samples.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin).count());
+    if (!independent)
+      ++rejected;
+    lease->reset();
+    EXPECT_EQ(blocked, std::future_status::timeout);
+    EXPECT_TRUE(pending.get());
+    EXPECT_TRUE(independent);
+  }
+  std::cout << "ARCHIVE_BENCH " << nlohmann::json{{"independent_milliseconds", samples}, {"rejected", rejected}}.dump()
+            << '\n';
+  EXPECT_TRUE(metadata->GetHistory("A")->empty());
+  EXPECT_TRUE(metadata->GetHistory("B")->empty());
+}
+TEST_F(ServicesTest, ConcurrentContinuationDoesNotConsumeTheSameCursorTwice) {
+  for (int i = 0; i < 3; ++i) {
+    auto request = Request("cursor-" + std::to_string(i));
+    request.subject = "needle";
+    ASSERT_TRUE(messages->CreateMessage("echo.one", request, "A"));
+  }
+  messages->SetArchiveScanBudgetForTesting(1);
+  domain::ArchiveSearchRequest request;
+  request.conferences = {"echo.one"};
+  request.query = "needle";
+  auto first = messages->SearchArchive(request, "A");
+  ASSERT_TRUE(first);
+  ASSERT_FALSE(first->next_cursor.empty());
+  request.cursor = first->next_cursor;
+  auto lease = storage::JamAccess::Open(*catalog, "echo.one", false, service::RequestDeadline());
+  ASSERT_TRUE(lease);
+  std::promise<void> started;
+  auto pending = std::async(std::launch::async, [&] {
+    started.set_value();
+    return messages->SearchArchive(request, "A");
+  });
+  started.get_future().wait();
+  const auto waiting = pending.wait_for(std::chrono::milliseconds(50));
+  auto duplicate = messages->SearchArchive(request, "A");
+  lease->reset();
+  auto next = pending.get();
+  EXPECT_EQ(waiting, std::future_status::timeout);
+  ASSERT_FALSE(duplicate);
+  EXPECT_EQ(duplicate.error().code, domain::ErrorCode::kResource);
+  ASSERT_TRUE(next);
+  std::set<std::string> ids;
+  for (int count = 0; count < 5; ++count) {
+    for (const auto& item : next->results)
+      EXPECT_TRUE(ids.insert(item.message.id).second);
+    if (next->complete)
+      break;
+    request.cursor = next->next_cursor;
+    next = messages->SearchArchive(request, "A");
+    ASSERT_TRUE(next);
+  }
+  EXPECT_TRUE(next->complete);
+  EXPECT_EQ(ids.size(), 3u);
+  EXPECT_TRUE(metadata->GetHistory("A")->empty());
+}
 TEST_F(ServicesTest, ArchiveReadChunksPreserveStateAndRequireUtf8Boundaries) {
   auto request = Request();
   request.body = "АБВГД";

@@ -8,6 +8,8 @@
 #include <cerrno>
 #include <condition_variable>
 
+#include "storage/work_metrics.hpp"
+
 namespace fidoback::storage {
 namespace {
 int FileLock(int fd, short type) {
@@ -36,6 +38,7 @@ std::expected<std::unique_ptr<JamLease>, JamLockError> JamLease::Acquire(std::sh
   std::mutex wait_mutex;
   std::condition_variable wake;
   std::stop_callback on_cancel(cancellation, [&] { wake.notify_all(); });
+  WorkTimer mutex_wait(&WorkMetrics::jam_mutex_wait_ns);
   while (!process_lock.owns_lock()) {
     if (cancellation.stop_requested())
       return std::unexpected(JamLockError::kCancelled);
@@ -47,6 +50,7 @@ std::expected<std::unique_ptr<JamLease>, JamLockError> JamLease::Acquire(std::sh
     std::unique_lock wait_lock(wait_mutex);
     wake.wait_until(wait_lock, std::min(deadline, now + interval), [&] { return cancellation.stop_requested(); });
   }
+  mutex_wait.Stop();
   auto opened = owner->Open();
   if (!opened) {
     if (opened.error() == CatalogError::kResource)
@@ -64,6 +68,7 @@ std::expected<std::unique_ptr<JamLease>, JamLockError> JamLease::Acquire(std::sh
   } cleanup{owner.get()};
   if (write && !owner->writable)
     return std::unexpected(JamLockError::kReadOnly);
+  WorkTimer byte_lock_wait(&WorkMetrics::jam_byte_lock_wait_ns);
   for (;;) {
     if (cancellation.stop_requested())
       return std::unexpected(JamLockError::kCancelled);

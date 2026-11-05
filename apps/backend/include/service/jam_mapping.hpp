@@ -6,9 +6,18 @@
 
 #include "domain/error.hpp"
 #include "domain/pagination.hpp"
+#include "service/request_context.hpp"
 #include "storage/jam_access.hpp"
 namespace fidoback::service {
 inline domain::ApiError JamError(const storage::JamAccessError& error) {
+  // The JAM reader uses kReadError when its activity callback interrupts a read.
+  // Preserve the request outcome, while active requests still report real I/O errors.
+  if (auto* jam = std::get_if<msgapi::JamError>(&error);
+      jam && *jam == msgapi::JamError::kReadError && !RequestActive()) {
+    if (std::chrono::steady_clock::now() >= RequestDeadline())
+      return {domain::ErrorCode::kDeadline, "Request deadline exceeded", {}};
+    return {domain::ErrorCode::kCancelled, "Request cancelled", {}};
+  }
   if (auto* jam = std::get_if<msgapi::JamError>(&error); jam && *jam == msgapi::JamError::kResourceLimit)
     return {domain::ErrorCode::kResource, "Message exceeds read resource limit", {}};
   if (auto* catalog_resource = std::get_if<storage::CatalogError>(&error);

@@ -1,5 +1,5 @@
 #pragma once
-
+#include <atomic>
 #include <chrono>
 #include <map>
 #include <mutex>
@@ -93,7 +93,8 @@ private:
   };
   struct CachedFile {
     UueAttachment attachment;
-    std::string user, bytes;
+    std::string user;
+    std::shared_ptr<const std::string> bytes;
     std::vector<std::string> fingerprints;
     std::chrono::steady_clock::time_point expires;
   };
@@ -108,8 +109,10 @@ private:
   MessageService messages_;
   std::function<std::chrono::steady_clock::time_point()> clock_;
   UueConfig config_;
+  std::atomic<uint64_t> in_flight_bytes_{0};
   std::mutex mutex_;
   std::map<std::string, CachedIndex> index_;
   std::map<std::string, CachedFile> files_;
+  std::vector<std::pair<std::weak_ptr<const std::string>, std::string>> live_payloads_;
 };
 }  // namespace fidoback::service

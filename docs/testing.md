@@ -2711,3 +2711,688 @@ Flutter-тестов прошёл (666 успешных, 2 существующ�
 `git diff --check`, `openspec validate adaptive-client-layouts --strict` — успешно.
 Backend-проверки не запускались: сервер и контракты не менялись. Изменение
 не коммитилось, не публиковалось и не архивировалось в рамках apply.
+
+## Счётчики личных и локальных областей в избранном (2026-11-05)
+
+Избранное использует серверный unreadCount для читаемых NetmailArea и LocalArea,
+включая personal.mail и персональные ящики. Положительное число выделяется как у эх,
+известный ноль показывается явно, неизвестная статистика обозначается «—» с доступным
+названием. Неподдерживаемый формат сохраняет прежнее объяснение и запрет открытия.
+Общий каталог при showStatistics=false не показывает ни числа, ни прочерка.
+Расширение не добавляет индикаторы областям без права чтения и Bad/Dupe/Robots.
+
+`conference_card_test.dart`: 21 проверка прошла, включая состояния обоих новых типов
+и отрицательные сценарии. Семантика серверной прочитанности, ACL и протокол не меняются.
+Дальнейшие результаты интеграции экрана и общих проверок записываются после выполнения.
+
+Смешанное избранное: 16 сочетаний нового API/legacy fallback, ширины 320/1280,
+светлой/тёмной темы и масштаба 1.0/2.0 прошли. Проверены обычная NetmailArea,
+персональный ящик, LocalArea personal.mail, локальная область с другим именем,
+неизвестная статистика и эха; действие удаления закладки не перечитывает список.
+Новый API запрашивается с bookmarked_only=true и omit_statistics=false.
+PNG `favorite-private-*` сохранены в ignored `apps/frontend/build/adaptive-appearance/`;
+визуально просмотрены узкий/широкий экраны, ноль, прочерк и положительные числа.
+
+`catalog_return_test.dart`: 21 проверка прошла, включая 15 сценариев обычного Netmail,
+персонального ящика и personal.mail. Чтение даёт видимый 0, отметка непрочитанности — 1;
+ошибка точечного обновления допускает повтор, поздний ответ не восстанавливает данные
+прежней сессии, отказ доступа удаляет строку. Контролируются RPC: обновляется только
+затронутая область, полный список повторно не загружается (смена сессии ожидаемо
+загружает список нового пользователя). Production-путь уведомлений не менялся.
+
+Итоговые проверки: `flutter pub get` выполнен; `flutter analyze --no-pub` — без
+замечаний; `flutter test --no-pub` — 712 успешных, 2 существующих необязательных
+пропуска. Форматирование изменённых Dart-файлов, `git diff --check` и строгая
+валидация OpenSpec пройдены. В коде приложения изменено только условие отображения
+в ConferenceCard; механизм получения/актуализации статистики, сервер, protobuf,
+зависимости, ACL и правила навигации не менялись. Проверки выполнялись локально
+на FakeTransport и Flutter widget tests; живые ответы amster2, установка клиента
+на реальные устройства и развёртывание в рамках этого apply не проверялись.
+
+## Hardening: recovery, 5 ноября 2026
+
+`JamWriter::Recover` больше не разыменовывает отсутствующий physical owner для сохранившегося ID области с форматом Squish/MSG. Незавершённая операция сохраняется в карантине; отказ SQLite распространяется и оставляет pending. Шесть постоянных регрессий сохраняют настоящий journal, переоткрывают metadata и проверяют неизменность трёх JAM-файлов для Squish/MSG/удалённой области и отказа записи карантина.
+
+Debug build и `ctest --test-dir build/backend -R 'MissingRecoveryOwner|JamRecoveryTest|JamLock|JamAccess' --output-on-failure --parallel 4`: 40/40. CLI LLDB использован как fallback после ранее подтверждённых таймаутов MCP; результат отдельного запуска записан в локальный `/tmp/ffido-apply-recovery-lldb.log`. Рабочие базы не использовались.
+
+### Hardening: client session lifecycle
+
+В `ApiClient` подтверждённый Login проверяет актуальность после retirement и перед возвратом; clear/logout/dispose инвалидируют прежний вход. Серверный отзыв выполняется отдельным каналом и не отменяет новый вход. `SessionManager` использует общий для клиента порядок storage writes и версию намерения; поздний read/write не отменяет выход.
+
+Новые регрессии используют completers, разные manager и настоящий локальный gRPC для retirement. `flutter analyze --no-pub` с Flutter 3.47.7 — без замечаний. API/session + Settings/profile/startup tests: 68/68. Dart MCP `run_tests` отказал из-за SDK 3.11.4 против ^3.13.0, поэтому использован закреплённый CLI. `list_running_apps` вернул пустой список: hot restart/runtime не выполнены.
+
+### Hardening: backend, измерения и ресурсы
+
+Синтетические fixture используют только временные JAM/SQLite и loopback gRPC.
+Команды: `ctest --test-dir build/backend -R 'CatalogStatisticsAndRegistryPerformanceFixture|UueChunkPerformanceFixture|ExclusiveProbeUnderSustainedReaders' -V`.
+Каждый C++ CTest ограничен watchdog 300 с; process helper отдельно ограничивает
+ожидание завершения дочернего MCP десятью секундами (как чтение ответа);
+отдельные output-failure tests требуют завершения за три секунды.
+
+Для каталога сохранено по 20 samples каждого размера. Локальные raw logs:
+`/tmp/ffido-apply-stats-before.log`, `/tmp/ffido-apply-stats-after.log`.
+Числа ниже — миллисекунды p50/p95, Debug Darwin arm64, не production SLA.
+
+| Workload | До | После |
+| --- | ---: | ---: |
+| Registry Build, 100 областей | 5.161 / 5.521 | 5.347 / 5.760 |
+| Registry Build, 1000 областей | 68.657 / 70.136 | 61.913 / 63.524 |
+| Registry Build, 5000 пустых областей | 599.276 / 611.924 | 334.875 / 361.637 |
+| Statistics, 1 область × 10000 сообщений | 90.763 / 93.987 | 25.843 / 26.583 |
+| Statistics, 100 областей × 100 сообщений, page 20 | 21.059 / 21.505 | 8.619 / 9.075 |
+| Statistics, 1000 областей × 100 сообщений, page 20 | 29.792 / 30.107 | 18.202 / 18.674 |
+
+Read status теперь считается по точным live message numbers, user и generation
+пакетами по 100. Вычисленное по исходникам число read-status SQL statements:
+10000→100 для hot area, 2000→20 для page20×100. Это не trace измерение всех SQL.
+Тест проверяет 201 live ID, устаревший ID, другого пользователя/generation,
+несортированный/повторный ввод и отмену; service regression помечает удалённое
+письмо прочитанным и проверяет точный unread. Реестр physical owners чистится
+один раз до Build, а не при каждом элементе. Alias/coordination tests сохранены.
+
+Независимые archive cursor имеют собственные mutex и shared lifetime; глобальный
+registry больше не удерживается при JAM IO. Все активные/удалённые из registry,
+но ещё используемые scans учитываются atomic reservation в прежних пределах
+32 МиБ/cursor и 128 МиБ суммарно. Параллельный continuation того же cursor
+возвращает controlled resource error, не потребляя одну страницу дважды.
+`Archive|Mcp`: 36/36 focused tests прошли до общей приёмки.
+
+MCP regressions проверяют server-side cancellation до освобождения stdout,
+целые JSON после возобновления чтения, ping, EPIPE, flood и EOF с pending output.
+Prepare двух draft одновременно достигает test backend; lost reply/restart и
+concurrent same-draft send используют прежний durable operation ID.
+Отмена UUE waiter при заблокированном owner раньше не освобождала waiter до
+release (baseline `/tmp/ffido-apply-wait-before.log`), после изменения освобождает.
+Общий helper не переустанавливает absolute deadline и проверяет отмену после
+захвата mutex. Focused UUE/Crosspost/MCP: 69/69 на этом этапе.
+
+UUE payload стал shared immutable: Chunk копирует только возвращаемый slice,
+а повторная ACL/fingerprint/source проверка сохранена. Суммарные копии payload
+при полном чтении F: прежние K×F snapshots плюс slices → F slices; это вывод из
+кода, не allocator counter. Weak live-payload accounting не позволяет TTL/prune
+выдать quota уже удерживаемого reader байтам. Отдельная regression удерживает
+reader на JAM lease, переводит fake clock через TTL, проверяет отказ quota и
+повторное принятие после release. Восемь focused UUE tests прошли.
+
+UUE benchmark: F=4096 и 1048576 (default maximum), chunks 16384/65536, Q=1/4/16,
+искусственные sources (для 1 МиБ — 45 частей), deadline каждого Chunk 5 с.
+Raw logs `/tmp/ffido-apply-uue-before.log` и `/tmp/ffido-apply-uue-after.log`
+содержат samples, completed/error codes и process high-water RSS (на Darwin байты).
+До/после наблюдались около 72.8/56 МиБ peak RSS; фоновые сборки различались,
+поэтому это не контролируемое доказательство изменения latency. Перевал за
+5-секундный deadline при Q16 вызывает deadline и последующие cache misses;
+он записан как отказ, а не успешная обработка. Cached quotas и output queue
+не эквивалентны RSS: Assemble decoder, protobuf, JSON и allocator имеют отдельный
+lifetime. Полный in-flight admission эксперимент ещё не завершён.
+
+EX-probe на временном coordination inode при четырёх непрерывных SH readers:
+один запуск 20 probes дал p50 183 мс, p95 201 мс, 10 timeout из 20 при бюджете
+200 мс. Это подтверждает риск starvation на искусственной нагрузке, а не
+поведение настоящего HPT. Протокол flock и порядок source/target не изменены.
+
+### Hardening: sanitizer install и диагностическая среда
+
+Instrumented ffido-mcp получает INSTALL_RPATH к соответствующим instrumented
+gRPC/protobuf; это локальная sanitizer stage, не переносимый release package.
+Debug и ASan `McpInstall` focused прошли; startup probe требует exit 2 и Usage,
+а loader failure остаётся ошибкой с returncode и ограниченным stderr.
+Два новых Python negative/positive tests прошли; release suite 101 tests,
+update suite 64 tests прошли на этапе до финальной приёмки.
+
+Host Dart MCP остаётся на Dart 3.11.4 и отказал в focused run_tests. Plugin host
+должен быть перезапущен с Flutter SDK `/Users/yurik/development/flutter-3.47.7`
+первым в PATH (Dart 3.13.5), затем заново добавить root `apps/frontend`, проверить
+версии и выполнить analyze_files/run_tests. Repo SDK constraints не ослаблены;
+в проектной `.codex/config.toml` нет настройки этого plugin-owned сервера.
+CLI fallback выполняется из `apps/frontend`: `flutter pub get --enforce-lockfile`,
+`flutter analyze --no-pub`, `flutter test --no-pub` с указанным SDK.
+LLDB MCP ранее давал timeout; recovery проверен CLI LLDB на тестовом процессе.
+
+Android `adb devices` не показал подключённых устройств; recreation/detach,
+сохранение UUE и installer callback на устройстве не проверены. Native lifecycle
+задача пересекается с `add-managed-updates`; её checklist не изменялся.
+У macOS seenMessages живёт вместе с watcher, Android pending callbacks требуют
+отдельной проверки lifecycle; эти риски не объявлены устранёнными.
+
+### Hardening: footer snapshots и окончательное закрытие редактора
+
+Standalone Dart probe с закреплённым SDK выполнил 20×10000 операций: до правки
+map удерживал 10000 завершённых snapshot entries до смены epoch. После явного
+`forgetCompleted` на окончательном успешном закрытии редактора остаётся ровно
+одна deliberately uncertain операция. Epoch удаляет и её. Raw samples:
+`/tmp/ffido-apply-footer-memory.log`, `/tmp/ffido-apply-footer-memory-after.log`.
+Probe использовал dart:mirrors только для наблюдения приватной map, не менял
+production API ради счётчика. Standalone preferences возвращают null footer;
+живой Flutter snapshot/uncertain retry проверен отдельной регрессией с изменением
+настроек и 10000 завершений. RSS процесса включает JIT/allocator и не равен
+retained bytes map; отдельный steady-state heap dump не снимался.
+
+Cleanup вызывается редактором непосредственно перед успешным Navigator.pop,
+после всех awaits и проверки mounted/epoch. Repository сам не очищает snapshot
+после ответа RPC: известный успешный ответ тоже можно повторить с тем же ID.
+Частичная UUE/crosspost операция и ошибки сохраняют snapshot. Focused footer,
+message/UUE repositories: 24/24; analyze без замечаний; полный Flutter test после
+этого изменения: 724 успешных, 2 существующих необязательных пропуска.
+
+### Hardening: CancelMonitor baseline
+
+`CancelMonitorTest.OfferedConcurrencyThreadCpuAndCancellationFixture` предлагает
+1/16/64 вызова с 64 server slots; по 20 samples, окно CPU 100 мс после 100 мс
+settle, временная JAM lease удерживается до отмены. Raw samples:
+`/tmp/ffido-apply-monitor-tests.log`. Whole-process CPU median: 0.320/5.002/12.894
+мс за 100 мс; median thread count под нагрузкой: 19/64/178. Это сумма gRPC,
+клиентских async threads и CancelMonitor, не изолированный CPU monitor.
+Client-cancel p95: 0.158/0.304/6.370 мс. При Q64 395 из 1280 запросов были
+RESOURCE_EXHAUSTED; быстрые отказы не включены в latency успешной отмены.
+В этом fixture не доказывается одновременное admission всех предложенных RPC
+или время освобождения server slot по client status. Строгая server-side отмена
+проверяется отдельными UUE/Crosspost/MCP barriers до release owner.
+
+CancelMonitor оставлен: baseline показывает расходы всего процесса и насыщение,
+но не доказывает выгоду конкретной замены poll thread без изменения deadline и
+shutdown semantics. Replacement/shared scheduler не вводился спекулятивно.
+
+### Hardening: контрольные эксперименты
+
+Для проверки причин R1/R4 временно собраны два локальных baseline: прежний
+`server.cpp` из HEAD и удержание общего archive registry во время IO с try-lock,
+как до изменения. Регрессии на baseline отказали ожидаемо: backend не получил
+cancellation при заполненном stdout; независимый cursor получил 20/20 resource
+errors. После эксперимента исходники и обычные binaries восстановлены, те же
+сценарии прошли: archive 0/20 отказов, p50/p95 independent call около 0.39/0.55 мс.
+Raw `/tmp/ffido-apply-control-before.log`, `/tmp/ffido-apply-control-after.log`;
+baseline archive моделирует прежнюю гранулярность lock, сохраняя новую memory
+reservation, и не является полной сборкой старого commit.
+
+20 чередующихся пар UUE fixture (1 МиБ, 45 sources, chunk 64 КиБ, Q1) выполнены
+на той же машине без sanitizer. Baseline копирует полный immutable payload под
+cache mutex при каждом Chunk, воспроизводя прежнюю K×F стоимость; остальной
+код одинаков. p50: 601.141→606.500 мс; p95: 680.635→662.415 мс; 0 ошибок в обоих
+наборах. Peak RSS median 51.57/51.68 МБ (десятичные байты): данный опыт не
+доказывает улучшение peak RSS, который включает подготовку multipart.
+Критерий отсутствия ухудшения p95 более 10% на выбранном paired fixture выполнен;
+устранение K полных payload copies подтверждается различием единственного
+участка кода. Raw `/tmp/ffido-apply-uue-paired-copy-baseline.log` и
+`/tmp/ffido-apply-uue-paired-optimized.log`. Временные variants не включены в diff.
+
+В дополнение к первоначальным focused tests прошли: cancel Upload другой операции
+того же user, вычисленный второй user того же из 64 stripes, независимый bucket,
+Crosspost waiter до release owner, duplicate active request ID, три send одного
+draft, archive call одновременно с заблокированным Prepare. RequestLock tests
+проверяют already-cancelled/expired budget и неизменяемый absolute deadline.
+
+TSan полный повтор выявил слишком короткий новый общий process-watchdog:
+`TenMiBExistingBodyStillUsesSmallArchiveBlocks` получил правильный ответ, но
+`Finish` с прежним новым пределом 3 с не дождался exit. В самом `main.cpp`
+предусмотрено до 5 с на `GrpcRuntime::Shutdown` после Serve. Общий helper приведён
+к 10 с, как watchdog чтения ответа; exit code по-прежнему проверяется. Отдельные
+EPIPE/flood/EOF output-failure tests сохраняют явно заданные 3 с, а cancel barrier
+остаётся 1 с до release owner. Это не изменение RPC deadline или writer drain
+(250 мс); окончательный TSan gate после правки ещё требуется.
+
+### Hardening: SQLite bulk и контрольные RPC
+
+Постоянные fixtures: `SQLiteStoreTest.BulkReadContentionSeparatesExternalBusyAndMetadataWait`
+и `BulkMetadataGrpcTest.BulkTransactionAndExternalWriterControlRpcLatencyFixture`.
+По 20 samples без внешнего writer и с внешней транзакцией, удерживаемой 50 мс;
+10000 live read-status rows, один atomic receipt, два пользователя, параллельные
+ValidateToken/bookmark/small read и настоящие loopback TLS RPC RestoreSession,
+AddBookmark, GetConference. `sqlite3_trace_v2` ставится только тестовым helper на
+создаваемое временное соединение и снимает SQL count/PROFILE BEGIN. Trace не
+печатает SQL bindings или токены. Pre-SQL time — ожидание C++ mutex плюс подготовка
+statement, отдельно от PROFILE времени SQLite BEGIN; это не сумма взаимоисключающих
+интервалов (другие threads ожидают C++ mutex одновременно с busy owner).
+
+| Workload (мс p50/p95) | До | После |
+| --- | ---: | ---: |
+| Bulk 10000, без внешнего writer | 22.456 / 23.090 | 20.698 / 21.459 |
+| Bulk 10000, внешний writer | 105.151 / 113.584 | 105.850 / 112.768 |
+| RestoreSession RPC p95, без writer | 23.855 | 21.554 |
+| AddBookmark RPC p95, без writer | 23.849 | 21.546 |
+| GetConference RPC p95, без writer | 23.948 | 21.686 |
+| GetConference RPC p95, внешний writer | 96.102 | 96.709 |
+
+Сохранено 10004 SQL statements на bulk: оптимизация не притворяется уменьшением
+их числа. Число привязок user/conference/generation сокращено 30000→3; reset
+сохраняет эти bindings, изменяется только message_id. BEGIN/COMMIT, receipt и
+проверка отмены каждой строки сохранены. Throughput без внешнего writer примерно
+445→483 тыс. отметок/с по median, без отказов. Внешний writer остаётся главным
+источником задержки: PROFILE BEGIN p50/p95 baseline 74.5/80 мс из-за backoff
+SQLite busy handler, хотя блокирующая внешняя транзакция держится 50 мс.
+Auth выполняется до slots по исходникам Dispatch, поэтому admission не ограничивает
+её ожидание metadata mutex. Пул соединений и partial bulk commits не вводились.
+
+Raw: `/tmp/ffido-apply-bulk-before.log`, `...bulk-after.log`,
+`...bulk-rpc-before.log`, `...bulk-rpc-after.log`. Baseline RPC измерен отдельной
+временной сборкой прежнего участка sqlite_store.cpp; затем исходник и бинарник
+восстановлены. Bulk/rollback/SQL failure/receipt/two-user и RequestLock tests:
+12/12 на этом этапе.
+
+### Hardening: output queue memory probe
+
+20 отдельных MCP процессов с искусственным token и неиспользуемым loopback
+endpoint выполняли initialize, 28 tools/list без чтения stdout, затем flood 100
+запросов. Ни один RPC или публикация не выполнялись. Каждый процесс завершился
+с exit 1 за менее трёх секунд; RSS до/во время pending output и время exit
+сохранены в `/tmp/ffido-apply-output-memory.log`. Это наблюдение отдельного
+workload; 4 МиБ/32 строки проверяются устройством writer и protocol regressions,
+а не объявляются общим RSS лимитом. После exit ресурсы освобождает ОС.
+
+### Hardening: fsync черновиков MCP
+
+Test-only shared interposer (`tests/support/mcp_sync_fault.cpp`) инжектирует один
+EIO на fsync временного файла только в явно выбранном синтетическом state_dir и
+только для prepared/attempted/completed. Он загружается через environment только
+дочернего тестового MCP, не устанавливается и не меняет production SaveSecret.
+Prepare error не создаёт публикацию; attempted error не вызывает CreateMessage;
+completed error оставляет повтор прежнего draft/operation ID без дублирования.
+После ошибки удаляется временный файл, следующий fsync разрешён, повтор успешен.
+Три concurrent send также возвращают одно сообщение. Focused MCP: 21/21.
+
+### Последовательное повторное применение от v1.0.23, 5 ноября 2026
+
+Рабочая база — stable 0ab3af60f0ae42f8ef92c0fa65e01de8a5999fcb, отдельный
+worktree ffido-revalidate. Сначала применены только счётчики conference-browsing:
+Flutter 3.47.7 pub get --enforce-lockfile, analyze, 712 tests (2 прежних optional
+skips), check_dart.py --check — успешно. Debug build с publication-deps prefix
+и OpenSSL 3, HPT check_ctest.py — 475/475 без skipped. check_cpp.py прошёл
+111 файлов/57 translation units. Python update/release suites — 64/99.
+Свежий CMake сначала выбрал системный OpenSSL 4 вместо OpenSSL 3 подготовленного
+gRPC; конфигурация исправлена теми же explicit OPENSSL paths, что в исходном
+Debug cache. Код ради окружения не менялся.
+
+Затем перенесён зафиксированный hardening. Первая полная Debug/HPT проверка:
+501/502; новый serialization probe завершался exit 1 после gRPC cleanup deadline.
+Focused воспроизведение подтвердило дефект helper: Client оставался жив во время
+GrpcRuntime::Shutdown. Scope приведён к production main.cpp; production Serve
+не менялся. После исправления — 10 focused повторов подряд и полный HPT gate
+502/502 без skips. ASan-первый прогон использовал прежний helper и требует
+пересборки; его результат не объявляется успешным.
+
+Свежий output probe: /tmp/ffido-sequential-output-probe.py, 20 процессов
+Debug ffido-mcp, только synthetic token и loopback endpoint без RPC/публикаций;
+raw: /tmp/ffido-sequential-output-memory.log. Initialize → 28 tools/list без
+чтения stdout → flood 100 запросов. Каждый завершился exit 1 в пределах 3 с.
+Максимальный наблюдавшийся RSS и p95 exit приведены ниже; это не общий предел
+памяти процесса. На этом промежуточном этапе очередь включала текущую запись: 4 MiB/32 сообщения;
+serialization mutex допускала один dump, до четырёх worker сохраняли результаты.
+Ниже описана последующая регрессия ping → cancel и исправленная модель writer.
+Regressions проверяют EPIPE/EOF/flood, целостность JSON и доставку cancel backend
+при удерживаемом serializer до release, с внешними watchdog и cleanup.
+
+Output probe: max RSS 23281664 байт; p95 flood exit 50.21 мс.
+
+### Native lifecycle при повторном hardening
+
+Android API 24 ARM64, отдельный одноразовый AVD `ffido-sequential-24`, только
+`emulator-5588`: `test_android_flow.py --process-restart --native-lifecycle`
+с Java 17.0.21+9 и release QA APK A/B прошёл все 11 сценариев. Артефакт:
+`build/hardening-native/android-qa-final/result.json`. Синтетический QA сертификат,
+не production manifest/certificate и не проверка Play Protect. Подключённый
+личный телефон не использовался. После проверки эмулятор остановлен.
+
+Подтверждён и исправлен повтор terminal callback при уничтожении Activity:
+`recover` и поздний `installResult` могли оба вернуть cancelled. AndroidUpdater
+теперь дедуплицирует уже переданный terminal result в текущем экземпляре;
+новый install сбрасывает отметку, сохранённый результат остаётся доступен после
+перезапуска процесса. В тесте Activity действительно DESTROYED, AMS always-finish
+включён test-only Java helper и восстановлен cleanup. Проверены recovery ровно
+одного результата, сохранность preferences/session, отказ от document picker
+без ложного успеха, повторная отмена document picker, process restart и A→B.
+Код сохранения документа не менялся: Back сначала закрывает клавиатуру, поэтому
+harness ожидает закрытия DocumentsUI, а не принимает первый Back за cancellation.
+
+macOS XCTest с настоящим filesystem watcher воспроизвёл накопление имён удалённых
+IPC-файлов: 20 циклов до исправления давали 20 ошибок. После intersection
+`seenMessages` с текущими файлами все 20 циклов и освобождение weak updater
+прошли. Production macOS release build также успешен. Постоянный runner:
+`python scripts/update/test_macos_lifecycle.py --frameworks
+apps/frontend/build/macos/SourcePackages/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64`.
+Runner компилирует production Swift и тот же RunnerTests XCTest во временный
+каталог, не запускает пользовательский Flutter профиль. В CI добавлен этот gate;
+Android smoke включает native-lifecycle и закреплённую Java 17.
+
+Локально доступен Xcode 27.1 (27A9275), AppleClang 21; закреплённый в CI Xcode
+26.3 отсутствует. Это проверка локальным SDK, а не заявление о прохождении
+официальной матрицы Xcode 26.3. Linux/Windows native paths не менялись и здесь
+не собирались. Результаты не заменяют production-device/Play Protect gate из
+`add-managed-updates`: новый change и его задачи не создавались и не дублировались.
+
+### Полная матрица каталога: 20 повторов до/после
+
+Debug, AppleClang 21/Xcode 27.1, один Mac, одинаковые закреплённые publication-deps
+и OpenSSL 3; без эмулятора и параллельной сборки. Baseline в отдельном
+`build/hardening-baseline/source`: conference_service.cpp, sqlite_store.cpp и
+jam_catalog.cpp от v1.0.23, с теми же test-only наблюдателями. Неиспользуемый
+новый pure-virtual SQLite метод реализован в baseline адаптером через старый
+IsMessageRead; baseline ConferenceService продолжает вызывать прежний путь.
+Это контролируемое сравнение этих трёх компонентов, не полный checkout старого
+backend с новыми ABI. TLS WorkScope включается только fixture, без изменения RPC.
+
+Команда: `build/backend/apps/backend/fidoback_tests
+--gtest_filter='Matrix/CatalogWorkloadTest.*'`. Семь параметров: 1/100/1000
+областей × 100/10000 писем, отдельно Build на 5000 пустых областях. Каждый Build
+создаёт свежий registry, каждый GetConferences возвращает страницу максимум 20
+областей с точными counters. Первое чтение и 19 повторов сохранены по отдельности;
+«cold» означает новый application registry, OS page cache не сбрасывается.
+Raw до/после: `build/hardening-validation/catalog-{before,after}.log`.
+Все 7 fixtures прошли в обеих сборках; p50 — median, p95 — nearest-rank 19/20.
+
+| Областей × писем | statistics p50/p95 до, мс | после, мс | SQL до → после |
+|---|---:|---:|---:|
+| 1 × 100 | 0.981 / 1.022 | 0.391 / 0.426 | 103 → 4 |
+| 1 × 10000 | 93.113 / 95.919 | 25.653 / 26.550 | 10003 → 103 |
+| 100 × 100 | 22.021 / 22.258 | 8.271 / 8.405 | 2140 → 160 |
+| 100 × 10000 | 1947.694 / 1991.083 | 511.558 / 513.371 | 200140 → 2140 |
+| 1000 × 100 | 31.153 / 31.541 | 18.137 / 18.359 | 3040 → 1060 |
+| 1000 × 10000 | 1962.059 / 1978.012 | 521.161 / 522.417 | 201040 → 3040 |
+
+JAM чтение намеренно не исчезло: для 20 × 10000 писем в обоих вариантах
+600020 pread / 32020480 байт / 60 открытий companion files. Для 20 × 100 —
+6020 / 340480 / 60. Raw сохраняет mutex_wait_ns и byte_lock_wait_ns для каждого
+из 20 повторов; это ожидание конкретных lock, не физический disk I/O. Увеличение
+числа областей не увеличивает JAM чтение beyond page, но metadata проверка
+доступных областей по-прежнему зависит от их количества.
+
+Build 5000: p50/p95 614.969/665.476 → 325.164/327.861 мс, 15000 успешных JAM
+companion opens в обоих вариантах. Для 1000 × 10000: 70.880/75.212 →
+58.356/59.697 мс. На одной области микроизмерение Build было 0.109/0.128 →
+0.136/0.174 мс; это не улучшение данного малого workload. Оптимизация выбрана
+по нагруженным registry и statistics, а не обещанию ускорения каждого вызова.
+
+Q=1/16/64 измерены отдельно с общим исходным 5-секундным budget каждого запроса,
+индивидуальными timings/status/work counters. На 100/1000 × 10000 при Q16/Q64
+оба варианта исчерпали deadlines у всех запросов: ускорение serial statistics
+не решает contention массовых точных counters. На 1 × 10000 при Q64 baseline
+13/64 ошибок, после 0/64. Остальные случаи — без ошибок. Быстрые отказы не
+засчитываются как throughput. Точные counters оставлены избранному; общий лёгкий
+каталог использует существующий omit_statistics, без чтения JAM headers.
+
+### UUE: копирование payload и границы рабочей памяти
+
+Постоянный параметризованный benchmark:
+`--gtest_filter='Matrix/UueWorkloadTest.UueChunkPerformanceFixture/*'`.
+4 КиБ и 1 МиБ проверяют полную передачу с chunk 16384/65536, Q=1/4/16;
+1 МиБ покрыт одиночным историческим source (body около 1.4 МиБ, в пределах
+read limit 10 МиБ) и multipart Upload/Commit. Максимум в конфигурации fixture —
+16 МиБ, part_body 256 КиБ, max_parts 1024, user/global quota 64/128 МиБ.
+Для 16 МиБ создаются 89 обычных синтетических numbered legacy messages;
+проверяется полный Assemble/SHA и Chunk начала/середины/конца/EOF, отдельно
+каждая пара chunk/Q в шести cases. Это boundary microbenchmark, не полная
+передача 16 МиБ. Одиночный source 16 МиБ не допустим существующим read limit;
+этот предел не увеличивался. Max cases явно используют разрешённый 60-секундный
+request budget, остальные — 5 секунд. Внешний watchdog каждого case — 300 секунд.
+
+Изначальный max-fixture тратил время на Upload/Commit manifest serializer;
+CLI LLDB собственного fixture показал повторный manifest.dump в Commit.
+Это отдельная работа, поэтому генерация max historical sources исключает её
+из Chunk benchmark. LLDB MCP не подключён; стек:
+`/tmp/ffido-sequential-uue-max-stack.log`. Рабочие процессы не отлаживались.
+
+Для причинного сравнения проведены 20 пар fresh processes, чередуя до/после:
+`FFIDO_UUE_SINGLE_SAMPLE=1` и filter с suffix `/1` (multipart 1 МиБ,
+chunk64 КиБ, Q1). В baseline только в Chunk возвращена копия всего immutable
+payload под cache mutex; все проверки sources/deadlines/quota одинаковы.
+Обе стороны передали все байты, проверили SHA/EOF, без ошибок запросов.
+Baseline специально нарушает новый EXPECT payload_copy_bytes == returned bytes
+и завершается exit1 ровно из-за этого утверждения; его нельзя выдавать за
+прошедший regression suite. Все 20 optimized процессов завершились exit0.
+Raw: `build/hardening-validation/uue-{before,after}-NN.log`.
+
+| Метрика на полную передачу 1 МиБ | До p50/p95 | После p50/p95 |
+|---|---:|---:|
+| elapsed, мс | 637.242 / 645.889 | 636.930 / 649.713 |
+| payload copied bytes | 18874368 / 18874368 | 1048576 / 1048576 |
+| cache mutex hold, нс | 422416 / 564293 | 110688 / 157250 |
+| retained RSS после, байт | 51757056 / 53805056 | 51838976 / 52002816 |
+| process peak RSS, байт | 51789824 / 53837824 | 51871744 / 52035584 |
+
+JAM bytes 25925884, hash bytes 24795367, companion opens 2295 на передачу
+одинаковы: повторная проверка источников и прав не удалена. Throughput median
+около 1.57 МиБ/с в обеих версиях; p95 не ухудшился более 10%. Подтверждён выигрыш
+в копировании (18→1 МиБ) и удержании cache mutex, а не существенное ускорение
+всей операции. RSS отражает также allocator и исходные сообщения, поэтому
+сокращение copied bytes не приравнивается к такому же сокращению RSS.
+
+Бюджеты разделены:
+
+- Cached payload остаётся в user/global quotas, включая живые shared payload
+  после eviction. Chunk копирует только возвращаемый slice, максимум 64 КиБ;
+  повторная проверка одного historical body ограничена 10 МиБ. Число RPC
+  ограничено существующим server admission, это отдельный ресурс.
+- Assemble до чтения/parse/decode резервирует консервативный logical charge:
+  `8*max_file_bytes + 12*10MiB + 12*64KiB*max_parts`. Это учитывает capacities
+  decoder/streams, временные перекодировки source и bounded metadata. In-flight
+  cap — global_quota_bytes плюс один такой max charge, поэтому хотя бы одна
+  допустимая максимальная сборка помещается. Конкурирующие операции могут
+  получить RESOURCE_EXHAUSTED, без усечения или изменения max_file/part limits.
+  RAII освобождает reservation при успехе, ошибке, исключении и cancel.
+- Writer принимает JSON, один поток сериализует/пишет. До 32 сообщений;
+  logical 4 МиБ включает консервативную оценку retained JSON и двойной размер
+  serialized line, включая текущую запись. Ответ не более 512 КиБ; больший
+  заменяется явным RESOURCE_EXHAUSTED. Удержание active call продолжается до
+  enqueue, поэтому результатов вне очереди не больше четырёх.
+- Эти admission charges не являются общим RSS cap. Allocator high-water,
+  protobuf, входной JSON, source-validation и process/runtime учитываются
+  отдельно; RSS не обязан немедленно падать после освобождения объектов.
+
+`UueWorkingReservationsReleaseAfterSuccessErrorCancellationAndEof` удерживает
+реальную сборку барьером после reservation: проверяет quota rejection другого
+пользователя, release/retry после успеха/невалидного block/cancel, Chunk EOF и
+invalid offset. `InterruptedJamReadPreservesCancellationWithoutHidingActiveIoErrors`
+фиксирует ещё одну найденную причину INTERNAL: остановленный JAM Read возвращал
+общий ReadError. Теперь inactive RequestScope даёт CANCELLED/DEADLINE, а active
+I/O error и corruption остаются INTERNAL. Regression получен на настоящем
+временном JAM read, не подменой возвращаемого gRPC status.
+
+Writer regression дополнен ping перед cancel при занятом serializer: старый
+код задерживал reader на сериализации ping и не доставлял cancel. До правки
+focused test упал; после переноса сериализации в writer MCP suite 23/23.
+Near-limit escaped body дополнительно проверяет успешный ответ 384–512 КиБ,
+а превышение даёт явную ошибку и не ломает следующий запрос.
+
+### Текущая среда диагностики и проверки FE
+
+Для revalidation root Codegraph сообщил отсутствие индекса; новый индекс не
+создавался. Dart MCP получил root `ffido-revalidate/apps/frontend`; focused
+analyze_files conference_card завершился без ошибок, running apps отсутствуют.
+MCP run_tests использовал host Dart 3.11.4 и отказал по ^3.13.0, поэтому это не
+успешная MCP test-проверка. CLI fallback: явный
+`/Users/yurik/development/flutter-3.47.7/bin/flutter` (Dart 3.13.5), pub get
+--enforce-lockfile, analyze без замечаний и полный test — 724 passed, два прежних
+optional skips. `scripts/check_dart.py --check` — 197 файлов; pinned protoc36.2
+`tools/proto/generate.sh --check` — без diff. Generated и lock-файлы не менялись.
+LLDB MCP не подключён; применён CLI LLDB к своему UUE fixture, без attach к
+рабочим процессам. Hot reload/runtime/device MCP не выполнялись: приложения
+в соответствующей DTD-сессии не было.
+
+Python suites финально повторены Python 3.12.16 в отдельном build/update-venv,
+с точными release requirements: update 64/64, release 101/101. Более ранние
+результаты Python 3.15 выше — промежуточные, не замена закреплённой версии.
+`actionlint .github/workflows/build.yml`, strict validation hardening change и
+conference-browsing spec прошли. Production Android APK после QA снова собран
+штатным `flutter build apk --release` с pub resolution и Java17; тестовый driver
+не является production target. Последний macOS lifecycle runner также выполнен
+Python3.12: XCTest 1/1, внутри 20 create/remove циклов.
+
+Повтор output probe после переноса dump в writer: 20/20 управляемых exit1,
+max наблюдавшийся pending RSS 23511040 байт, p95 flood exit 75.22 мс.
+Raw: `/tmp/ffido-sequential-final-output-memory.log`. Это process workload,
+не гарантия RSS для произвольного инструмента.
+
+Полный Debug/HPT gate после этих правок: 519/519 без skips. Raw UUE
+из текущего CTest сохранён в `build/hardening-validation/uue-final-debug.json`.
+При 16 МиБ Assemble читает 23293920 JAM bytes, хеширует 63046384 bytes,
+267 companion opens; payload/SHA совпадают. Результаты boundary Chunk:
+
+| chunk | Q | completed/errors | elapsed, мс | copied bytes | RSS после, байт |
+|---|---:|---:|---:|---:|---:|
+| 16384 | 1 | 1/0 | 3542.0 | 49152 | 191315968 |
+| 16384 | 4 | 4/0 | 13700.1 | 196608 | 143458304 |
+| 65536 | 1 | 1/0 | 3529.7 | 196608 | 193134592 |
+| 65536 | 4 | 4/0 | 12925.5 | 786432 | 188776448 |
+| 16384 | 16 | 16/0 | 50041.0 | 786432 | 107790336 |
+| 65536 | 16 | 16/0 | 37826.7 | 3145728 | 101220352 |
+
+Остальные workload и индивидуальные error codes сохранены в raw вместе с
+cache_hold_ns, hash/JAM bytes, peak RSS. Эти max timings получены внутри
+полного CTest parallel2, а не используются как quiet speed comparison.
+
+В полном Debug workload 1 МиБ/chunk16 КиБ/Q16 оба source-варианта получили
+16/16 controlled errors при 5-секундном budget (состав уточнён ниже); chunk64 КиБ/Q16
+завершились 16/16. Это не выдаётся за успешную передачу всех режимов: suite
+проверяет отсутствие INTERNAL, отсутствие порчи и контролируемый deadline,
+а serial Q1 обязан завершиться. Результат показывает стоимость неизменённой
+source revalidation; её удаление ради benchmark в этот change не включалось.
+
+Внешний process sampler (`build/hardening-validation/process-samples.jsonl`)
+дополнительно наблюдал RSS и число потоков через ps раз в секунду. Для optimized
+каталога наблюдались до 65 потоков (64 callers и главный) — service не создаёт
+дополнительный thread на область. Sampler запущен посреди baseline, поэтому его
+RSS/threads baseline не используются как симметричное speed/memory сравнение;
+симметричные UUE RSS наблюдения приведены в таблице 20 пар выше.
+
+После промежуточных 519/519 Debug и 519/519 ASan/UBSan обнаружена ещё одна
+причина 404 в concurrent UUE workload: первый deadline source validation удалял
+общий cached payload, оставшиеся читатели теряли валидный attachment. Прежде
+зафиксированные 16/16 ошибки состоят из 1 DEADLINE и 15 NOT_FOUND, а не 16
+независимых deadlines. Проверка не скрыта, raw сохранён. Новая постоянная
+`UueValidationDeadlinePreservesPayloadForRetry` удерживает настоящий JAM owner,
+даёт Chunk исчерпать deadline внутри source validation (проверен mutex wait),
+освобождает owner и повторяет чтение. До правки retry падал, после — пять
+повторов подряд вместе с reservation regression проходят. CANCELLED/DEADLINE
+теперь сохраняют payload, следующий запрос заново проверяет sources/ACL;
+revocation, changed source и остальные ошибки по-прежнему инвалидируют cache.
+Промежуточный TSan на прежнем бинарнике остановлен после этой правки; его
+нельзя объявлять финальным успехом. Все три набора повторяются на 520 cases.
+
+Дополнительная проверка Android 35 нашла дефект нового harness, а не updater:
+современный installer полупрозрачен, нижняя FlutterActivity остаётся PAUSED и
+видимой, поэтому always-finish не уничтожает её. Доказано dumpsys. Harness
+открывает полноэкранные Settings, ожидает фактический DESTROYED, возвращается
+к installer и отменяет установку; это действительно recreation, без замены
+assert на «Activity отсутствует/неважно». Document picker допускает оба системных
+package names `.documentsui`; cleanup обрабатывает AOSP/Google installer.
+После правки Android35 прошёл 12/12 сценариев, Android25 — 11/11, с Python3.12
+и теми же disposable release A/B. Raw/results:
+`build/hardening-native/android-qa-35-fixed/result.json`,
+`build/hardening-native/android-qa-25/result.json`. Эмуляторы изолированы,
+always-finish восстановлен false, APK подписаны только QA ключом.
+
+Финальный повтор обновлённого harness на Android24 также прошёл 11/11:
+`build/hardening-native/android-qa-24-recheck/result.json`. Итого реальные
+изолированные installer/native lifecycle сценарии проверены на API24/25/35
+ARM64; это не Linux x86_64 CI emulator builds. Все три одноразовых эмулятора
+после работы остановлены. Личный Android и рабочий backend не затрагивались.
+
+После последней UUE правки Debug/HPT gate повторён полностью: 520/520 без skipped,
+310.60 с, CTEST_PARALLEL_LEVEL=2. Формат clang-format19.1.7 и check_cpp.py:
+116 файлов / 59 translation units, успешно. Локальный clang-tidy23.1.4 использует
+текущий Apple SDK; это не Linux clang19 CI. Новые diagnostics не подавлялись.
+Логи: `/tmp/ffido-sequential-verified-debug-{build,test}.log`,
+`/tmp/ffido-sequential-verified-cpp.log`. Python3.12 после изменения Android harness
+повторён: update64/release101 успешно, actionlint и strict OpenSpec validation
+также прошли. Исправление прерывания UUE не меняет normal Q1 copy benchmark:
+новая ветка срабатывает только при source CANCELLED/DEADLINE.
+
+Финальный ASan/UBSan 520-case прогон выявил ошибку изоляции CancelMonitor
+benchmark: 519 passed, один sample Q64 дал 64 RESOURCE_EXHAUSTED и 0 CANCELLED.
+Memory/UB diagnostics не было. Между burst тест ожидал лишь клиентские futures;
+это не гарантирует возврат backend handlers и освобождение slots. Следующий
+burst мог целиком встретить предыдущие активные handlers. EXPECT_GT(cancelled,0)
+сохранён, результат не превращён в skip или «допустимый любой status».
+Test-only gRPC proxy теперь считает вход/выход настоящего backend ListMessages;
+каждый sample ждёт всех входов и всех возвратов до освобождения удерживаемого
+JAM owner и следующего burst, с watchdog 1 секунда. Production CancelMonitor не
+менялся, diagnostic API не добавлялся. Debug focused: пять повторов по 60 samples
+(1/16/64 × 20), успешно. Полные наборы после исправления helper повторяются;
+предыдущий ASan прогон не объявляется успешным.
+
+CancelMonitor после server-completion barrier: пять focused повторов в каждом
+из Debug, ASan/UBSan и TSan прошли (примерно 67/68/83 с на пять повторов).
+Ни assertion, ни timeout не ослаблены, production монитор не заменялся.
+Последний полный Debug/HPT после этой правки: 520/520 без skipped, 210.55 с.
+Весь format-check повторён clang-format19.1.7; изменившийся test_grpc.cpp
+дополнительно проверен clang-tidy с текущей compilation database и Apple SDK.
+Остальные 58 translation units уже прошли полный check_cpp на неизменённом коде.
+Логи final acceptance имеют префикс `/tmp/ffido-sequential-accepted-`.
+
+Последний полный ASan/UBSan/HPT после исправления benchmark: 520/520 без skips,
+361.38 с, installed McpInstall и новый UUE retry regression прошли. Matching
+instrumented dependency prefix сохранён; suppressions/ослабление diagnostics не
+добавлялись. Предыдущий 519/520 failure остаётся описан выше как исходный дефект
+helper, не как успешный sanitizer результат. Raw финального набора:
+`/tmp/ffido-sequential-accepted-asan-test.log` и `build/backend-asan/ctest-release.xml`.
+
+Два optional Flutter E2E, ранее пропущенные только из-за отсутствия env, отдельно
+выполнены на финальном Debug backend и закреплённом HPT: 2/2, без skips (4 с).
+Команда из apps/frontend с Flutter3.47.7:
+`FFIDO_E2E_BACKEND=/absolute/path/build/backend/apps/backend/fidoback
+FFIDO_TEST_HPT=/absolute/path/pinned/hpt flutter test
+test/api/private_areas_e2e_test.dart test/api/point_mailboxes_e2e_test.dart`.
+Для cert helper выбран OpenSSL3 в PATH. Проверены реальный TLS transport,
+изоляция owner/двух points, durable mail/restart и HPT export/import; bulk mark
+100000 сообщений около 510 мс. Все базы/сертификаты только временные. Итого
+покрыты 724 обычных FE теста и оба optional E2E; полный набор не выдаётся за
+один запуск 726 tests, это два проверенных запуска. Raw:
+`/tmp/ffido-sequential-accepted-flutter-e2e.log`.
+
+Последний полный TSan/HPT: 520/520, без skips и ThreadSanitizer warnings,
+838.85 с. Оба Q16 max16MiB cases завершились за 153.19/168.18 с внутри внешнего
+300-секундного watchdog, остальные cases также прошли. Установленный MCP,
+serialization/ping/cancel, fsync fault, UUE retry и archive tests не исключались.
+Логи: `/tmp/ffido-sequential-accepted-tsan-test.log`,
+`build/backend-tsan/ctest-release.xml`. Debug/ASan/TSan полные raw test logs
+сохранены в `build/hardening-validation/accepted-{debug,asan,tsan}-full-test.log`
+перед focused повторами, чтобы LastTest.log последующего CTest не затёр данные.
+
+После полных наборов восемь выбранных recovery/MCP/UUE/concurrency cases
+повторены `ctest --repeat until-fail:5` в Debug, ASan/UBSan и TSan: 8/8 в каждом
+окружении, каждый case прошёл все пять раз (120 исполнений всего). Проверены
+stale pending/quarantine/journal-unavailable, EX-probe при SH readers, UUE
+reservation/retry после deadline, durable concurrent send и ping-before-cancel
+при занятом serializer. Логи: `/tmp/ffido-sequential-accepted-{debug,asan,tsan}-repeat.log`.
+CancelMonitor дополнительно имеет собственные пять повторов в каждом окружении.
+
+Итог повторного применения: conference-browsing отдельно проверен на stable
+v1.0.23, затем hardening доведён до всех задач. Последние BE/HPT наборы:
+Debug 520/520, ASan/UBSan 520/520, TSan 520/520, ни одного skipped. FE724 +
+2 реальных E2E, Python64/101, Android24/25/35 native lifecycle, macOS release и
+watcher lifecycle проверены. Непроверенные конфигурации: официальный Xcode26.3
+(локально только27.1), Linux/Windows desktop builds и Linux x86_64 Android CI;
+production certificate/Play Protect acceptance не выполнялся. Это не выпуск
+релиза. Коммит, публикация и развёртывание на amster2 не выполнялись.
+
+### Release 1.0.24: Android35 CI follow-up
+
+Первый PR44 CI (42046956619, bb816df) прошёл все jobs, кроме native lifecycle
+Android35 x86_64. Packaged launch успешен, но после recreation тест сразу после
+tap Cancel делал am start FFIDO, не дождавшись OS callback. В артефакте новый
+Dart engine восстановил `pending`, cancelled не появился; лог показывает принудительное
+перемещение installer task в фон. Это не подтверждённая системная отмена, и
+принимать её за выполненную нельзя.
+
+Harness теперь повторяет нажатие только доступной системной кнопки Cancel
+при сохранённом pending/preparing и ждёт `cancelled`, записанный настоящим
+receiver в синтетические installer preferences. Только затем выводит FFIDO
+вперёд и сохраняет прежний assert ровно одного Dart cancelled результата.
+Unexpected terminal outcome и timeout остаются ошибками; skip/новых разрешённых
+status нет. Эти preferences читаются только на явно выбранном rootable QA
+эмуляторе, не содержат пользовательских credentials и не переписываются тестом.
+В CI-артефакты добавлены window.xml и activity-state.log для следующей диагностики.
+
+На Android35 ARM64 с размером 320×640/density160 полный новый сценарий прошёл
+12/12 на свежих release QA A/B текущего исходника. Result:
+`build/hardening-native/pr44-cancel-ack-small35-final/result.json`. Emulator settings
+восстановлены, одноразовый emulator остановлен. Python3.12 update64/release101,
+actionlint и diff-check прошли. Production Kotlin/Dart/C++ этим follow-up не менялись;
+официальная CI-матрица повторяется на следующем SHA.
+
+### PR #44: повторная проверка Docker cache
+
+Две попытки контейнерной проверки на `0a308c0` выполнили все 520 HPT-тестов,
+но новый daemon повторно скомпилировал приложение и выполнил тесты, затем
+достиг лимита 600 секунд при упаковке. Точная причина выбора слоёв общего
+GHA scope не установлена. Для проверки экспорта добавлен отдельный scope
+с run ID и attempt; общий кеш и лимит 600 секунд сохранены. Проверка
+в новом daemon и smoke готового образа остаются обязательными.

@@ -147,6 +147,9 @@ add_executable(ffido-hpt-auth-unmapped src/hpt_auth_main.cpp)
 target_include_directories(ffido-hpt-auth-unmapped SYSTEM PRIVATE ${FFIDO_FIDOCONFIG_INCLUDE})
 target_link_libraries(ffido-hpt-auth-unmapped PRIVATE ${FFIDO_FIDOCONFIG_LIBRARY} ${FFIDO_HUSKY_LIBRARY} nlohmann_json::nlohmann_json ffido_backend_checks)
 
+add_library(ffido-mcp-sync-fault SHARED tests/support/mcp_sync_fault.cpp)
+target_link_libraries(ffido-mcp-sync-fault PRIVATE ffido_backend_checks ${CMAKE_DL_LIBS})
+
 add_executable(fidoback_tests ${TEST_SOURCES})
 target_link_libraries(fidoback_tests PRIVATE
   GTest::gtest_main
@@ -169,7 +172,7 @@ endif()
 
 # Register tests
 include(GoogleTest)
-gtest_discover_tests(fidoback_tests DISCOVERY_TIMEOUT 30)
+gtest_discover_tests(fidoback_tests DISCOVERY_TIMEOUT 30 PROPERTIES TIMEOUT 300)
 
 option(FIDOBACK_BUILD_FUZZER "Build bounded JAM parser libFuzzer harness" OFF)
 if(FIDOBACK_BUILD_FUZZER)
@@ -205,10 +208,23 @@ set_tests_properties(ReleaseSchemaCompatibility PROPERTIES TIMEOUT 60)
 add_executable(ffido-mcp src/mcp/main.cpp src/mcp/config.cpp src/mcp/tools.cpp src/mcp/server.cpp src/service/grpc_runtime.cpp)
 target_include_directories(ffido-mcp PRIVATE src/mcp include)
 target_link_libraries(ffido-mcp PRIVATE ffido_contracts nlohmann_json::nlohmann_json OpenSSL::Crypto ffido_backend_checks)
+if(FIDOBACK_ENABLE_ASAN OR FIDOBACK_ENABLE_TSAN)
+  # Instrumented installs are local test stages, not redistributable packages.
+  # Keep their matching runtimes available after CMake removes build RPATHs.
+  set_property(TARGET ffido-mcp PROPERTY INSTALL_RPATH
+    "$<TARGET_FILE_DIR:gRPC::grpc++>;$<TARGET_FILE_DIR:protobuf::libprotobuf>")
+endif()
+add_executable(ffido-mcp-serialization-probe tests/support/mcp_serialize_probe.cpp src/mcp/config.cpp src/mcp/tools.cpp src/mcp/server.cpp src/service/grpc_runtime.cpp)
+target_include_directories(ffido-mcp-serialization-probe PRIVATE src/mcp include)
+target_link_libraries(ffido-mcp-serialization-probe PRIVATE ffido_contracts nlohmann_json::nlohmann_json OpenSSL::Crypto ffido_backend_checks)
+target_compile_definitions(fidoback_tests PRIVATE FFIDO_MCP_SERIALIZATION_PROBE="$<TARGET_FILE:ffido-mcp-serialization-probe>")
+add_dependencies(fidoback_tests ffido-mcp-serialization-probe)
+
 install(TARGETS ffido-mcp RUNTIME DESTINATION bin COMPONENT ffido)
 
 target_compile_definitions(fidoback_tests PRIVATE FFIDO_MCP_BINARY="$<TARGET_FILE:ffido-mcp>")
-add_dependencies(fidoback_tests ffido-mcp)
+add_dependencies(fidoback_tests ffido-mcp ffido-mcp-sync-fault)
+target_compile_definitions(fidoback_tests PRIVATE FFIDO_MCP_FAULT_LIBRARY="$<TARGET_FILE:ffido-mcp-sync-fault>")
 
 install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/../../docs/mcp.md DESTINATION share/ffido COMPONENT ffido)
 
