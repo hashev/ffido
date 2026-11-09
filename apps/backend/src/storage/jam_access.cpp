@@ -27,8 +27,9 @@ std::expected<std::unique_ptr<JamAccess>, JamAccessError> JamAccess::Open(const 
   const auto& forced = (*area)->forced_encoding;
   if (!forced.empty())
     encoding = forced;
-  auto access = std::unique_ptr<JamAccess>(new JamAccess(std::move(coordination), std::move(*lease),
-                                                         std::move(encoding), deadline, cancellation, !forced.empty()));
+  auto access =
+      std::unique_ptr<JamAccess>(new JamAccess(std::move(coordination), std::move(*lease), std::move(encoding),
+                                               deadline, cancellation, !forced.empty(), (*area)->encoding_corrections));
   auto error = access->messages_.Open();
   if (error != msgapi::JamError::kSuccess)
     return std::unexpected(JamAccessError(error));

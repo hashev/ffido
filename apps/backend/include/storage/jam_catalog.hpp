@@ -13,6 +13,7 @@
 #include <string_view>
 
 #include "EchoAreaConfig.h"
+#include "storage/jam_encoding_corrections.hpp"
 
 namespace fidoback::storage {
 class CoordinationLock;
@@ -46,6 +47,7 @@ struct JamArea {
   std::filesystem::path relative_filename;
   std::shared_ptr<JamFiles> files;
   std::string forced_encoding;
+  std::shared_ptr<const JamEncodingCorrectionIndex> encoding_corrections{};
 };
 
 struct CatalogDiagnostic {
@@ -59,6 +61,8 @@ public:
       const std::filesystem::path& root, const std::vector<EchoAreaConfig>& areas,
       std::shared_ptr<CoordinationLock> coordination = {},
       const std::map<std::string, std::string>& encoding_overrides = {}, CatalogDiagnostic* diagnostic = nullptr);
+  // Bind before publishing the catalog to readers.
+  std::expected<void, std::string> BindEncodingCorrections(JamEncodingCorrections manifest);
   ~JamCatalog();
   JamCatalog(const JamCatalog&) = delete;
   JamCatalog& operator=(const JamCatalog&) = delete;

@@ -49,6 +49,7 @@ struct MessageDetail {
   bool is_read = false;
   std::vector<std::string> attachments;
   std::vector<std::string> ftn_kludges;
+  std::string effective_encoding;
 };
 
 struct ArchiveMessage {

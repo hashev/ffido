@@ -37,6 +37,24 @@ class DockerUpdateTest(unittest.TestCase):
         self.assertEqual(json.loads(self.compose.override.read_text()), {'services': {'ffido': {'image': 'docker.io/hashev/ffido@sha256:'+'a'*64}}})
         self.assertIn(('up', '-d', '--no-deps', 'ffido'), self.compose.calls)
         self.assertEqual(json.loads((self.root/'operation.json').read_text())['phase'], 'complete')
+    def test_local_image_can_move_to_published_digest_with_existing_config(self):
+        config = self.root/'config.json'
+        config.write_text(json.dumps({'ftn': {'jam_message_encoding_corrections_path': 'corrections.jsonl'}}))
+        manifest = self.root/'corrections.jsonl'
+        manifest.write_text('local manifest fixture')
+        original = config.read_bytes(), manifest.read_bytes()
+        self.compose.override.write_text(json.dumps({'services': {'ffido': {'image': 'ffido:local'}}}))
+        self.compose.schema_value = 11
+        self.manifest['compatibility']['state_schema_max'] = 11
+
+        updater.apply(self.compose, self.manifest, b'manifest', b'signature', str(config), None)
+
+        operation = json.loads((self.root/'operation.json').read_text())
+        self.assertEqual(operation, {'phase': 'complete', 'previous_digest': None,
+                                     'selected': 'docker.io/hashev/ffido@sha256:'+'a'*64})
+        self.assertIn(('schema', str(config)), self.compose.calls)
+        self.assertEqual((config.read_bytes(), manifest.read_bytes()), original)
+
     def test_incompatible_state_restarts_same_service_without_switching(self):
         self.compose.schema_value = 10
         with self.assertRaisesRegex(ValueError, 'incompatible'): self.apply()
