@@ -9,6 +9,7 @@
 
 #include <fstream>
 #include <iostream>
+#include <optional>
 #include <thread>
 #include <vector>
 
@@ -22,6 +23,7 @@
 #include "service/grpc_runtime.hpp"
 #include "service/grpc_service.hpp"
 #include "service/point_mail.hpp"
+#include "storage/jam_encoding_corrections.hpp"
 #include "storage/jam_writer.hpp"
 #include "storage/point_mailbox.hpp"
 namespace {
@@ -83,6 +85,16 @@ int RunBackend(int argc, char** argv) {
   if (!config) {
     spdlog::error("Invalid configuration");
     return 1;
+  }
+  std::optional<fidoback::storage::JamEncodingCorrections> corrections;
+  if (!config->ftn.jam_message_encoding_corrections_path.empty()) {
+    std::ifstream input(config->ftn.jam_message_encoding_corrections_path, std::ios::binary);
+    auto loaded = fidoback::storage::LoadJamEncodingCorrections(input);
+    if (!loaded) {
+      spdlog::error("Cannot load JAM encoding corrections: {}", loaded.error());
+      return 1;
+    }
+    corrections = std::move(*loaded);
   }
   const auto binary = ExecutablePath();
   RunningLease running;
@@ -160,6 +172,13 @@ int RunBackend(int argc, char** argv) {
   if (!opened) {
     spdlog::error("JAM catalog unavailable");
     return 1;
+  }
+  if (corrections) {
+    auto bound = (*opened)->BindEncodingCorrections(std::move(*corrections));
+    if (!bound) {
+      spdlog::error("Cannot bind JAM encoding corrections: {}", bound.error());
+      return 1;
+    }
   }
   auto catalog = std::shared_ptr<fidoback::storage::JamCatalog>(std::move(*opened));
   auto access = fidoback::service::EchoAccess::Build(*credentials, *catalog, config->auth.owner_addresses);

@@ -218,16 +218,10 @@ std::expected<domain::ArchiveSearchResponse, domain::ApiError> MessageService::S
         auto detail = Detail(**access, area, number, user, request.scope == 2);
         if (!detail)
           return fail(detail.error());
-        auto raw = (*access)->messages().ReadMessage(number, false);
-        if (!raw)
-          return fail(StorageError(storage::JamAccessError(raw.error())));
-        auto encoding = (*access)->messages().EffectiveEncoding(*raw);
-        if (!encoding)
-          return fail(domain::ApiError::Server("Invalid archive encoding"));
         const std::array<std::string_view, 6> fields{detail->from_name,  detail->from_address, detail->to_name,
                                                      detail->to_address, detail->subject,      detail->body};
         for (int field = 0; field < (request.scope == 1 ? 5 : 6); ++field) {
-          auto matches = SearchRanges(fields[field], request.query, SearchCp866(*encoding), field + 1);
+          auto matches = SearchRanges(fields[field], request.query, SearchCp866(detail->effective_encoding), field + 1);
           if (!matches)
             return fail(matches.error());
           if (!matches->empty()) {
@@ -281,16 +275,10 @@ std::expected<domain::ArchiveSearchResponse, domain::ApiError> MessageService::S
       item.conference = area;
       const bool hidden = detail->personal_collapse && !detail->personal_collapse->rules.empty();
       if (!hidden && !request.query.empty()) {
-        auto raw = (*access)->messages().ReadMessage(hit.number, false);
-        if (!raw)
-          return fail(StorageError(storage::JamAccessError(raw.error())));
-        auto encoding = (*access)->messages().EffectiveEncoding(*raw);
-        if (!encoding)
-          return fail(domain::ApiError::Server("Invalid archive encoding"));
         const std::array<std::string_view, 6> fields{detail->from_name,  detail->from_address, detail->to_name,
                                                      detail->to_address, detail->subject,      detail->body};
         for (int field = 0; field < (request.scope == 1 ? 5 : 6); ++field) {
-          auto matches = SearchRanges(fields[field], request.query, SearchCp866(*encoding), field + 1);
+          auto matches = SearchRanges(fields[field], request.query, SearchCp866(detail->effective_encoding), field + 1);
           if (!matches)
             return fail(matches.error());
           if (matches->size() > 4096 || item.matches.size() + matches->size() > 4096)

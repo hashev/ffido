@@ -291,6 +291,31 @@ std::expected<std::unique_ptr<JamCatalog>, CatalogError> JamCatalog::Build(
   return catalog;
 }
 
+std::expected<void, std::string> JamCatalog::BindEncodingCorrections(JamEncodingCorrections manifest) {
+  std::map<std::string, const JamFiles*, std::less<>> echoes;
+  for (const auto& [id, area] : areas_)
+    if (area.config.kind == AreaKind::kEcho && area.files)
+      echoes.emplace(area.relative_filename.generic_string(), area.files.get());
+
+  std::map<const JamFiles*, std::shared_ptr<JamEncodingCorrectionIndex>> physical;
+  for (auto& [base, entries] : manifest.bases) {
+    const auto echo = echoes.find(base);
+    if (echo == echoes.end())
+      return std::unexpected("Manifest base is not a configured JAM echo: " + base);
+    auto& index = physical[echo->second];
+    if (!index)
+      index = std::make_shared<JamEncodingCorrectionIndex>();
+    index->merge(entries);
+    if (!entries.empty())
+      return std::unexpected("Duplicate physical JAM record through an alias: " + base);
+  }
+  for (auto& [id, area] : areas_) {
+    const auto index = physical.find(area.files.get());
+    area.encoding_corrections = index == physical.end() ? nullptr : index->second;
+  }
+  return {};
+}
+
 std::expected<const JamArea*, CatalogError> JamCatalog::Resolve(std::string_view id) const {
   auto entry = areas_.find(id);
   if (entry == areas_.end())

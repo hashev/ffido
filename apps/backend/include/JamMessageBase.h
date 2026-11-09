@@ -15,6 +15,8 @@
 #include <string_view>
 #include <vector>
 
+#include "service/crypto.hpp"
+#include "storage/jam_encoding_corrections.hpp"
 #include "storage/text_codec.hpp"
 #include "storage/jam_file.hpp"
 
@@ -503,6 +505,7 @@ public:
 private:
   // JamMessageBase имеет доступ к private-методам для сериализации
   friend class JamMessageBase;
+  std::string read_encoding_;
 
   // ─── Работа с подполями ───
   void SetSubField(JamSubFieldType type, std::string_view data) {
@@ -581,9 +584,11 @@ class JamMessageBase {
 public:
   // Caller holds a lease on the physical owner for the entire view lifetime.
   explicit JamMessageBase(const std::array<int, 3>& descriptors, std::string encoding = "cp866",
-                          std::function<bool()> active = {}, JamFileIo* io = nullptr, bool force_encoding = false)
+                          std::function<bool()> active = {}, JamFileIo* io = nullptr, bool force_encoding = false,
+                          std::shared_ptr<const fidoback::storage::JamEncodingCorrectionIndex> corrections = {})
       : default_encoding_(std::move(encoding)),
         force_encoding_(force_encoding),
+        corrections_(std::move(corrections)),
         jhr_file_(descriptors[0], io),
         jdt_file_(descriptors[1], io),
         jdx_file_(descriptors[2], io),
@@ -608,6 +613,8 @@ public:
 
   [[nodiscard]] std::expected<std::vector<uint32_t>, JamError> GetMessageNumbers() const;
   std::expected<std::string, JamError> EffectiveEncoding(const JamMessage& message) const {
+    if (!message.read_encoding_.empty())
+      return message.read_encoding_;
     return MessageEncoding(message, default_encoding_, force_encoding_);
   }
   [[nodiscard]] std::expected<JamMessage, JamError> ReadMessage(uint32_t msg_num, bool include_body = true) const;
@@ -640,7 +647,12 @@ private:
 
   std::string base_path_;
   std::string default_encoding_;
+  std::expected<std::string, JamError> ReadBody(const JamMessageHeader& header) const;
+  std::expected<std::string, JamError> ResolveReadEncoding(
+      uint32_t number, const JamMessageHeader& header, const JamMessage& message, bool body_loaded) const;
+
   bool force_encoding_ = false;
+  std::shared_ptr<const fidoback::storage::JamEncodingCorrectionIndex> corrections_;
   bool is_open_ = false;
   JamBaseHeader base_header_{};
   std::vector<JamIndexRecord> index_structure_;
@@ -742,6 +754,7 @@ inline JamMessageBase::JamMessageBase(JamMessageBase&& other) noexcept
     : base_path_(std::move(other.base_path_)),
       default_encoding_(std::move(other.default_encoding_)),
       force_encoding_(other.force_encoding_),
+      corrections_(std::move(other.corrections_)),
       is_open_(other.is_open_),
       base_header_(other.base_header_),
       index_structure_(std::move(other.index_structure_)),
@@ -759,6 +772,7 @@ inline JamMessageBase& JamMessageBase::operator=(JamMessageBase&& other) noexcep
     base_path_ = std::move(other.base_path_);
     default_encoding_ = std::move(other.default_encoding_);
     force_encoding_ = other.force_encoding_;
+  corrections_ = std::move(other.corrections_);
     is_open_ = other.is_open_;
     base_header_ = other.base_header_;
     index_structure_ = std::move(other.index_structure_);
@@ -850,6 +864,72 @@ inline std::expected<JamMessageHeader, JamError> JamMessageBase::ReadHeader(uint
   return msg_header;
 }
 
+inline std::expected<std::string, JamError> JamMessageBase::ReadBody(const JamMessageHeader& header) const {
+  if (header.txt_len > jam_wire::kMaxReadBody)
+    return std::unexpected(JamError::kResourceLimit);
+  std::string body(header.txt_len, '\0');
+  if (body.empty())
+    return body;
+  jdt_file_.seekg(header.offset, std::ios::beg);
+  jdt_file_.read(body.data(), body.size());
+  if (jdt_file_.fail())
+    return std::unexpected(JamError::kReadError);
+  return body;
+}
+
+inline std::expected<std::string, JamError> JamMessageBase::ResolveReadEncoding(
+    uint32_t number, const JamMessageHeader& header, const JamMessage& message, bool body_loaded) const {
+  auto previous = MessageEncoding(message, default_encoding_, force_encoding_);
+  if (!corrections_)
+    return previous;
+  const auto found = corrections_->find(number);
+  if (found == corrections_->end())
+    return previous;
+  const auto skipped = [&] {
+    fidoback::storage::NoteSkippedEncodingCorrection();
+    return std::move(previous);
+  };
+  const auto& correction = found->second;
+  if (!previous || fidoback::storage::CanonicalCorrectionEncoding(*previous) != correction.expected_encoding ||
+      header.txt_len > jam_wire::kMaxReadBody)
+    return skipped();
+  if (active_ && !active_())
+    return std::unexpected(JamError::kReadError);
+  std::string payload;
+  payload.reserve(size_t(header.subfield_len) + header.txt_len);
+  // Subfield framing is fixed-width LE and the parser preserves order and raw bytes.
+  for (const auto& field : message.subfields_) {
+    std::array<uint8_t, 8> wire{};
+    jam_wire::Put16(wire.data(), static_cast<uint16_t>(field.type()));
+    jam_wire::Put16(wire.data() + 2, field.high_id());
+    jam_wire::Put32(wire.data() + 4, static_cast<uint32_t>(field.data().size()));
+    payload.append(reinterpret_cast<const char*>(wire.data()), wire.size());
+    payload.append(field.data().begin(), field.data().end());
+  }
+  if (body_loaded)
+    payload.append(message.text_);
+  else {
+    auto body = ReadBody(header);
+    if (!body) {
+      jdt_file_.clear();
+      return skipped();
+    }
+    payload.append(*body);
+  }
+  const auto digest = fidoback::service::Sha256(payload);
+  if (active_ && !active_())
+    return std::unexpected(JamError::kReadError);
+  if (!digest)
+    return skipped();
+  constexpr std::string_view hex = "0123456789abcdef";
+  for (size_t i = 0; i < digest->size(); ++i) {
+    const auto byte = (*digest)[i];
+    if (correction.raw_sha256[i * 2] != hex[byte >> 4] || correction.raw_sha256[i * 2 + 1] != hex[byte & 15])
+      return skipped();
+  }
+  return correction.encoding;
+}
+
 // Metadata diagnostics must not depend on decoding the body, names or subject.
 inline std::expected<JamMessage, JamError> JamMessageBase::ReadRawMetadata(uint32_t number) const {
   auto header = ReadHeader(number);
@@ -863,6 +943,11 @@ inline std::expected<JamMessage, JamError> JamMessageBase::ReadRawMetadata(uint3
   if (!fields)
     return std::unexpected(fields.error());
   result.subfields_ = std::move(*fields);
+  if (corrections_ && corrections_->contains(number)) {
+    auto encoding = ResolveReadEncoding(number, *header, result, false);
+    if (encoding)
+      result.read_encoding_ = std::move(*encoding);
+  }
   return result;
 }
 
@@ -893,20 +978,14 @@ inline std::expected<JamMessage, JamError> JamMessageBase::ReadRawMetadata(uint3
     }
   }
 
-  // Чтение текста сообщения
-  if (include_body && msg_header.txt_len > 0) {
-    jdt_file_.seekg(msg_header.offset, std::ios::beg);
-    std::vector<char> text_data(msg_header.txt_len);
-    jdt_file_.read(text_data.data(), msg_header.txt_len);
-
-    if (jdt_file_.fail()) {
-      return std::unexpected(JamError::kReadError);
-    }
-
-    message.SetText(std::string(text_data.data(), msg_header.txt_len));
+  if (include_body) {
+    auto body = ReadBody(msg_header);
+    if (!body)
+      return std::unexpected(body.error());
+    message.text_ = std::move(*body);
   }
 
-  auto encoding = MessageEncoding(message, default_encoding_, force_encoding_);
+  auto encoding = ResolveReadEncoding(msg_num, msg_header, message, include_body);
   if (!encoding)
     return std::unexpected(encoding.error());
   auto decoded = fidoback::storage::ConvertText(message.text_, *encoding, "UTF-8", 32 * 1024 * 1024);
@@ -914,6 +993,7 @@ inline std::expected<JamMessage, JamError> JamMessageBase::ReadRawMetadata(uint3
     return std::unexpected(decoded.error() == fidoback::storage::TextError::kLimit ? JamError::kResourceLimit
                                                                                  : JamError::kCorruptedData);
   message.text_ = std::move(*decoded);
+  message.read_encoding_ = *encoding;
   for (auto& field : message.subfields_) {
     if (field.high_id() != 0 ||
         (field.type() != JamSubFieldType::kSubject && field.type() != JamSubFieldType::kSenderName &&

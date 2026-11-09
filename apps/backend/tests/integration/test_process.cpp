@@ -17,6 +17,7 @@
 #include "../support/tls_certificate.hpp"
 #include "ffido/v1/ffido.grpc.pb.h"
 #include "service/auth_service.hpp"
+#include "service/crypto.hpp"
 #include "service/grpc_runtime.hpp"
 #include "storage/jam_access.hpp"
 extern char** environ;
@@ -182,6 +183,77 @@ TEST_F(ProcessTest, SignalsAtIdleAndInstanceLockIsReleased) {
     EXPECT_EQ(process.Wait(), 0);
   }
 }
+TEST_F(ProcessTest, EncodingCorrectionsLoadAtStartupAndRollbackByConfiguration) {
+  const auto root = temp.path();
+  const auto base = root / "file";
+  wire::MessageReference reference;
+  {
+    auto lease = storage::JamAccess::Open(*catalog, "RU.TEST", true,
+                                          std::chrono::steady_clock::now() + std::chrono::seconds(2), {}, "KOI8-R");
+    ASSERT_TRUE(lease);
+    msgapi::JamMessage message;
+    message.SetSubject("Проверка");
+    message.SetText("Читаемый текст");
+    ASSERT_EQ((*lease)->messages().AddMessage(message), msgapi::JamError::kSuccess);
+    reference.set_conference_id("RU.TEST");
+    reference.set_message_id((*lease)->generation() + "#42");
+  }
+  auto header = test::ReadFile(base.string() + ".jhr");
+  const auto chrs = header.find("CHRS: KOI8-R 2");
+  ASSERT_NE(chrs, std::string::npos);
+  header.replace(chrs, 14, "CHRS: CP866 2 ");
+  std::ofstream(base.string() + ".jhr", std::ios::binary | std::ios::trunc) << header;
+  const auto body = test::ReadFile(base.string() + ".jdt");
+  const auto index = test::ReadFile(base.string() + ".jdx");
+  const auto record = test::ReadJamWireRecord(base, 0);
+  const auto digest = service::Sha256(record.header.substr(76) + record.body);
+  ASSERT_TRUE(digest);
+  constexpr std::string_view hex = "0123456789abcdef";
+  std::string fingerprint;
+  for (const auto byte : *digest) {
+    fingerprint += hex[byte >> 4];
+    fingerprint += hex[byte & 15];
+  }
+  {
+    std::ofstream manifest(root / "corrections.jsonl");
+    manifest << nlohmann::json{{"kind", "manifest"},
+                               {"version", 1},
+                               {"count", 1},
+                               {"source_sha256", std::string(64, 'a')}}
+             << '\n'
+             << nlohmann::json{{"base", "file"},
+                               {"number", 42},
+                               {"raw_sha256", fingerprint},
+                               {"expected_encoding", "CP866"},
+                               {"encoding", "KOI8-R"}}
+             << '\n';
+  }
+  auto value = nlohmann::json::parse(test::ReadFile(config));
+  const auto run = [&](bool enabled) {
+    if (enabled)
+      value["ftn"]["jam_message_encoding_corrections_path"] = "corrections.jsonl";
+    else
+      value["ftn"].erase("jam_message_encoding_corrections_path");
+    std::ofstream(config) << value;
+    ServerProcess process(config, root / "server.log");
+    Ready();
+    auto client = wire::Ffido::NewStub(channel);
+    grpc::ClientContext context;
+    context.AddMetadata("authorization", "Bearer " + token);
+    context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(5));
+    wire::MessageTechnicalData technical;
+    ASSERT_TRUE(client->GetMessageTechnicalData(&context, reference, &technical).ok());
+    EXPECT_EQ(technical.effective_encoding(), enabled ? "KOI8-R" : "CP866");
+    ASSERT_EQ(kill(process.pid, SIGTERM), 0);
+    EXPECT_EQ(process.Wait(), 0);
+  };
+  run(true);
+  run(false);
+  EXPECT_EQ(test::ReadFile(base.string() + ".jhr"), header);
+  EXPECT_EQ(test::ReadFile(base.string() + ".jdt"), body);
+  EXPECT_EQ(test::ReadFile(base.string() + ".jdx"), index);
+}
+
 TEST_F(ProcessTest, BindFailureReturnsNonzero) {
   ServerProcess first(config, temp.path() / "server.log");
   Ready();

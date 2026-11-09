@@ -111,6 +111,7 @@ std::expected<domain::MessageDetail, domain::ApiError> MessageService::Detail(st
     return std::unexpected(read.error());
   domain::MessageDetail result;
   result.id = MessageId(access, number);
+  result.effective_encoding = *access.messages().EffectiveEncoding(*message);
   for (const auto& field : message->subfields())
     if (field.type() == msgapi::JamSubFieldType::kFtsKludge && field.high_id() == 0)
       result.ftn_kludges.push_back(field.ToString());
@@ -361,16 +362,10 @@ std::expected<domain::MessagePresentation, domain::ApiError> MessageService::Get
     if (!detail)
       return std::unexpected(detail.error());
     if (!query.empty()) {
-      auto raw = (*access)->messages().ReadMessage(*number, false);
-      if (!raw)
-        return std::unexpected(JamError(raw.error()));
-      auto encoding = (*access)->messages().EffectiveEncoding(*raw);
-      if (!encoding)
-        return std::unexpected(domain::ApiError::Server("Invalid message encoding"));
       const std::array<std::string_view, 6> values{detail->from_name,  detail->from_address, detail->to_name,
                                                    detail->to_address, detail->subject,      detail->body};
       for (int f = 0; f < (scope == 1 ? 5 : 6); ++f) {
-        auto ranges = SearchRanges(values[f], query, SearchCp866(*encoding), f + 1);
+        auto ranges = SearchRanges(values[f], query, SearchCp866(detail->effective_encoding), f + 1);
         if (!ranges)
           return std::unexpected(ranges.error());
         result.matches.insert(result.matches.end(), ranges->begin(), ranges->end());
@@ -595,17 +590,11 @@ std::expected<domain::FindMessageResponse, domain::ApiError> MessageService::Fin
         return std::unexpected(SearchInterrupted());
       return std::unexpected(detail.error());
     }
-    auto original = (*access)->messages().ReadMessage(number, false);
-    if (!original)
-      return std::unexpected(JamError(storage::JamAccessError{original.error()}));
-    auto encoding = (*access)->messages().EffectiveEncoding(*original);
-    if (!encoding)
-      return std::unexpected(domain::ApiError::Server("Invalid search encoding"));
     domain::FindMessageResponse result;
     const std::array<std::string_view, 6> fields{detail->from_name,  detail->from_address, detail->to_name,
                                                  detail->to_address, detail->subject,      detail->body};
     for (size_t f = 0; f < (scope == 1 ? 5u : 6u); ++f) {
-      auto ranges = SearchRanges(fields[f], query, SearchCp866(*encoding), static_cast<int>(f + 1));
+      auto ranges = SearchRanges(fields[f], query, SearchCp866(detail->effective_encoding), static_cast<int>(f + 1));
       if (!ranges)
         return std::unexpected(ranges.error());
       result.matches.insert(result.matches.end(), ranges->begin(), ranges->end());

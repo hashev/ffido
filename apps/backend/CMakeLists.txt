@@ -45,6 +45,7 @@ set(FIDOBACK_LIB_SOURCES
   src/storage/jam_catalog.cpp
   src/storage/jam_lock.cpp
   src/storage/jam_access.cpp
+  src/storage/jam_encoding_corrections.cpp
   src/storage/jam_writer.cpp
   src/storage/jam_audit.cpp
   src/storage/point_mailbox.cpp
@@ -80,8 +81,11 @@ set(FIDOBACK_SOURCES
 
 add_executable(ffido-admin src/admin.cpp)
 target_link_libraries(ffido-admin PRIVATE fidoback_lib)
+add_executable(ffido-jam-encoding-check src/jam_encoding_check.cpp)
+target_link_libraries(ffido-jam-encoding-check PRIVATE fidoback_lib)
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 add_test(NAME UueFixtureOracle COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/support/uue_oracle.py ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/uue)
+add_test(NAME JamEncodingCorrections COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/test_jam_encoding_check.py $<TARGET_FILE:ffido-jam-encoding-check>)
 add_test(NAME JamUtf8Repair COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/test_repair_jam_utf8.py)
 add_test(NAME HptWrapper COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/test_hpt_wrapper.py ${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/run_hpt.py)
 add_test(NAME AdminCommands COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/test_admin.py $<TARGET_FILE:ffido-admin>)
@@ -185,7 +189,7 @@ if(FIDOBACK_BUILD_FUZZER)
   target_link_options(jam_parser_fuzz PRIVATE -fsanitize=fuzzer,address,undefined)
 endif()
 
-install(TARGETS fidoback ffido-admin ffido-hpt-auth RUNTIME DESTINATION bin COMPONENT ffido)
+install(TARGETS fidoback ffido-admin ffido-hpt-auth ffido-jam-encoding-check RUNTIME DESTINATION bin COMPONENT ffido)
 install(PROGRAMS ${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/run_hpt.py DESTINATION bin RENAME ffido-run-hpt COMPONENT ffido)
 install(FILES config.example.json DESTINATION share/ffido COMPONENT ffido)
 

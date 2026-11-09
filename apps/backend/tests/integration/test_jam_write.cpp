@@ -739,6 +739,54 @@ public:
 };
 }  // namespace
 
+TEST_F(JamWriteIntegrationTest, CorrectionReadsBodyOnlyForCandidateAndPreservesReadAfterIoFailure) {
+  JamMessageBase seed(test_dir_.string());
+  ASSERT_EQ(seed.Open(), JamError::kSuccess);
+  JamMessage message;
+  message.SetText("body");
+  ASSERT_EQ(seed.AddMessage(message), JamError::kSuccess);
+  ASSERT_EQ(seed.AddMessage(message), JamError::kSuccess);
+  seed.Close();
+
+  JamDescriptors files(test_dir_);
+  class BodyIo : public JamFileIo {
+  public:
+    int body_fd = -1;
+    int body_reads = 0;
+    bool fail = true;
+    ssize_t Read(int fd, void* bytes, size_t size, off_t offset) override {
+      if (fd == body_fd) {
+        ++body_reads;
+        if (std::exchange(fail, false)) {
+          errno = EIO;
+          return -1;
+        }
+      }
+      return JamFileIo::Read(fd, bytes, size, offset);
+    }
+  } io;
+  io.body_fd = files.values[1];
+  auto corrections = std::make_shared<fidoback::storage::JamEncodingCorrectionIndex>();
+  corrections->emplace(1, fidoback::storage::JamEncodingCorrection{std::string(64, '0'), "CP866", "UTF-8"});
+  bool active = true;
+  JamMessageBase reader(files.values, "CP866", [&] { return active; }, &io, false, corrections);
+  ASSERT_EQ(reader.Open(), JamError::kSuccess);
+  EXPECT_TRUE(reader.ReadMessage(2, false));
+  EXPECT_EQ(io.body_reads, 0);
+  active = false;
+  EXPECT_FALSE(reader.ReadMessage(1, false));
+  EXPECT_EQ(io.body_reads, 0);
+  active = true;
+  const auto header = reader.ReadMessage(1, false);
+  ASSERT_TRUE(header);
+  EXPECT_EQ(reader.EffectiveEncoding(*header), "CP866");
+  EXPECT_EQ(io.body_reads, 1);
+  const auto following = reader.ReadMessage(2);
+  ASSERT_TRUE(following);
+  EXPECT_EQ(following->text(), "body");
+  EXPECT_EQ(io.body_reads, 2);
+}
+
 TEST_F(JamWriteIntegrationTest, ParserReadAndStatFailuresNeverReturnSuccessfulSnapshots) {
   JamMessageBase seed(test_dir_.string());
   ASSERT_EQ(seed.Open(), JamError::kSuccess);

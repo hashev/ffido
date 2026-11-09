@@ -18,6 +18,7 @@
 #include "../support/sqlite_timing.hpp"
 #include "../support/temp_directory.hpp"
 #include "../support/tls_certificate.hpp"
+#include "service/crypto.hpp"
 #include "service/grpc_runtime.hpp"
 #include "service/grpc_service.hpp"
 using namespace fidoback;
@@ -1993,6 +1994,112 @@ TEST_F(ForcedKoi8GrpcTest, TechnicalDataOverrideRetainsDeclaredChrs) {
   ASSERT_TRUE(client->GetMessageTechnicalData(&context, reference, &result).ok());
   EXPECT_EQ(result.effective_encoding(), "KOI8-R");
   EXPECT_TRUE(std::ranges::any_of(result.subfields(), [](const auto& f) { return f.value() == "CHRS: CP866 2 "; }));
+}
+
+TEST_F(GrpcTest, MessageEncodingCorrectionsPreserveMixedEchoAndCanBeDisabled) {
+  const auto base = temp.path() / "file";
+  std::string generation;
+  {
+    auto lease = storage::JamAccess::Open(*catalog, "RU.TEST", true,
+                                          std::chrono::steady_clock::now() + std::chrono::seconds(2), {}, "KOI8-R");
+    ASSERT_TRUE(lease);
+    generation = (*lease)->generation();
+    for (int i = 0; i < 4; ++i) {
+      msgapi::JamMessage message;
+      message.SetSubject("Проверка");
+      message.SetText("Читаемый текст");
+      ASSERT_EQ((*lease)->messages().AddMessage(message), msgapi::JamError::kSuccess);
+    }
+  }
+  auto header = test::ReadFile(base.string() + ".jhr");
+  size_t offset = 0;
+  for (int i = 0; i < 4; ++i) {
+    offset = header.find("CHRS: KOI8-R 2", offset);
+    ASSERT_NE(offset, std::string::npos);
+    header.replace(offset, 14, "CHRS: CP866 2 ");
+  }
+  std::ofstream(base.string() + ".jhr", std::ios::binary | std::ios::trunc) << header;
+  const auto replaced = test::ReadJamWireRecord(base, 1);
+  auto body = test::ReadFile(base.string() + ".jdt");
+  body.at(test::Wire32(replaced.header, 60)) = 'X';
+  std::ofstream(base.string() + ".jdt", std::ios::binary | std::ios::trunc) << body;
+  const auto index = test::ReadFile(base.string() + ".jdx");
+  const auto first = test::ReadJamWireRecord(base, 0);
+  const auto digest = service::Sha256(first.header.substr(76) + first.body);
+  ASSERT_TRUE(digest);
+  constexpr std::string_view hex = "0123456789abcdef";
+  std::string fingerprint;
+  for (const auto byte : *digest) {
+    fingerprint += hex[byte >> 4];
+    fingerprint += hex[byte & 15];
+  }
+  storage::JamEncodingCorrections manifest;
+  manifest.bases["file"][42] = {fingerprint, "CP866", "KOI8-R"};
+  ASSERT_EQ(replaced.header.substr(76) + replaced.body, first.header.substr(76) + first.body);
+  manifest.bases["file"][43] = {fingerprint, "CP866", "KOI8-R"};
+  manifest.bases["file"][45] = {fingerprint, "UTF-8", "KOI8-R"};
+  ASSERT_TRUE(catalog->BindEncodingCorrections(std::move(manifest)));
+
+  const auto reference = [&](int number) {
+    wire::MessageReference result;
+    result.set_conference_id("RU.TEST");
+    result.set_message_id(generation + "#" + std::to_string(number));
+    return result;
+  };
+  const auto get = [&](int number) {
+    grpc::ClientContext context;
+    Auth(context, a);
+    wire::Message result;
+    EXPECT_TRUE(client->GetMessage(&context, reference(number), &result).ok());
+    EXPECT_EQ(result.id(), reference(number).message_id());
+    return result;
+  };
+  EXPECT_EQ(get(42).subject(), "Проверка");
+  EXPECT_EQ(get(42).body(), "Читаемый текст");
+  EXPECT_NE(get(43).subject(), "Проверка");
+  EXPECT_NE(get(44).subject(), "Проверка");
+  EXPECT_NE(get(45).subject(), "Проверка");
+  {
+    grpc::ClientContext context;
+    Auth(context, a);
+    wire::MessageTechnicalData result;
+    ASSERT_TRUE(client->GetMessageTechnicalData(&context, reference(42), &result).ok());
+    EXPECT_EQ(result.effective_encoding(), "KOI8-R");
+    EXPECT_TRUE(
+        std::ranges::any_of(result.subfields(), [](const auto& field) { return field.value() == "CHRS: CP866 2 "; }));
+  }
+  {
+    wire::FindMessageRequest request;
+    request.set_conference_id("RU.TEST");
+    request.set_query("Проверка");
+    request.set_scope(wire::MESSAGE_SEARCH_HEADER_ONLY);
+    request.set_sort(wire::MESSAGE_SORT_DATE_ASCENDING);
+    grpc::ClientContext context;
+    Auth(context, a);
+    wire::FindMessageResponse result;
+    ASSERT_TRUE(client->FindMessage(&context, request, &result).ok());
+    ASSERT_TRUE(result.has_message());
+    EXPECT_EQ(result.message().id(), reference(42).message_id());
+  }
+  {
+    wire::SearchArchiveMessagesRequest request;
+    request.add_conference_ids("RU.TEST");
+    request.set_query("Проверка");
+    request.set_scope(wire::MESSAGE_SEARCH_HEADER_ONLY);
+    request.set_sort(wire::MESSAGE_SORT_DATE_ASCENDING);
+    request.set_limit(10);
+    grpc::ClientContext context;
+    Auth(context, a);
+    wire::SearchArchiveMessagesResponse result;
+    ASSERT_TRUE(client->SearchArchiveMessages(&context, request, &result).ok());
+    ASSERT_EQ(result.results_size(), 1);
+    EXPECT_EQ(result.results(0).message().id(), reference(42).message_id());
+  }
+  ASSERT_TRUE(catalog->BindEncodingCorrections({}));
+  EXPECT_NE(get(42).subject(), "Проверка");
+  EXPECT_EQ(test::ReadFile(base.string() + ".jhr"), header);
+  EXPECT_EQ(test::ReadFile(base.string() + ".jdt"), body);
+  EXPECT_EQ(test::ReadFile(base.string() + ".jdx"), index);
 }
 
 TEST_F(GrpcTest, PersonalFiltersCollapseRevealSearchAndLegacyIsolation) {

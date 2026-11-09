@@ -13,14 +13,14 @@ CoordinationLease::~CoordinationLease() {
   close(fd_);
 }
 std::expected<std::shared_ptr<CoordinationLock>, CoordinationError> CoordinationLock::Open(
-    const std::filesystem::path& path) {
+    const std::filesystem::path& path, bool create) {
   if (path.empty() || path.string().find('\0') != std::string::npos)
     return std::unexpected(CoordinationError::kIo);
   std::error_code error;
   auto absolute = std::filesystem::absolute(path, error);
   if (error)
     return std::unexpected(CoordinationError::kIo);
-  int fd = open(absolute.c_str(), O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK, 0600);
+  int fd = open(absolute.c_str(), O_RDWR | (create ? O_CREAT : 0) | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK, 0600);
   if (fd < 0)
     return std::unexpected(CoordinationError::kIo);
   struct stat identity{};
