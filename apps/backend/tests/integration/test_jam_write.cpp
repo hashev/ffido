@@ -1157,8 +1157,8 @@ TEST_F(JamWriteIntegrationTest, LegacyFidoCorrectionRequiresOriginalFingerprint)
   JamDescriptors files(test_dir_);
   for (bool valid : {true, false}) {
     auto corrections = std::make_shared<fidoback::storage::JamEncodingCorrectionIndex>();
-    corrections->emplace(1, fidoback::storage::JamEncodingCorrection{
-                                valid ? fingerprint : std::string(64, '0'), "CP866", "KOI8-R"});
+    corrections->emplace(
+        1, fidoback::storage::JamEncodingCorrection{valid ? fingerprint : std::string(64, '0'), "CP866", "KOI8-R"});
     JamMessageBase reader(files.values, "CP866", {}, nullptr, false, corrections);
     ASSERT_EQ(reader.Open(), JamError::kSuccess);
     const auto raw = reader.ReadRawMetadata(1);

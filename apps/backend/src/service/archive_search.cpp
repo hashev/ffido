@@ -13,8 +13,7 @@ namespace {
 domain::ApiError Stale() {
   return {domain::ErrorCode::kPrecondition, "Archive cursor is stale; restart the search", {}};
 }
-domain::ApiError StorageError(const storage::JamAccessError& error, std::string_view area = {},
-                              uint32_t number = 0) {
+domain::ApiError StorageError(const storage::JamAccessError& error, std::string_view area = {}, uint32_t number = 0) {
   if (!RequestActive())
     return SearchInterrupted();
   if (auto* changed = std::get_if<storage::CatalogError>(&error);
