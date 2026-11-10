@@ -13,13 +13,14 @@ namespace {
 domain::ApiError Stale() {
   return {domain::ErrorCode::kPrecondition, "Archive cursor is stale; restart the search", {}};
 }
-domain::ApiError StorageError(const storage::JamAccessError& error) {
+domain::ApiError StorageError(const storage::JamAccessError& error, std::string_view area = {},
+                              uint32_t number = 0) {
   if (!RequestActive())
     return SearchInterrupted();
   if (auto* changed = std::get_if<storage::CatalogError>(&error);
       changed && *changed == storage::CatalogError::kChangedBase)
     return Stale();
-  return JamError(error);
+  return JamError(error, area, number);
 }
 domain::ApiError Resource() {
   return {domain::ErrorCode::kResource, "Archive search resource limit exceeded; narrow the search", {}};
@@ -208,7 +209,7 @@ std::expected<domain::ArchiveSearchResponse, domain::ApiError> MessageService::S
       if (!header) {
         if (header.error() == msgapi::JamError::kMessageDeleted)
           continue;
-        return fail(StorageError(storage::JamAccessError(header.error())));
+        return fail(StorageError(storage::JamAccessError(header.error()), area, number));
       }
       if ((request.from && int64_t(header->date_written) < *request.from) ||
           (request.to && int64_t(header->date_written) >= *request.to))

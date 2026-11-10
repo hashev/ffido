@@ -103,7 +103,7 @@ std::expected<domain::MessageDetail, domain::ApiError> MessageService::Detail(st
     if (message.error() == msgapi::JamError::kInvalidMessageNumber ||
         message.error() == msgapi::JamError::kMessageDeleted)
       return std::unexpected(domain::ApiError::NotFound("Message not found"));
-    return std::unexpected(JamError(storage::JamAccessError{message.error()}));
+    return std::unexpected(JamError(storage::JamAccessError{message.error()}, conference, number));
   }
   const auto key_number = std::to_string(number);
   auto read = metadata_->IsMessageRead(user, {conference, access.generation(), key_number});
