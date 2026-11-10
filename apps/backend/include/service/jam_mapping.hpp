@@ -9,7 +9,8 @@
 #include "service/request_context.hpp"
 #include "storage/jam_access.hpp"
 namespace fidoback::service {
-inline domain::ApiError JamError(const storage::JamAccessError& error) {
+inline domain::ApiError JamError(const storage::JamAccessError& error, std::string_view area = {},
+                                 uint32_t number = 0) {
   // The JAM reader uses kReadError when its activity callback interrupts a read.
   // Preserve the request outcome, while active requests still report real I/O errors.
   if (auto* jam = std::get_if<msgapi::JamError>(&error);
@@ -43,8 +44,12 @@ inline domain::ApiError JamError(const storage::JamAccessError& error) {
     if (*lock == storage::JamLockError::kReadOnly)
       return {domain::ErrorCode::kPrecondition, "Message base is read-only", {}};
   }
-  if (auto* jam = std::get_if<msgapi::JamError>(&error))
-    spdlog::warn("JAM read failed: category={}", static_cast<int>(*jam));
+  if (auto* jam = std::get_if<msgapi::JamError>(&error)) {
+    if (*jam == msgapi::JamError::kTextEncoding)
+      spdlog::warn("JAM read failed: category=text_encoding area={} number={}", area, number);
+    else
+      spdlog::warn("JAM read failed: category={} area={} number={}", static_cast<int>(*jam), area, number);
+  }
   return domain::ApiError::Server("Message storage operation failed");
 }
 inline std::string MessageId(const storage::JamAccess& access, uint32_t number) {

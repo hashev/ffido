@@ -1,8 +1,6 @@
 import argparse,hashlib,json,os,secrets,shutil,struct,subprocess,sys,time
 from pathlib import Path
 import grpc
-sys.path.insert(0,'/home/yurik/fido/ffido/probe')
-from ffido.v1 import ffido_pb2 as p,ffido_pb2_grpc as g
 from google.protobuf.empty_pb2 import Empty
 os.umask(0o077)
 parser=argparse.ArgumentParser(description='Isolated amster2 HPT charset verification; no production mail writes')
@@ -10,8 +8,11 @@ parser.add_argument('--image',required=True)
 parser.add_argument('--worker',default='ffido-tosser:local')
 parser.add_argument('--control-worker',default='ffido-tosser:before-hpt-transport-20261023')
 parser.add_argument('--repair-script',type=Path)
+parser.add_argument('--proto-dir',default='/home/yurik/fido/ffido/probe',help='Generated Python bindings for the FFIDO image under test')
 
 options=parser.parse_args()
+sys.path.insert(0,options.proto_dir)
+from ffido.v1 import ffido_pb2 as p,ffido_pb2_grpc as g
 if options.repair_script is None:
  candidate=Path(__file__).resolve().parents[2]/'scripts/repair_jam_utf8.py'
  options.repair_script=candidate if candidate.is_file() else Path(__file__).with_name('repair_jam_utf8.py')
@@ -44,12 +45,13 @@ def records(base):
   off,n=struct.unpack_from('<II',hdr,at+60);rows.append((fields,txt[off:off+n]))
  return rows
 
-def packets(node):
+def packets(node, destination=None):
  result=[];files=[]
  for path in sorted((ROOT/node/'outbound').rglob('*')):
   if not path.is_file():continue
   data=path.read_bytes()
   if len(data)<60 or struct.unpack_from('<H',data,18)[0]!=2:continue
+  if destination is not None and struct.unpack_from('<H',data,2)[0]!=destination:continue
   files.append(path);at=58
   while data[at:at+2]!=b'\0\0':
    assert struct.unpack_from('<H',data,at)[0]==2
@@ -68,15 +70,18 @@ for node,addr,peer in [('sender','2:1/1','2:1/2'),('receiver','2:1/2','2:1/1')]:
  cfg+=f'MsgBaseDir /fixture/{node}/jam\nEchoTossLog /fixture/{node}/logs/toss.log\nRecodeMsgBase on\nOutTab /fixture/outtab\nInTab /fixture/intab\n'
  cfg+=f'Link Peer\nAKA {peer}\nOurAKA {addr}\nPassword fixture\nAllowEmptyPktPwd on\n'
  cfg+=f'Link Client\nAKA {addr}.1\nOurAKA {addr}\nSessionPwd {password}\n'
+ if node=='receiver':
+  cfg+=f'Link Transit\nAKA 2:1/3\nOurAKA {addr}\nPassword fixture\n'
+ transit_link=' 2:1/3' if node=='receiver' else ''
  for name in ['ordinary','utf-8']:
-  cfg+=f'EchoArea {name} /fixture/{node}/jam/{name} -b JAM -dupeCheck off {peer} {addr}.1\n'
+  cfg+=f'EchoArea {name} /fixture/{node}/jam/{name} -b JAM -dupeCheck off {peer} {addr}.1{transit_link}\n'
   run('docker','run','--rm','--network','none','--user','1000:1000','-v',str(ROOT)+':/fixture','--entrypoint','/usr/local/bin/ffido-create-jam',WORKER,f'/fixture/{node}/jam/{name}')
  for name in ('netmail','bad','dupe'):
   run('docker','run','--rm','--network','none','--user','1000:1000','-v',str(ROOT)+':/fixture','--entrypoint','/usr/local/bin/ffido-create-jam',WORKER,f'/fixture/{node}/jam/{name}')
  cfg+=f'NetmailArea NETMAIL /fixture/{node}/jam/netmail -b JAM\nBadArea BAD /fixture/{node}/jam/bad -b JAM\nDupeArea DUPE /fixture/{node}/jam/dupe -b JAM\n'
  (root/'hpt.cfg').write_text(cfg)
  (root/'areas.cfg').write_text(''.join(f'EchoArea {name} /fixture/{node}/jam/{name} -b JAM\n' for name in ('ordinary','utf-8')))
- config={'server':{'ip':'0.0.0.0','port':8080,'tls_certificate':'/etc/ffido/tls/server.pem','tls_private_key':'/etc/ffido/tls/server-key.pem'},'ftn':{'areacfg_path':f'/fixture/{node}/areas.cfg','jam_base_path':f'/fixture/{node}/jam','default_encoding':'KOI8-R','coordination_lock':f'/fixture/{node}/hpt.lock','jam_encoding_overrides':{'ordinary':'KOI8-R','utf-8':'UTF-8'}},'auth':{'hpt_config_path':f'/fixture/{node}/hpt.cfg','session_key_path':f'/fixture/{node}/session.key'},'database':{'metadata_path':f'/fixture/{node}/metadata.db'}}
+ config={'server':{'ip':'0.0.0.0','port':8080,'tls_certificate':'/etc/ffido/tls/server.pem','tls_private_key':'/etc/ffido/tls/server-key.pem'},'ftn':{'areacfg_path':f'/fixture/{node}/areas.cfg','jam_base_path':f'/fixture/{node}/jam','default_encoding':('KOI8-R' if node=='sender' else 'CP866'),'coordination_lock':f'/fixture/{node}/hpt.lock','jam_encoding_overrides':({'ordinary':'KOI8-R','utf-8':'UTF-8'} if node=='sender' else {})},'auth':{'hpt_config_path':f'/fixture/{node}/hpt.cfg','session_key_path':f'/fixture/{node}/session.key'},'database':{'metadata_path':f'/fixture/{node}/metadata.db'}}
  (root/'config.json').write_text(json.dumps(config))
 # Preserve the established FTN soft-CR normalization in the production table.
 shutil.copyfile(BASE/'spool/outkoi8alt',ROOT/'outtab')
@@ -214,15 +219,67 @@ try:
  assert {a:list(map(payload,rows)) for a,rows in before.items()}=={a:list(map(payload,records(ROOT/'sender/jam'/a))) for a in before},'Local payload changed by export'
  exported={str(f):hashlib.sha256(f.read_bytes()).hexdigest() for f in files}
  hpt('sender','scan','-w');assert {str(f):hashlib.sha256(f.read_bytes()).hexdigest() for f in packets('sender')[0]}==exported,'Duplicate export'
+ # Keep a pristine receiver for inbound control cases.
+ shutil.copytree(ROOT/'receiver',ROOT/'before-toss')
+ wire_ids={}
+ for _,_,_,_,text in wire:
+  kludges=text.split(b'\r')
+  msgid=next(x[8:] for x in kludges if x.startswith(b'\1MSGID: '))
+  wire_ids[msgid]=next((x[8:] for x in kludges if x.startswith(b'\1REPLY: ')),None)
  for n,f in enumerate(files):shutil.copyfile(f,ROOT/'receiver/protinbound'/f'fixture-{n}.pkt')
  hpt('receiver','toss')
+ received_chrs={}
  for area in ('ordinary','utf-8'):
   rows=records(ROOT/'receiver/jam'/area);assert len(rows)==2,(area,len(rows))
   codec='koi8-r' if area=='ordinary' else 'utf-8'
+  received_chrs[area]=[[x for x in fields.get(2000,[]) if x.upper().startswith(b'CHRS:')] for fields,_ in rows]
   for fields,text in rows:
    subject=fields[6][0].decode(codec);message,_=expected[(area,subject)]
+   reply=wire_ids[fields[4][0]]
+   assert fields.get(5)==([reply] if reply else None)
    assert fields[2]==[message.from_name.encode(codec)] and fields[3]==[message.to_name.encode(codec)]
    assert message.body.replace('\n','\r').encode(codec) in text,(area,'received body differs')
+ assert received_chrs=={'ordinary':[[b'CHRS: KOI8-R 2']]*2,'utf-8':[[b'CHRS: UTF-8 4']]*2},received_chrs
+ # Transit must preserve transport payload and metadata even when stored locally.
+ transit_files,transit=packets('receiver',destination=3)
+ assert transit_files
+ def packet_payload(row):
+  return row[:4]+[row[4].split(b'\rSEEN-BY:',1)[0]]
+ assert sorted(map(packet_payload,transit))==sorted(map(packet_payload,wire))
+ # Exercise the same incoming packets with CHRS missing, repeated or conflicting,
+ # and with the local charset policy disabled. Cases use separate JAM bases.
+ for case,replacement,labels in (
+  ('no-chrs',b'',[]),
+  ('repeated-chrs',b'\1CHRS: CP866 2\r'*2,[b'CHRS: KOI8-R 2']),
+  ('conflicting-chrs',b'\1CHRS: CP866 2\r\1CHRS: UTF-8 4\r',[b'CHRS: CP866 2',b'CHRS: UTF-8 4']),
+  ('disabled-inbound',b'\1CHRS: CP866 2\r',[b'CHRS: CP866 2']),
+  ('different-intab',b'\1CHRS: CP866 2\r',[b'CHRS: CP866 2']),
+  ('passthrough',b'\1CHRS: CP866 2\r',[]),
+ ):
+  shutil.copytree(ROOT/'before-toss',ROOT/case)
+  cfg=ROOT/case/'hpt.cfg'
+  config=cfg.read_text().replace('/receiver/','/'+case+'/')
+  if case=='different-intab':
+   (ROOT/'identity-intab').write_text('0x80 0x80\n')
+   config=config.replace('InTab /fixture/intab','InTab /fixture/identity-intab')
+  elif case=='passthrough':
+   config=config.replace('/fixture/passthrough/jam/ordinary -b JAM','passthrough')
+  cfg.write_text(config)
+  for n,f in enumerate(files):
+   (ROOT/case/'protinbound'/f'fixture-{n}.pkt').write_bytes(f.read_bytes().replace(b'\1CHRS: CP866 2\r',replacement))
+  hpt(case,'toss',enabled=case!='disabled-inbound')
+  rows=records(ROOT/case/'jam/ordinary')
+  if case=='passthrough':
+   assert not rows
+   _,forwarded=packets(case,destination=3)
+   assert sorted(map(packet_payload,forwarded))==sorted(map(packet_payload,wire))
+   continue
+  assert len(rows)==2
+  for fields,body in rows:
+   assert [x for x in fields.get(2000,[]) if x.startswith(b'CHRS:')]==labels,(case,fields.get(2000))
+   codec='cp866' if case=='different-intab' else 'koi8-r'
+   sent,_=expected[('ordinary',fields[6][0].decode(codec))]
+   assert sent.body.replace('\n','\r').encode(codec) in body
  ch,stub,md=start('receiver')
  for area in ('ordinary','utf-8'):
   listed=stub.ListMessages(p.ListMessagesRequest(conference_id=area,page=p.PageRequest(limit=10),sort=p.MESSAGE_SORT_DATE_DESCENDING),metadata=md,timeout=10)
@@ -230,9 +287,18 @@ try:
   for preview in listed.messages:
    got=stub.GetMessage(p.MessageReference(conference_id=area,message_id=preview.id),metadata=md,timeout=10);sent,_=expected[(area,got.subject)]
    assert got.from_name==sent.from_name and got.to_name==sent.to_name and sent.body in got.body
+   tech=stub.GetMessageTechnicalData(p.MessageReference(conference_id=area,message_id=preview.id),metadata=md,timeout=10)
+   assert tech.encoding_status==p.TECHNICAL_ENCODING_STATUS_KNOWN
+   assert tech.effective_encoding==('KOI8-R' if area=='ordinary' else 'UTF-8')
+  for query,scope,field in (
+   ('тема Ёё',p.MESSAGE_SEARCH_HEADER_ONLY,p.MESSAGE_SEARCH_SUBJECT),
+   ('Ёжик, ёлка',p.MESSAGE_SEARCH_HEADER_AND_BODY,p.MESSAGE_SEARCH_BODY),
+  ):
+   search=stub.SearchArchiveMessages(p.SearchArchiveMessagesRequest(conference_ids=[area],query=query,scope=scope,sort=p.MESSAGE_SORT_DATE_DESCENDING,limit=10),metadata=md,timeout=10)
+   assert {hit.message.id for hit in search.results if any(m.field==field for m in hit.matches)}=={row.id for row in listed.messages}
   report[area]={'messages':2,'reply':True,'jam_codec':('KOI8-R' if area=='ordinary' else 'UTF-8'),'packet_codec':('CP866' if area=='ordinary' else 'UTF-8'),'chrs_exact':True,'received_jam_and_rpc_match':True}
  stop(ch,stub,md)
- report.update(no_mailer=True,hpt_network='none',production_queues_not_mounted=True,repeat_scan_no_duplicates=True,local_payload_and_chrs_unchanged=True,previous_hpt_regression_reproduced=True,opt_out_preserves_upstream_behavior=True,invalid_config_rejected_before_jam_mutation=True)
+ report.update(receiver_has_no_overrides_or_manifest=True,technical_data_and_search=True,transit_unchanged=True,inbound_chrs_controls=True,no_mailer=True,hpt_network='none',production_queues_not_mounted=True,repeat_scan_no_duplicates=True,local_payload_and_chrs_unchanged=True,previous_hpt_regression_reproduced=True,opt_out_preserves_upstream_behavior=True,invalid_config_rejected_before_jam_mutation=True)
  (WORK/'isolated-cycle-report.json').write_text(json.dumps(report,indent=2)+'\n');print(json.dumps(report,ensure_ascii=False))
 finally:
  if subprocess.run(['docker','inspect',NAME],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL).returncode==0:

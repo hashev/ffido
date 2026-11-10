@@ -155,7 +155,8 @@ enum class JamError {
   kWriteError,
   kCorruptedData,
   kMessageDeleted,
-  kResourceLimit
+  kResourceLimit,
+  kTextEncoding
 };
 
 // Вспомогательные функции
@@ -532,6 +533,12 @@ inline std::expected<std::string, JamError> MessageEncoding(const JamMessage& me
     return std::string(fallback);
   std::string encoding(fallback);
   bool found = false;
+  const auto fold = [](std::string value) {
+    for (auto& c : value)
+      if (c >= 'A' && c <= 'Z')
+        c += 'a' - 'A';
+    return value;
+  };
   for (const auto& field : message.subfields()) {
     if (field.type() != JamSubFieldType::kFtsKludge || field.high_id() != 0)
       continue;
@@ -547,18 +554,24 @@ inline std::expected<std::string, JamError> MessageEncoding(const JamMessage& me
         const auto length = line.find_first_of(" \t");
         auto name = line.substr(0, length);
         if (name.empty() || name.size() > 64 || name.find('\0') != std::string_view::npos)
-          return std::unexpected(JamError::kCorruptedData);
-        const auto fold = [](std::string value) {
-          for (auto& c : value)
-            if (c >= 'A' && c <= 'Z')
-              c += 'a' - 'A';
-          return value;
-        };
-        // IBMPC never identified a unique code page. Use the configured local
-        // default, while preserving errors for unknown explicit charsets.
-        const std::string selected = fold(std::string(name)) == "ibmpc" ? std::string(fallback) : std::string(name);
+          return std::unexpected(JamError::kTextEncoding);
+        const auto key = fold(std::string(name));
+        bool legacy_fido = key == "+7_fido";
+        if (key == "+7" && length != std::string_view::npos) {
+          const auto next = line.find_first_not_of(" \t", length);
+          if (next != std::string_view::npos) {
+            const auto tail = line.substr(next);
+            legacy_fido = fold(std::string(tail.substr(0, tail.find_first_of(" \t")))) == "fido";
+          }
+        }
+        // IBMPC does not identify a unique code page. FTS-5003 identifies +7_FIDO as CP866.
+        std::string selected(name);
+        if (key == "ibmpc")
+          selected = fallback;
+        else if (legacy_fido)
+          selected = "CP866";
         if (found && fold(selected) != fold(encoding))
-          return std::unexpected(JamError::kCorruptedData);
+          return std::unexpected(JamError::kTextEncoding);
         encoding = selected;
         found = true;
       }
@@ -991,7 +1004,7 @@ inline std::expected<JamMessage, JamError> JamMessageBase::ReadRawMetadata(uint3
   auto decoded = fidoback::storage::ConvertText(message.text_, *encoding, "UTF-8", 32 * 1024 * 1024);
   if (!decoded)
     return std::unexpected(decoded.error() == fidoback::storage::TextError::kLimit ? JamError::kResourceLimit
-                                                                                 : JamError::kCorruptedData);
+                                                                                 : JamError::kTextEncoding);
   message.text_ = std::move(*decoded);
   message.read_encoding_ = *encoding;
   for (auto& field : message.subfields_) {
@@ -1001,7 +1014,7 @@ inline std::expected<JamMessage, JamError> JamMessageBase::ReadRawMetadata(uint3
       continue;
     auto text = fidoback::storage::ConvertText(field.ToString(), *encoding, "UTF-8");
     if (!text)
-      return std::unexpected(JamError::kCorruptedData);
+      return std::unexpected(JamError::kTextEncoding);
     field = JamSubField(field.type(), std::vector<uint8_t>(text->begin(), text->end()));
   }
   return message;
@@ -1061,7 +1074,7 @@ inline std::expected<uint32_t, JamError> JamMessageBase::GetLastRead(std::string
 
   auto selected_encoding = MessageEncoding(input, default_encoding_, force_encoding_);
   if (!selected_encoding)
-    return std::unexpected(selected_encoding.error());
+    return std::unexpected(JamError::kCorruptedData);
   JamMessage message = input;
   auto body = fidoback::storage::ConvertText(input.text(), "UTF-8", *selected_encoding);
   if (!body)

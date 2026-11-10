@@ -1062,6 +1062,127 @@ TEST(JamEncoding, LegacyIbmpcAndCharsetCaseAreResolvedBeforeConflictChecks) {
   EXPECT_FALSE(MessageEncoding(input, "cp866"));
 }
 
+TEST(JamEncoding, LegacyFidoAliasesResolveBeforeConflictChecks) {
+  for (const auto* chrs : {"+7_FIDO 2", "+7 fIdO 2", "+7\tFIDO 2"}) {
+    JamMessage message;
+    message.AddRawSubField(JamSubFieldType::kFtsKludge, std::string("CHRS: ") + chrs);
+    message.AddRawSubField(JamSubFieldType::kFtsKludge, "CHRS: cp866 2");
+    EXPECT_EQ(MessageEncoding(message, "KOI8-R"), "cp866");
+    EXPECT_EQ(MessageEncoding(message, "UTF-8", true), "UTF-8");
+    message.AddRawSubField(JamSubFieldType::kFtsKludge, "CHRS: UTF-8 4");
+    EXPECT_EQ(MessageEncoding(message, "KOI8-R").error(), JamError::kTextEncoding);
+  }
+}
+
+TEST_F(JamWriteIntegrationTest, LegacyFidoLabelsDecodeCp866AndRejectUnknownNames) {
+  const auto path = test_dir_.string() + ".jhr";
+  const std::string placeholder = "CHRS: CP866 2       ";
+  const JamMessage input = [&] {
+    JamMessage message;
+    message.SetText("Привет Ёё");
+    message.SetSubject("Тема Ёё");
+    message.SetSenderName("Автор");
+    message.SetReceiverName("Всем");
+    message.AddRawSubField(JamSubFieldType::kFtsKludge, placeholder);
+    return message;
+  }();
+  {
+    JamMessageBase writer(test_dir_.string(), "CP866");
+    ASSERT_EQ(writer.Open(), JamError::kSuccess);
+    ASSERT_EQ(writer.AddMessage(input), JamError::kSuccess);
+  }
+  const auto original = Contents(path);
+  const auto pos = original.find(placeholder);
+  ASSERT_NE(pos, std::string::npos);
+  const auto body = Contents(test_dir_.string() + ".jdt");
+  EXPECT_EQ(body, "\x8f\xe0\xa8\xa2\xa5\xe2 \xf0\xf1");
+  const auto index = Contents(test_dir_.string() + ".jdx");
+  for (const auto* label : {"+7_FIDO 2", "+7 FiDo 2", "+7 2", "+7 FIDOx 2", "+7_FIDOx 2", "UNKNOWN 2"}) {
+    const std::string kludge = std::string("CHRS: ") + label;
+    auto header = original;
+    header.replace(pos, placeholder.size(), kludge + std::string(placeholder.size() - kludge.size(), ' '));
+    std::ofstream(path, std::ios::binary | std::ios::trunc) << header;
+    JamMessageBase reader(test_dir_.string(), "KOI8-R");
+    ASSERT_EQ(reader.Open(), JamError::kSuccess);
+    const auto message = reader.ReadMessage(1);
+    if (label == std::string_view("+7_FIDO 2") || label == std::string_view("+7 FiDo 2")) {
+      ASSERT_TRUE(message) << label;
+      EXPECT_EQ(reader.EffectiveEncoding(*message), "CP866");
+      EXPECT_EQ(message->text(), input.text());
+      EXPECT_EQ(message->subject(), input.subject());
+      EXPECT_EQ(message->sender_name(), input.sender_name());
+      EXPECT_EQ(message->receiver_name(), input.receiver_name());
+      const auto raw = reader.ReadRawMetadata(1);
+      ASSERT_TRUE(raw);
+      EXPECT_TRUE(raw->GetSubFieldData(JamSubFieldType::kFtsKludge).starts_with(kludge));
+    } else {
+      ASSERT_FALSE(message) << label;
+      EXPECT_EQ(message.error(), JamError::kTextEncoding);
+    }
+    EXPECT_EQ(Contents(path), header);
+    EXPECT_EQ(Contents(test_dir_.string() + ".jdt"), body);
+    EXPECT_EQ(Contents(test_dir_.string() + ".jdx"), index);
+  }
+}
+
+TEST_F(JamWriteIntegrationTest, LegacyFidoCorrectionRequiresOriginalFingerprint) {
+  const std::string placeholder = "CHRS: KOI8-R 2  ";
+  {
+    JamMessageBase writer(test_dir_.string(), "KOI8-R");
+    ASSERT_EQ(writer.Open(), JamError::kSuccess);
+    JamMessage message;
+    message.SetText("Привет Ёё");
+    message.SetSubject("Тема Ёё");
+    message.AddRawSubField(JamSubFieldType::kFtsKludge, placeholder);
+    ASSERT_EQ(writer.AddMessage(message), JamError::kSuccess);
+  }
+  const auto path = test_dir_.string() + ".jhr";
+  auto header = Contents(path);
+  const auto pos = header.find(placeholder);
+  ASSERT_NE(pos, std::string::npos);
+  const std::string alias = "CHRS: +7 FIDO 2 ";
+  ASSERT_EQ(alias.size(), placeholder.size());
+  header.replace(pos, placeholder.size(), alias);
+  std::ofstream(path, std::ios::binary | std::ios::trunc) << header;
+  const auto body = Contents(test_dir_.string() + ".jdt");
+  const auto digest = fidoback::service::Sha256(header.substr(kJamBaseHeaderSize + 76) + body);
+  ASSERT_TRUE(digest);
+  constexpr std::string_view hex = "0123456789abcdef";
+  std::string fingerprint;
+  for (const auto byte : *digest) {
+    fingerprint += hex[byte >> 4];
+    fingerprint += hex[byte & 15];
+  }
+
+  JamDescriptors files(test_dir_);
+  for (bool valid : {true, false}) {
+    auto corrections = std::make_shared<fidoback::storage::JamEncodingCorrectionIndex>();
+    corrections->emplace(
+        1, fidoback::storage::JamEncodingCorrection{valid ? fingerprint : std::string(64, '0'), "CP866", "KOI8-R"});
+    JamMessageBase reader(files.values, "CP866", {}, nullptr, false, corrections);
+    ASSERT_EQ(reader.Open(), JamError::kSuccess);
+    const auto raw = reader.ReadRawMetadata(1);
+    ASSERT_TRUE(raw);
+    EXPECT_EQ(raw->GetSubFieldData(JamSubFieldType::kFtsKludge), alias);
+    EXPECT_EQ(reader.EffectiveEncoding(*raw), valid ? "KOI8-R" : "CP866");
+    const auto message = reader.ReadMessage(1);
+    ASSERT_TRUE(message);
+    if (valid) {
+      EXPECT_EQ(message->text(), "Привет Ёё");
+      EXPECT_EQ(message->subject(), "Тема Ёё");
+    } else {
+      EXPECT_NE(message->text(), "Привет Ёё");
+    }
+  }
+  JamMessageBase forced(files.values, "KOI8-R", {}, nullptr, true);
+  ASSERT_EQ(forced.Open(), JamError::kSuccess);
+  const auto message = forced.ReadMessage(1);
+  ASSERT_TRUE(message);
+  EXPECT_EQ(message->text(), "Привет Ёё");
+  EXPECT_EQ(Contents(path), header);
+  EXPECT_EQ(Contents(test_dir_.string() + ".jdt"), body);
+}
+
 TEST_F(JamWriteIntegrationTest, Koi8BytesFallbackAndExplicitChrsDoNotRewriteHistory) {
   JamMessage input;
   input.SetText("Привет Ёё");

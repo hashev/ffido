@@ -87,18 +87,174 @@
  #include <stdlib.h>
  #include <errno.h>
  #include <ctype.h>
-@@ -248,7 +249,10 @@
+@@ -181,8 +182,96 @@ static char * get_filename(char * pathname)
+     return ptr;
+ }
+
++/* Compare the Russian alphabet using the table actually loaded by Husky. */
++static int ffidoInboundKoi8Table(void)
++{
++    char alphabet[] =
++        "\x80\x81\x82\x83\x84\x85\x86\x87\x88\x89\x8a\x8b\x8c\x8d\x8e\x8f"
++        "\x90\x91\x92\x93\x94\x95\x96\x97\x98\x99\x9a\x9b\x9c\x9d\x9e\x9f"
++        "\xa0\xa1\xa2\xa3\xa4\xa5\xa6\xa7\xa8\xa9\xaa\xab\xac\xad\xae\xaf"
++        "\xe0\xe1\xe2\xe3\xe4\xe5\xe6\xe7\xe8\xe9\xea\xeb\xec\xed\xee\xef"
++        "\xf0\xf1";
++    static const char koi8[] =
++        "\xe1\xe2\xf7\xe7\xe4\xe5\xf6\xfa\xe9\xea\xeb\xec\xed\xee\xef\xf0"
++        "\xf2\xf3\xf4\xf5\xe6\xe8\xe3\xfe\xfb\xfd\xff\xf9\xf8\xfc\xe0\xf1"
++        "\xc1\xc2\xd7\xc7\xc4\xc5\xd6\xda\xc9\xca\xcb\xcc\xcd\xce\xcf\xd0"
++        "\xd2\xd3\xd4\xd5\xc6\xc8\xc3\xde\xdb\xdd\xdf\xd9\xd8\xdc\xc0\xd1"
++        "\xb3\xa3";
++
++    recodeToInternalCharset(alphabet);
++    return memcmp(alphabet, koi8, sizeof(koi8)) == 0;
++}
++
++/* SMAPI control tokens are prefixed with SOH. Change only the JAM copy. */
++static char * ffidoLocalEchoChrs(char * control, const char * area)
++{
++    static const char localChrs[] = "CHRS: KOI8-R 2";
++    const char * token, * end;
++    char * result, * out;
++    int found = 0;
++
++    for(token = control; *token == '\001'; token = end)
++    {
++        const char * value = token + 1;
++        end = value + strcspn(value, "\001");
++        if(strncasecmp(value, "CHRS:", 5) != 0)
++        {
++            continue;
++        }
++
++        value += 5;
++        value += strspn(value, " \t");
++        if(strncasecmp(value, "CP866", 5) == 0 && (value[5] == ' ' || value[5] == '\t'))
++        {
++            value += 5;
++            value += strspn(value, " \t");
++            if(*value == '2' && value + 1 + strspn(value + 1, " \t") == end)
++            {
++                found = 1;
++                continue;
++            }
++        }
++
++        w_log(LL_DEBUG, "FFIDO inbound CHRS retained in %s: ambiguous or unsupported", area);
++        return control;
++    }
++
++    if(!found)
++    {
++        w_log(LL_DEBUG, "FFIDO inbound CHRS retained in %s: absent", area);
++        return control;
++    }
++
++    result = out = safe_malloc(strlen(control) + sizeof(localChrs));
++    found = 0;
++    for(token = control; *token == '\001'; token = end)
++    {
++        end = token + 1 + strcspn(token + 1, "\001");
++        if(strncasecmp(token + 1, "CHRS:", 5) == 0)
++        {
++            if(!found)
++            {
++                *out++ = '\001';
++                memcpy(out, localChrs, sizeof(localChrs) - 1);
++                out += sizeof(localChrs) - 1;
++                found = 1;
++            }
++        }
++        else
++        {
++            memcpy(out, token, (size_t)(end - token));
++            out += end - token;
++        }
++    }
++
++    *out = '\0';
++    free(control);
++    return result;
++}
++
+ /* return value: 1 if success, 0 if fail */
+-int putMsgInArea(s_area * echo, s_message * msg, int strip, dword forceattr)
++static int putMsgInAreaWithCharset(s_area * echo, s_message * msg, int strip, dword forceattr,
++                                  int inboundEcho)
+ {
+     char * ctrlBuff = NULL, * textStart = NULL, * textWithoutArea = NULL;
+     size_t textLength = (size_t)msg->textLength;
+@@ -192,6 +281,8 @@ int putMsgInArea(s_area * echo, s_message * msg, int strip, dword forceattr)
+     char /**slash,*/ * p, * q, * tiny;
+     int rc     = 0;
+     int recode = 1;
++    int localKoi8 = 0;
++    const int charsetPolicy = ffidoCharsetPolicy();
+
+     if(echo->msgbType == MSGTYPE_PASSTHROUGH)
+     {
+@@ -248,7 +339,8 @@ int putMsgInArea(s_area * echo, s_message * msg, int strip, dword forceattr)
          if(hmsg != NULL)
          {
              /*  recode from TransportCharset to internal Charset */
 -            if((config->recodeMsgBase) && (recode && config->intab != NULL))
 +            if((config->recodeMsgBase) && (recode && config->intab != NULL) &&
-+               !(getenv("FFIDO_HPT_KOI8_CP866") != NULL &&
-+                 strcmp(getenv("FFIDO_HPT_KOI8_CP866"), "1") == 0 &&
-+                 strcasecmp(echo->areaName, "utf-8") == 0))
++               !(charsetPolicy && strcasecmp(echo->areaName, "utf-8") == 0))
              {
                  if((msg->recode & REC_HDR) == 0)
                  {
+@@ -263,6 +355,10 @@ int putMsgInArea(s_area * echo, s_message * msg, int strip, dword forceattr)
+                     recodeToInternalCharset((char *)msg->text);
+                     msg->recode |= REC_TXT;
+                 }
++
++                localKoi8 = inboundEcho && charsetPolicy && echo->msgbType == MSGTYPE_JAM &&
++                    (msg->recode & (REC_HDR | REC_TXT)) == (REC_HDR | REC_TXT) &&
++                    ffidoInboundKoi8Table();
+             }
+
+             textWithoutArea = msg->text;
+@@ -323,6 +419,11 @@ int putMsgInArea(s_area * echo, s_message * msg, int strip, dword forceattr)
+             ctrlBuff = (char *)CopyToControlBuf((UCHAR *)textWithoutArea,
+                                                 (UCHAR **)&textStart,
+                                                 &textLength);
++            if(localKoi8 && ctrlBuff != NULL)
++            {
++                ctrlBuff = ffidoLocalEchoChrs(ctrlBuff, echo->areaName);
++            }
++
+             /*  textStart is a pointer to the first non-kludge line */
+             xmsg = createXMSG(config, msg, NULL, forceattr, tossDir);
+             w_log(LL_SRCLINE, "%s:%d writing msg", __FILE__, __LINE__);
+@@ -371,7 +472,12 @@ int putMsgInArea(s_area * echo, s_message * msg, int strip, dword forceattr)
+     /* endif */
+     w_log(LL_SRCLINE, "%s:%d end rc=%d", __FILE__, __LINE__, rc);
+     return rc;
+-} /* putMsgInArea */
++}
++
++int putMsgInArea(s_area * echo, s_message * msg, int strip, dword forceattr)
++{
++    return putMsgInAreaWithCharset(echo, msg, strip, forceattr, 0);
++}
+
+ void closeOpenedPkt(void)
+ {
+@@ -1452,11 +1558,11 @@ int processEMMsg(s_message * msg, hs_addr pktOrigAddr, int dontdocc, dword force
+                     {
+                         if(messCC)
+                         {
+-                            rc = putMsgInArea(echo, messCC, 1, forceattr);
++                            rc = putMsgInAreaWithCharset(echo, messCC, 1, forceattr, !dontdocc);
+                         }
+                         else
+                         {
+-                            rc = putMsgInArea(echo, msg, 1, forceattr);
++                            rc = putMsgInAreaWithCharset(echo, msg, 1, forceattr, !dontdocc);
+                         }
+
+                         statToss.saved += rc;
 --- a/src/hpt.c
 +++ b/src/hpt.c
 @@ -526,6 +526,8 @@
