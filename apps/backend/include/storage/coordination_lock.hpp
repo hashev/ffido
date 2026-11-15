@@ -22,7 +22,8 @@ private:
 };
 class CoordinationLock {
 public:
-  static std::expected<std::shared_ptr<CoordinationLock>, CoordinationError> Open(const std::filesystem::path& path);
+  static std::expected<std::shared_ptr<CoordinationLock>, CoordinationError> Open(const std::filesystem::path& path,
+                                                                                  bool create = true);
   static std::expected<std::shared_ptr<CoordinationLock>, CoordinationError> Inherit(const std::filesystem::path& path,
                                                                                      int fd);
   ~CoordinationLock();

@@ -23,6 +23,9 @@ def run(args):
     keys = {'qa': base64.b64encode(key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)).decode()}
     platform = {'os': 'macos' if sys.platform == 'darwin' else 'linux', 'architecture': 'arm64' if os.uname().machine == 'arm64' else 'x86_64'}
     compatibility = {'protocol_major': 1, 'client_protocol_min': 1, 'client_protocol_max': 1, 'server_protocol_min': 1, 'server_protocol_max': 1, 'state_schema_min': 9, 'state_schema_max': 9, 'config_format': 1, 'jam_format': 'JAM-1'}
+    source_build = args.bundle.resolve()/'BUILD.json'
+    if source_build.is_file():
+        compatibility = json.loads(source_build.read_bytes())['compatibility']
     for version, number in [('1.0.0', 41001), ('1.0.1', 41002)]:
         release = root/'releases'/('v'+version)
         shutil.copytree(args.bundle.resolve(), release, symlinks=True)

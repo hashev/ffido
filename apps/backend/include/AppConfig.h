@@ -34,6 +34,7 @@ struct FtnConfig {
   std::string jam_base_path;
   std::string default_encoding = "cp866";
   std::map<std::string, std::string> jam_encoding_overrides;
+  std::filesystem::path jam_message_encoding_corrections_path;
   std::filesystem::path coordination_lock;
 };
 

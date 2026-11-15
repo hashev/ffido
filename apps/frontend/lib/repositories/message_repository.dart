@@ -24,6 +24,11 @@ class MessageRepository {
   final PersonalMessageFiltersRepository filters;
   final UueRepository uue;
   final MessageFooterSnapshots _footers;
+  void forgetCompletedOperation(String operation) {
+    _footers.forgetCompleted(operation);
+    uue.forgetCompletedOperation(operation);
+  }
+
   final void Function(String)? onChanged;
   MessageRepository(ApiTransport apiClient, {this.onChanged})
     : _apiClient = apiClient,

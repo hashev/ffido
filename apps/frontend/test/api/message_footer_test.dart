@@ -189,6 +189,24 @@ void main() {
     },
   );
 
+  test('completed operation cleanup retains an uncertain footer until session change', () async {
+    final api = FooterTransport();
+    addTearDown(api.dispose);
+    final snapshots = MessageFooterSnapshots(api);
+    final settings = await MessageFooterSettings.load();
+    await settings.save('Frozen', 'Original');
+    final uncertain = await snapshots.capture('uncertain');
+    await settings.save('New', 'Changed');
+    for (var i = 0; i < 10000; i++) {
+      final id = 'completed-$i';
+      expect((await snapshots.capture(id))!.tagline, 'New');
+      snapshots.forgetCompleted(id);
+    }
+    expect((await snapshots.capture('uncertain'))!.tagline, uncertain!.tagline);
+    api.switchSession();
+    expect((await snapshots.capture('uncertain'))!.tagline, 'New');
+  });
+
   test('legacy server refuses overrides before RPC; reset permits legacy and netmail bypasses footer', () async {
     final api = FooterTransport()..supportsMessageFooter = false;
     addTearDown(api.dispose);

@@ -108,7 +108,7 @@ std::expected<void, domain::ApiError> JamWriter::Recover(const JamCatalog& catal
   auto area = catalog.Resolve(snapshot.conference);
   if (!area) {
     auto entry = catalog.areas().find(snapshot.conference);
-    if (entry != catalog.areas().end())
+    if (entry != catalog.areas().end() && entry->second.files)
       return Quarantine(*entry->second.files, snapshot);
     auto saved = metadata_->SetOperationState(snapshot.user, snapshot.id, OperationState::kQuarantine);
     if (!saved)

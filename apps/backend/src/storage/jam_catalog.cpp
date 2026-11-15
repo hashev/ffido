@@ -98,6 +98,8 @@ std::expected<void, CatalogError> JamFiles::Open() {
     }
     if (fd < 0)
       return std::unexpected(OpenError());
+    if (work_metrics)
+      ++work_metrics->jam_opens;
     descriptors[i] = fd;
     if (fstat(fd, &info) != 0 || !S_ISREG(info.st_mode) || !SameFile(info, identities[i]) ||
         (personal_mailbox && info.st_nlink != 1))
@@ -142,6 +144,17 @@ std::expected<std::unique_ptr<JamCatalog>, CatalogError> JamCatalog::Build(
     return std::unexpected(OpenError());
   auto catalog = std::unique_ptr<JamCatalog>(new JamCatalog(root_fd));
   catalog->coordination_ = std::move(coordination);
+  // Sweep once per build, rather than rescanning every live owner for each area.
+  // Release the registry before opening files or acquiring any physical lease.
+  {
+    std::lock_guard guard(registry_mutex);
+    for (auto it = registry.begin(); it != registry.end();) {
+      if (it->second.expired())
+        it = registry.erase(it);
+      else
+        ++it;
+    }
+  }
   std::map<std::pair<dev_t, ino_t>, std::shared_ptr<JamFiles>> physical;
   std::set<std::string> matched_overrides;
   std::map<std::pair<dev_t, ino_t>, std::string> policies;
@@ -225,12 +238,6 @@ std::expected<std::unique_ptr<JamCatalog>, CatalogError> JamCatalog::Build(
       return std::unexpected(CatalogError::kInvalidConfiguration);
     {
       std::lock_guard guard(registry_mutex);
-      for (auto it = registry.begin(); it != registry.end();) {
-        if (it->second.expired())
-          it = registry.erase(it);
-        else
-          ++it;
-      }
       auto& weak = registry[key];
       if (auto existing = weak.lock()) {
         for (size_t i = 0; i < 3; ++i)
@@ -282,6 +289,31 @@ std::expected<std::unique_ptr<JamCatalog>, CatalogError> JamCatalog::Build(
   if (matched_overrides.size() != encoding_overrides.size())
     return std::unexpected(CatalogError::kInvalidConfiguration);
   return catalog;
+}
+
+std::expected<void, std::string> JamCatalog::BindEncodingCorrections(JamEncodingCorrections manifest) {
+  std::map<std::string, const JamFiles*, std::less<>> echoes;
+  for (const auto& [id, area] : areas_)
+    if (area.config.kind == AreaKind::kEcho && area.files)
+      echoes.emplace(area.relative_filename.generic_string(), area.files.get());
+
+  std::map<const JamFiles*, std::shared_ptr<JamEncodingCorrectionIndex>> physical;
+  for (auto& [base, entries] : manifest.bases) {
+    const auto echo = echoes.find(base);
+    if (echo == echoes.end())
+      return std::unexpected("Manifest base is not a configured JAM echo: " + base);
+    auto& index = physical[echo->second];
+    if (!index)
+      index = std::make_shared<JamEncodingCorrectionIndex>();
+    index->merge(entries);
+    if (!entries.empty())
+      return std::unexpected("Duplicate physical JAM record through an alias: " + base);
+  }
+  for (auto& [id, area] : areas_) {
+    const auto index = physical.find(area.files.get());
+    area.encoding_corrections = index == physical.end() ? nullptr : index->second;
+  }
+  return {};
 }
 
 std::expected<const JamArea*, CatalogError> JamCatalog::Resolve(std::string_view id) const {

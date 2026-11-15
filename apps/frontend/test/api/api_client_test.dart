@@ -175,9 +175,12 @@ class TestService extends wire.FfidoServiceBase {
     );
   }
 
+  Completer<void>? logoutEntered, logoutBarrier;
   @override
   Future<Empty> logout(grpc.ServiceCall c, Empty r) async {
     await before(c);
+    logoutEntered?.complete();
+    await logoutBarrier?.future;
     return Empty();
   }
 
@@ -341,6 +344,26 @@ class TestService extends wire.FfidoServiceBase {
   }
 }
 
+class RetiringChannel extends grpc.ClientChannel {
+  RetiringChannel(int port)
+    : super(
+        '127.0.0.1',
+        port: port,
+        options: const grpc.ChannelOptions(
+          credentials: grpc.ChannelCredentials.insecure(),
+        ),
+      );
+  final entered = Completer<void>(), release = Completer<void>();
+  @override
+  Future<void> terminate() async {
+    if (!entered.isCompleted) {
+      entered.complete();
+      await release.future;
+    }
+    await super.terminate();
+  }
+}
+
 void main() {
   late ApiClient client;
   late grpc.Server server;
@@ -367,6 +390,77 @@ void main() {
     await client.dispose();
     await server.shutdown();
   });
+  test('slow server revocation does not clear a newer login', () async {
+    service.logoutEntered = Completer<void>();
+    service.logoutBarrier = Completer<void>();
+    final logout = client.logout();
+    await service.logoutEntered!.future;
+    expect(client.hasToken, isFalse);
+    await client.login(
+      endpoint: client.endpoint.toString(),
+      name: 'New',
+      address: '2:1/3',
+      password: 'fixture',
+    );
+    service.logoutBarrier!.complete();
+    await logout;
+    expect(client.session!.profile.name, 'New');
+    expect(client.hasToken, isTrue);
+  });
+  for (final action in ['clear', 'dispose', 'login']) {
+    test(
+      'channel retirement cannot publish stale identity after $action',
+      () async {
+        await client.dispose();
+        final old = RetiringChannel(server.port!);
+        var count = 0;
+        client = ApiClient(
+          endpoint: 'https://localhost:${server.port}',
+          channelFactory: (uri) => count++ == 0
+              ? old
+              : grpc.ClientChannel(
+                  '127.0.0.1',
+                  port: uri.port,
+                  options: const grpc.ChannelOptions(
+                    credentials: grpc.ChannelCredentials.insecure(),
+                  ),
+                ),
+        );
+        await client.setAuthToken(token);
+        await client.getProfile();
+        final pending = client.login(
+          endpoint: client.endpoint.toString(),
+          name: 'Old',
+          address: '2:1/2',
+          password: 'fixture',
+        );
+        final cancelled = expectLater(
+          pending,
+          throwsA(isA<CancelledException>()),
+        );
+        await old.entered.future;
+        if (action == 'clear') await client.clearAuthToken();
+        if (action == 'dispose') await client.dispose();
+        if (action == 'login') {
+          await client.login(
+            endpoint: client.endpoint.toString(),
+            name: 'New',
+            address: '2:1/3',
+            password: 'fixture',
+          );
+        }
+        old.release.complete();
+        await cancelled;
+        if (action == 'login') {
+          expect(client.session!.profile.name, 'New');
+          expect(client.hasToken, isTrue);
+        } else {
+          expect(client.session, isNull);
+          expect(client.hasToken, isFalse);
+        }
+      },
+    );
+  }
   test(
     'personal filters authenticate read and CAS mutation does not retry',
     () async {

@@ -53,5 +53,6 @@ echo "PASS: packaged Android APK installed and running on API $API x86_64"
 python3 "$ROOT/scripts/update/test_android_flow.py" \
   --sdk "$SDK" \
   --serial "$SERIAL" \
+  --native-lifecycle \
   --directory "$ROOT/build/android-update-qa-api$API" \
   --fixtures "${FFIDO_ANDROID_FIXTURES:?Prepared QA fixtures are required}"

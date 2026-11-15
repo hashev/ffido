@@ -1,4 +1,7 @@
 #include <gtest/gtest.h>
+#ifdef __APPLE__
+#include <mach/mach.h>
+#endif
 #include <spawn.h>
 #include <sqlite3.h>
 #include <sys/resource.h>
@@ -12,8 +15,12 @@
 #include "../support/echo_access.hpp"
 #include "../support/jam_wire_record.hpp"
 #include "../support/mcp_process.hpp"
+#include "../support/measurements.hpp"
+#include "../support/offline_reads.hpp"
+#include "../support/sqlite_timing.hpp"
 #include "../support/temp_directory.hpp"
 #include "../support/tls_certificate.hpp"
+#include "service/crypto.hpp"
 #include "service/grpc_runtime.hpp"
 #include "service/grpc_service.hpp"
 using namespace fidoback;
@@ -37,6 +44,9 @@ protected:
   std::unique_ptr<grpc::Server> server;
   std::unique_ptr<wire::Ffido::Stub> client;
   std::string a, b, address;
+  virtual int MaxConcurrent() const {
+    return 16;
+  }
   virtual int AreaCount() const {
     return 1;
   }
@@ -98,7 +108,7 @@ protected:
     issued = auth.Provision("B", domain::Profile{"Борис", "2:5015/1.2", "", "2026-01-01T00:00:00Z"}, expiry);
     ASSERT_TRUE(issued);
     b = *issued;
-    service = std::make_unique<service::GrpcService>(catalog, metadata, AccessPolicy(), Encoding());
+    service = std::make_unique<service::GrpcService>(catalog, metadata, AccessPolicy(), Encoding(), MaxConcurrent());
     grpc::SslServerCredentialsOptions tls;
     tls.pem_key_cert_pairs.push_back(
         {test::ReadFile(temp.path() / "key.pem"), test::ReadFile(temp.path() / "certificate.pem")});
@@ -141,6 +151,223 @@ protected:
   }
 };
 }  // namespace
+namespace {
+size_t ProcessThreadCount() {
+#ifdef __APPLE__
+  thread_act_array_t threads = nullptr;
+  mach_msg_type_number_t count = 0;
+  if (task_threads(mach_task_self(), &threads, &count) != KERN_SUCCESS)
+    return 0;
+  for (mach_msg_type_number_t i = 0; i < count; ++i)
+    mach_port_deallocate(mach_task_self(), threads[i]);
+  vm_deallocate(mach_task_self(), reinterpret_cast<vm_address_t>(threads), count * sizeof(thread_t));
+  return count;
+#else
+  return std::distance(std::filesystem::directory_iterator("/proc/self/task"), std::filesystem::directory_iterator{});
+#endif
+}
+double ProcessCpuMilliseconds() {
+  rusage usage{};
+  getrusage(RUSAGE_SELF, &usage);
+  return 1000.0 * (usage.ru_utime.tv_sec + usage.ru_stime.tv_sec) +
+         0.001 * (usage.ru_utime.tv_usec + usage.ru_stime.tv_usec);
+}
+class CancelMonitorTest : public GrpcTest {
+  class Probe : public wire::Ffido::Service {
+  public:
+    service::GrpcService* backend = nullptr;
+    grpc::Status ListMessages(grpc::ServerContext* context, const wire::ListMessagesRequest* request,
+                              wire::ListMessagesResponse* response) override {
+      {
+        std::lock_guard lock(mutex_);
+        ++started_;
+        changed_.notify_all();
+      }
+      auto status = backend->ListMessages(context, request, response);
+      {
+        std::lock_guard lock(mutex_);
+        ++finished_;
+        changed_.notify_all();
+      }
+      return status;
+    }
+    bool Started(int count) {
+      std::unique_lock lock(mutex_);
+      return changed_.wait_for(lock, std::chrono::seconds(1), [&] { return started_ == count; });
+    }
+    bool Finished(int count) {
+      std::unique_lock lock(mutex_);
+      return changed_.wait_for(lock, std::chrono::seconds(1), [&] { return finished_ == count; });
+    }
+    void Reset() {
+      std::lock_guard lock(mutex_);
+      started_ = finished_ = 0;
+    }
+
+  private:
+    std::mutex mutex_;
+    std::condition_variable changed_;
+    int started_ = 0, finished_ = 0;
+  };
+
+protected:
+  Probe probe_;
+  grpc::Service* RegisteredService() override {
+    probe_.backend = service.get();
+    return &probe_;
+  }
+  int MaxConcurrent() const override {
+    return 64;
+  }
+};
+}  // namespace
+TEST_F(CancelMonitorTest, OfferedConcurrencyThreadCpuAndCancellationFixture) {
+  for (int count : {1, 16, 64}) {
+    for (int sample = 0; sample < 20; ++sample) {
+      probe_.Reset();
+      auto lease = storage::JamAccess::Open(*catalog, "RU.TEST", false, service::RequestDeadline());
+      ASSERT_TRUE(lease);
+      const auto baseline_threads = ProcessThreadCount();
+      std::vector<std::unique_ptr<grpc::ClientContext>> contexts;
+      std::vector<std::future<std::pair<grpc::Status, std::chrono::steady_clock::time_point>>> pending;
+      for (int i = 0; i < count; ++i) {
+        auto context = std::make_unique<grpc::ClientContext>();
+        Auth(*context, a);
+        context->set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(30));
+        auto* raw = context.get();
+        contexts.push_back(std::move(context));
+        pending.push_back(std::async(std::launch::async, [&, raw] {
+          wire::ListMessagesRequest request;
+          request.set_conference_id("RU.TEST");
+          request.mutable_page()->set_limit(1);
+          request.set_sort(wire::MESSAGE_SORT_DATE_ASCENDING);
+          wire::ListMessagesResponse response;
+          auto status = client->ListMessages(raw, request, &response);
+          return std::pair{status, std::chrono::steady_clock::now()};
+        }));
+      }
+      EXPECT_TRUE(probe_.Started(count));
+      // Sample only after the offered handlers have reached the backend.
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      const auto loaded_threads = ProcessThreadCount();
+      const auto cpu_before = ProcessCpuMilliseconds();
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      const auto cpu_ms = ProcessCpuMilliseconds() - cpu_before;
+      const auto cancelled_at = std::chrono::steady_clock::now();
+      for (const auto& context : contexts)
+        context->TryCancel();
+      std::vector<double> latency;
+      int cancelled = 0, rejected = 0;
+      for (auto& call : pending) {
+        auto [status, finished] = call.get();
+        if (status.error_code() == grpc::StatusCode::CANCELLED) {
+          ++cancelled;
+          latency.push_back(std::chrono::duration<double, std::milli>(finished - cancelled_at).count());
+        } else {
+          ++rejected;
+          EXPECT_EQ(status.error_code(), grpc::StatusCode::RESOURCE_EXHAUSTED);
+        }
+      }
+      // Client CANCELLED may precede server completion and slot release.
+      // Every handler must retire before releasing the owner or starting a new sample.
+      EXPECT_TRUE(probe_.Finished(count));
+      lease->reset();
+      EXPECT_GT(cancelled, 0);
+      std::cout << "CANCEL_MONITOR_BENCH "
+                << nlohmann::json{{"offered", count},
+                                  {"sample", sample},
+                                  {"threads_before", baseline_threads},
+                                  {"threads_loaded", loaded_threads},
+                                  {"process_cpu_ms_per_100ms", cpu_ms},
+                                  {"client_cancel_ms", latency},
+                                  {"cancelled", cancelled},
+                                  {"rejected", rejected}}
+                       .dump()
+                << '\n';
+    }
+  }
+}
+namespace {
+class BulkMetadataGrpcTest : public GrpcTest {
+  void SetUp() override {
+    auto extension = reinterpret_cast<void (*)()>(test::TraceConnection);
+    ASSERT_EQ(sqlite3_auto_extension(extension), SQLITE_OK);
+    GrpcTest::SetUp();
+    EXPECT_EQ(sqlite3_cancel_auto_extension(extension), 1);
+  }
+};
+}  // namespace
+TEST_F(BulkMetadataGrpcTest, BulkTransactionAndExternalWriterControlRpcLatencyFixture) {
+  sqlite3* db = nullptr;
+  ASSERT_EQ(sqlite3_open((temp.path() / "metadata.db").c_str(), &db), SQLITE_OK);
+  std::unique_ptr<sqlite3, decltype(&sqlite3_close)> writer(db, sqlite3_close);
+  std::vector<uint32_t> numbers;
+  for (uint32_t i = 1; i <= 10000; ++i)
+    numbers.push_back(i);
+  for (bool external : {false, true}) {
+    for (int sample = 0; sample < 20; ++sample) {
+      ASSERT_EQ(sqlite3_exec(db, "DELETE FROM read_status", nullptr, nullptr, nullptr), SQLITE_OK);
+      if (external)
+        ASSERT_EQ(sqlite3_exec(db, "BEGIN IMMEDIATE", nullptr, nullptr, nullptr), SQLITE_OK);
+      std::promise<void> began;
+      test::SqlTiming timing;
+      timing.began = &began;
+      const auto id = "rpc-bulk-" + std::to_string(external) + "-" + std::to_string(sample);
+      auto bulk = std::async(std::launch::async, [&] {
+        return test::TimedSql(timing, [&] { return metadata->MarkConferenceRead("A", id, "RU.TEST", "g", numbers); });
+      });
+      const auto entered = began.get_future().wait_for(std::chrono::seconds(1));
+      if (entered != std::future_status::ready) {
+        if (external)
+          EXPECT_EQ(sqlite3_exec(db, "ROLLBACK", nullptr, nullptr, nullptr), SQLITE_OK);
+        EXPECT_TRUE(bulk.get());
+        FAIL() << "bulk BEGIN watchdog";
+      }
+      std::vector<std::future<std::pair<grpc::Status, double>>> calls;
+      for (int kind = 0; kind < 3; ++kind)
+        calls.push_back(std::async(std::launch::async, [&, kind] {
+          const auto start = std::chrono::steady_clock::now();
+          grpc::ClientContext context;
+          Auth(context, b);
+          context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(5));
+          wire::GetConferenceRequest reference;
+          reference.set_conference_id("RU.TEST");
+          google::protobuf::Empty empty;
+          wire::SessionInfo session;
+          wire::Conference area;
+          auto status = kind == 0   ? client->RestoreSession(&context, empty, &session)
+                        : kind == 1 ? client->AddBookmark(&context, reference, &empty)
+                                    : client->GetConference(&context, reference, &area);
+          return std::pair{status,
+                           std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count()};
+        }));
+      if (external) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        EXPECT_EQ(sqlite3_exec(db, "COMMIT", nullptr, nullptr, nullptr), SQLITE_OK);
+      }
+      auto committed = bulk.get();
+      std::vector<double> latency;
+      int errors = 0;
+      for (auto& call : calls) {
+        const auto [status, ms] = call.get();
+        EXPECT_TRUE(status.ok()) << status.error_message();
+        errors += !status.ok();
+        latency.push_back(ms);
+      }
+      ASSERT_TRUE(committed);
+      EXPECT_EQ(committed->marked_count, 10000);
+      std::cout << "BULK_RPC_BENCH "
+                << nlohmann::json{{"external_writer", external},
+                                  {"sample", sample},
+                                  {"rpc_ms", latency},
+                                  {"errors", errors},
+                                  {"bulk_ms", timing.elapsed_ms},
+                                  {"sqlite_begin_ms", timing.begin_ms}}
+                       .dump()
+                << '\n';
+    }
+  }
+}
 TEST_F(GrpcTest, TechnicalDataReturnsRawBytesWithoutReadingOrChangingStorage) {
   wire::MessageReference reference;
   {
@@ -631,6 +858,7 @@ TEST_F(GrpcTest, HptLoginTwoDevicesShareServerDataAndLogoutIsIndependent) {
   EXPECT_EQ(login("wrong", denied).error_code(), grpc::StatusCode::UNAUTHENTICATED);
   ASSERT_TRUE(login("fixture-a", phone).ok());
   ASSERT_TRUE(login("fixture-a", laptop).ok());
+  EXPECT_TRUE(phone.session().supports_offline_sync());
   EXPECT_TRUE(phone.session().supports_message_footer());
   EXPECT_TRUE(phone.session().supports_lightweight_conference_catalog());
   EXPECT_EQ(phone.session().profile().user_id(), "A");
@@ -676,6 +904,7 @@ TEST_F(GrpcTest, HptLoginTwoDevicesShareServerDataAndLogoutIsIndependent) {
             grpc::StatusCode::UNAUTHENTICATED);
   EXPECT_TRUE(
       invoke(laptop.session_secret(), [&](auto& c) { return client->RestoreSession(&c, empty, &restored); }).ok());
+  EXPECT_TRUE(restored.supports_offline_sync());
   EXPECT_TRUE(restored.supports_message_footer());
   EXPECT_TRUE(restored.supports_lightweight_conference_catalog());
 }
@@ -1771,6 +2000,112 @@ TEST_F(ForcedKoi8GrpcTest, TechnicalDataOverrideRetainsDeclaredChrs) {
   EXPECT_TRUE(std::ranges::any_of(result.subfields(), [](const auto& f) { return f.value() == "CHRS: CP866 2 "; }));
 }
 
+TEST_F(GrpcTest, MessageEncodingCorrectionsPreserveMixedEchoAndCanBeDisabled) {
+  const auto base = temp.path() / "file";
+  std::string generation;
+  {
+    auto lease = storage::JamAccess::Open(*catalog, "RU.TEST", true,
+                                          std::chrono::steady_clock::now() + std::chrono::seconds(2), {}, "KOI8-R");
+    ASSERT_TRUE(lease);
+    generation = (*lease)->generation();
+    for (int i = 0; i < 4; ++i) {
+      msgapi::JamMessage message;
+      message.SetSubject("Проверка");
+      message.SetText("Читаемый текст");
+      ASSERT_EQ((*lease)->messages().AddMessage(message), msgapi::JamError::kSuccess);
+    }
+  }
+  auto header = test::ReadFile(base.string() + ".jhr");
+  size_t offset = 0;
+  for (int i = 0; i < 4; ++i) {
+    offset = header.find("CHRS: KOI8-R 2", offset);
+    ASSERT_NE(offset, std::string::npos);
+    header.replace(offset, 14, "CHRS: CP866 2 ");
+  }
+  std::ofstream(base.string() + ".jhr", std::ios::binary | std::ios::trunc) << header;
+  const auto replaced = test::ReadJamWireRecord(base, 1);
+  auto body = test::ReadFile(base.string() + ".jdt");
+  body.at(test::Wire32(replaced.header, 60)) = 'X';
+  std::ofstream(base.string() + ".jdt", std::ios::binary | std::ios::trunc) << body;
+  const auto index = test::ReadFile(base.string() + ".jdx");
+  const auto first = test::ReadJamWireRecord(base, 0);
+  const auto digest = service::Sha256(first.header.substr(76) + first.body);
+  ASSERT_TRUE(digest);
+  constexpr std::string_view hex = "0123456789abcdef";
+  std::string fingerprint;
+  for (const auto byte : *digest) {
+    fingerprint += hex[byte >> 4];
+    fingerprint += hex[byte & 15];
+  }
+  storage::JamEncodingCorrections manifest;
+  manifest.bases["file"][42] = {fingerprint, "CP866", "KOI8-R"};
+  ASSERT_EQ(replaced.header.substr(76) + replaced.body, first.header.substr(76) + first.body);
+  manifest.bases["file"][43] = {fingerprint, "CP866", "KOI8-R"};
+  manifest.bases["file"][45] = {fingerprint, "UTF-8", "KOI8-R"};
+  ASSERT_TRUE(catalog->BindEncodingCorrections(std::move(manifest)));
+
+  const auto reference = [&](int number) {
+    wire::MessageReference result;
+    result.set_conference_id("RU.TEST");
+    result.set_message_id(generation + "#" + std::to_string(number));
+    return result;
+  };
+  const auto get = [&](int number) {
+    grpc::ClientContext context;
+    Auth(context, a);
+    wire::Message result;
+    EXPECT_TRUE(client->GetMessage(&context, reference(number), &result).ok());
+    EXPECT_EQ(result.id(), reference(number).message_id());
+    return result;
+  };
+  EXPECT_EQ(get(42).subject(), "Проверка");
+  EXPECT_EQ(get(42).body(), "Читаемый текст");
+  EXPECT_NE(get(43).subject(), "Проверка");
+  EXPECT_NE(get(44).subject(), "Проверка");
+  EXPECT_NE(get(45).subject(), "Проверка");
+  {
+    grpc::ClientContext context;
+    Auth(context, a);
+    wire::MessageTechnicalData result;
+    ASSERT_TRUE(client->GetMessageTechnicalData(&context, reference(42), &result).ok());
+    EXPECT_EQ(result.effective_encoding(), "KOI8-R");
+    EXPECT_TRUE(
+        std::ranges::any_of(result.subfields(), [](const auto& field) { return field.value() == "CHRS: CP866 2 "; }));
+  }
+  {
+    wire::FindMessageRequest request;
+    request.set_conference_id("RU.TEST");
+    request.set_query("Проверка");
+    request.set_scope(wire::MESSAGE_SEARCH_HEADER_ONLY);
+    request.set_sort(wire::MESSAGE_SORT_DATE_ASCENDING);
+    grpc::ClientContext context;
+    Auth(context, a);
+    wire::FindMessageResponse result;
+    ASSERT_TRUE(client->FindMessage(&context, request, &result).ok());
+    ASSERT_TRUE(result.has_message());
+    EXPECT_EQ(result.message().id(), reference(42).message_id());
+  }
+  {
+    wire::SearchArchiveMessagesRequest request;
+    request.add_conference_ids("RU.TEST");
+    request.set_query("Проверка");
+    request.set_scope(wire::MESSAGE_SEARCH_HEADER_ONLY);
+    request.set_sort(wire::MESSAGE_SORT_DATE_ASCENDING);
+    request.set_limit(10);
+    grpc::ClientContext context;
+    Auth(context, a);
+    wire::SearchArchiveMessagesResponse result;
+    ASSERT_TRUE(client->SearchArchiveMessages(&context, request, &result).ok());
+    ASSERT_EQ(result.results_size(), 1);
+    EXPECT_EQ(result.results(0).message().id(), reference(42).message_id());
+  }
+  ASSERT_TRUE(catalog->BindEncodingCorrections({}));
+  EXPECT_NE(get(42).subject(), "Проверка");
+  EXPECT_EQ(test::ReadFile(base.string() + ".jhr"), header);
+  EXPECT_EQ(test::ReadFile(base.string() + ".jdt"), body);
+  EXPECT_EQ(test::ReadFile(base.string() + ".jdx"), index);
+}
+
 TEST_F(GrpcTest, PersonalFiltersCollapseRevealSearchAndLegacyIsolation) {
   auto request = Request("filter-source");
   wire::CreateMessageResponse created;
@@ -2273,6 +2608,11 @@ TEST_F(BudgetMcpGrpcTest, CatalogCancellationReleasesSlotAndEofCancelsActiveCall
   proxy->blocked = true;
   send_catalog(2);
   ASSERT_TRUE(proxy->WaitForEntry());
+  send_catalog(2);
+  const auto duplicate = mcp.Read();
+  EXPECT_EQ(duplicate.at("id"), 2);
+  EXPECT_TRUE(duplicate.at("result").at("isError"));
+  EXPECT_NE(duplicate.dump().find("RESOURCE_EXHAUSTED"), std::string::npos);
   auto started = std::chrono::steady_clock::now();
   mcp.Send({{"jsonrpc", "2.0"}, {"method", "notifications/cancelled"}, {"params", {{"requestId", 2}}}});
   EXPECT_TRUE(mcp.Read().at("result").at("isError"));
@@ -2389,11 +2729,16 @@ public:
                               wire::MessagePreview* output) override {
     const auto status = backend_.PreviewMessage(context, input, output);
     std::unique_lock lock(mutex_);
+    ++completed_previews_;
+    wake_.notify_all();
     if (pause_preview_) {
       preview_ready_ = true;
+      ++preview_count_;
       wake_.notify_all();
       while (!context->IsCancelled())
         wake_.wait_for(lock, std::chrono::milliseconds(5));
+      ++preview_cancelled_;
+      wake_.notify_all();
       return {grpc::StatusCode::CANCELLED, "cancelled"};
     }
     return status;
@@ -2415,11 +2760,29 @@ public:
     std::unique_lock lock(mutex_);
     while (!context->IsCancelled())
       wake_.wait_for(lock, std::chrono::milliseconds(5));
+    read_cancelled_ = true;
+    wake_.notify_all();
     return {grpc::StatusCode::CANCELLED, "cancelled"};
+  }
+  bool WaitForReadCancellation() {
+    std::unique_lock lock(mutex_);
+    return wake_.wait_for(lock, std::chrono::seconds(1), [&] { return read_cancelled_; });
   }
   void PausePreview() {
     std::lock_guard lock(mutex_);
     pause_preview_ = true;
+  }
+  bool WaitForCompletedPreviews(int count) {
+    std::unique_lock lock(mutex_);
+    return wake_.wait_for(lock, std::chrono::seconds(1), [&] { return completed_previews_ >= count; });
+  }
+  bool WaitForPreviews(int count) {
+    std::unique_lock lock(mutex_);
+    return wake_.wait_for(lock, std::chrono::seconds(1), [&] { return preview_count_ >= count; });
+  }
+  bool WaitForPreviewCancellation() {
+    std::unique_lock lock(mutex_);
+    return wake_.wait_for(lock, std::chrono::seconds(1), [&] { return preview_cancelled_ > 0; });
   }
   bool WaitForPreview() {
     std::unique_lock lock(mutex_);
@@ -2435,7 +2798,8 @@ private:
   std::atomic<bool> lost_ = false;
   std::mutex mutex_;
   std::condition_variable wake_;
-  bool reading_ = false, pause_preview_ = false, preview_ready_ = false;
+  bool reading_ = false, read_cancelled_ = false, pause_preview_ = false, preview_ready_ = false;
+  int preview_count_ = 0, preview_cancelled_ = 0, completed_previews_ = 0;
 };
 class LossyMcpGrpcTest : public McpGrpcTest {
 protected:
@@ -2479,6 +2843,217 @@ TEST_F(LossyMcpGrpcTest, LostSendResponseThenRestartRepeatsTheSameDurableOperati
   auto after = messages.GetMessages("RU.TEST", {}, "oldest", "A");
   ASSERT_TRUE(after);
   EXPECT_EQ(after->total, 1);
+}
+TEST_F(LossyMcpGrpcTest, IndependentDraftPreparationDoesNotWaitForAnotherPreview) {
+  test::McpProcess mcp(ConfigureMcp().string());
+  mcp.Initialize();
+  proxy->PausePreview();
+  for (int id : {2, 3}) {
+    mcp.Send({{"jsonrpc", "2.0"},
+              {"id", id},
+              {"method", "tools/call"},
+              {"params",
+               {{"name", "ffido_prepare_message"},
+                {"arguments", {{"area_id", "RU.TEST"}, {"subject", "Fixture"}, {"body", "draft"}}}}}});
+    ASSERT_TRUE(proxy->WaitForPreviews(id - 1));
+  }
+  mcp.Send({{"jsonrpc", "2.0"}, {"method", "notifications/cancelled"}, {"params", {{"requestId", 3}}}});
+  EXPECT_TRUE(proxy->WaitForPreviewCancellation());
+  auto cancelled = mcp.Read();
+  EXPECT_EQ(cancelled.at("id"), 3);
+  EXPECT_TRUE(cancelled.at("result").at("isError"));
+  mcp.Send({{"jsonrpc", "2.0"},
+            {"id", 4},
+            {"method", "tools/call"},
+            {"params",
+             {{"name", "ffido_get_message"},
+              {"arguments", {{"reference", {{"conference_id", "RU.TEST"}, {"message_id", "g#42"}}}}}}}});
+  EXPECT_TRUE(proxy->WaitForReading());
+  mcp.Send({{"jsonrpc", "2.0"}, {"method", "notifications/cancelled"}, {"params", {{"requestId", 4}}}});
+  EXPECT_TRUE(proxy->WaitForReadCancellation());
+  EXPECT_EQ(mcp.Read().at("id"), 4);
+  mcp.Send({{"jsonrpc", "2.0"}, {"id", 5}, {"method", "ping"}});
+  EXPECT_EQ(mcp.Read().at("id"), 5);
+  mcp.Send({{"jsonrpc", "2.0"}, {"method", "notifications/cancelled"}, {"params", {{"requestId", 2}}}});
+  EXPECT_EQ(mcp.Read().at("id"), 2);
+  mcp.Finish();
+  service::ConferenceService areas(catalog, metadata, AccessPolicy());
+  EXPECT_EQ(areas.GetConference("RU.TEST", "A")->total_count, 0);
+}
+TEST_F(LossyMcpGrpcTest, BackpressureDoesNotDelayServerCancellation) {
+  test::McpProcess mcp(ConfigureMcp().string());
+  mcp.Initialize();
+  mcp.Send({{"jsonrpc", "2.0"},
+            {"id", 2},
+            {"method", "tools/call"},
+            {"params",
+             {{"name", "ffido_get_message"},
+              {"arguments", {{"reference", {{"conference_id", "RU.TEST"}, {"message_id", "g#42"}}}}}}}});
+  ASSERT_TRUE(proxy->WaitForReading());
+  for (int id = 100; id < 124; ++id)
+    mcp.Send({{"jsonrpc", "2.0"}, {"id", id}, {"method", "tools/list"}});
+  mcp.Send({{"jsonrpc", "2.0"}, {"method", "notifications/cancelled"}, {"params", {{"requestId", 2}}}});
+  // Observe the backend before allowing any output consumption.
+  EXPECT_TRUE(proxy->WaitForReadCancellation());
+  std::set<int> ids;
+  for (int i = 0; i < 25; ++i)
+    ids.insert(mcp.Read().at("id").get<int>());
+  EXPECT_EQ(ids.size(), 25u);
+  EXPECT_TRUE(ids.contains(2));
+  mcp.Send({{"jsonrpc", "2.0"}, {"id", 200}, {"method", "ping"}});
+  EXPECT_EQ(mcp.Read().at("id"), 200);
+  mcp.Finish();
+}
+TEST_F(LossyMcpGrpcTest, CancellationReachesBackendWhileAnotherWorkerOwnsSerializer) {
+  const auto config = ConfigureMcp();
+  const auto ready = temp.path() / "serializer-ready";
+  const auto release = temp.path() / "serializer-release";
+  test::McpProcess mcp(
+      config.string(),
+      {{"FFIDO_TEST_SERIALIZE_READY", ready.string()}, {"FFIDO_TEST_SERIALIZE_RELEASE", release.string()}},
+      FFIDO_MCP_SERIALIZATION_PROBE);
+  struct Release {
+    std::filesystem::path path;
+    ~Release() {
+      std::ofstream output(path);
+      output << "release";
+    }
+  } cleanup{release};
+  mcp.Initialize();
+  mcp.Send({{"jsonrpc", "2.0"},
+            {"id", 2},
+            {"method", "tools/call"},
+            {"params",
+             {{"name", "ffido_get_message"},
+              {"arguments", {{"reference", {{"conference_id", "RU.TEST"}, {"message_id", "g#42"}}}}}}}});
+  ASSERT_TRUE(proxy->WaitForReading());
+  mcp.Send({{"jsonrpc", "2.0"},
+            {"id", 3},
+            {"method", "tools/call"},
+            {"params",
+             {{"name", "ffido_prepare_message"},
+              {"arguments", {{"area_id", "RU.TEST"}, {"subject", "Synthetic"}, {"body", "Draft"}}}}}});
+  const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+  while (!std::filesystem::exists(ready) && std::chrono::steady_clock::now() < until)
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  EXPECT_TRUE(std::filesystem::exists(ready));
+  mcp.Send({{"jsonrpc", "2.0"}, {"id", 4}, {"method", "ping"}});
+  mcp.Send({{"jsonrpc", "2.0"}, {"method", "notifications/cancelled"}, {"params", {{"requestId", 2}}}});
+  // The other response still holds serialization_mutex at this observation.
+  EXPECT_TRUE(proxy->WaitForReadCancellation());
+  {
+    std::ofstream output(release);
+    output << "release";
+  }
+  std::set<int> ids;
+  for (int i = 0; i < 3; ++i)
+    ids.insert(mcp.Read().at("id").get<int>());
+  EXPECT_EQ(ids, (std::set<int>{2, 3, 4}));
+  mcp.Finish();
+}
+TEST_F(LossyMcpGrpcTest, CompletedModelsUseBoundedWriterQueueWithoutBlockingAdmission) {
+  const auto config = ConfigureMcp();
+  const auto ready = temp.path() / "model-ready";
+  const auto release = temp.path() / "model-release";
+  const auto report = temp.path() / "models.json";
+  test::McpProcess mcp(config.string(),
+                       {{"FFIDO_TEST_MEASUREMENTS", report.string()},
+                        {"FFIDO_TEST_SERIALIZE_READY", ready.string()},
+                        {"FFIDO_TEST_SERIALIZE_RELEASE", release.string()}},
+                       FFIDO_MCP_SERIALIZATION_PROBE);
+  struct Release {
+    std::filesystem::path path;
+    ~Release() {
+      std::ofstream output(path);
+      output << "release";
+    }
+  } cleanup{release};
+  mcp.Initialize();
+  const auto prepare = [&](int id) {
+    mcp.Send({{"jsonrpc", "2.0"},
+              {"id", id},
+              {"method", "tools/call"},
+              {"params",
+               {{"name", "ffido_prepare_message"},
+                {"arguments", {{"area_id", "RU.TEST"}, {"subject", "Synthetic"}, {"body", "Model"}}}}}});
+  };
+  prepare(3);
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (!std::filesystem::exists(ready) && std::chrono::steady_clock::now() < deadline)
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  ASSERT_TRUE(std::filesystem::exists(ready));
+  for (int id : {4, 5, 6})
+    prepare(id);
+  ASSERT_TRUE(proxy->WaitForCompletedPreviews(4));
+  prepare(7);
+  ASSERT_TRUE(proxy->WaitForCompletedPreviews(5));
+  {
+    std::ofstream output(release);
+    output << "release";
+  }
+  std::set<int> ids;
+  for (int i = 0; i < 5; ++i) {
+    const auto response = mcp.Read();
+    ids.insert(response.at("id").get<int>());
+    EXPECT_FALSE(response.at("result").at("isError").get<bool>());
+  }
+  EXPECT_EQ(ids, (std::set<int>{3, 4, 5, 6, 7}));
+  mcp.Finish();
+  const auto observed = nlohmann::json::parse(test::ReadFile(report));
+  EXPECT_LE(observed.at("json_peak_models"), 5);
+  EXPECT_EQ(observed.at("serialized_peak_models"), 1);
+  EXPECT_EQ(observed.at("json_models"), 0);
+  std::cout << "MCP_MEMORY " << nlohmann::json{{"outcome", "pending-models"}, {"observed", observed}}.dump() << '\n';
+}
+
+TEST_F(McpGrpcTest, ClosedOutputAndPendingOutputAtEofHaveBoundedShutdown) {
+  for (bool close : {false, true}) {
+    test::McpProcess mcp(ConfigureMcp().string());
+    mcp.Initialize();
+    if (close)
+      mcp.CloseOutput();
+    for (int id = 100; id < (close ? 101 : 124); ++id)
+      mcp.Send({{"jsonrpc", "2.0"}, {"id", id}, {"method", "tools/list"}});
+    EXPECT_NO_THROW(mcp.Finish(1, std::chrono::seconds(3)));
+  }
+}
+TEST_F(McpGrpcTest, OutputFloodTerminatesInsteadOfGrowingOrWaitingForInput) {
+  test::McpProcess mcp(ConfigureMcp().string());
+  mcp.Initialize();
+  try {
+    for (int id = 100; id < 200; ++id)
+      mcp.Send({{"jsonrpc", "2.0"}, {"id", id}, {"method", "tools/list"}});
+  } catch (const std::runtime_error&) { /* Closed input after bounded output failure. */
+  }
+  EXPECT_NO_THROW(mcp.Finish(1, std::chrono::seconds(3)));
+}
+TEST_F(McpGrpcTest, SmallPingAndErrorFloodsRespectPendingMessageBudget) {
+  for (const std::string method : {"ping", "unknown-method"}) {
+    test::McpProcess mcp(ConfigureMcp().string());
+    mcp.Initialize();
+    const auto begin = std::chrono::steady_clock::now();
+    int submitted = 0;
+    try {
+      // Fill the pipe first; tiny responses must then hit the message limit
+      // even though their total size is far below the byte limit.
+      for (int id = 100; id < 124; ++id)
+        mcp.Send({{"jsonrpc", "2.0"}, {"id", id}, {"method", "tools/list"}});
+      for (int id = 200; id < 328; ++id) {
+        mcp.Send({{"jsonrpc", "2.0"}, {"id", id}, {"method", method}});
+        ++submitted;
+      }
+    } catch (const std::runtime_error&) { /* Bounded output failure closes stdin. */
+    }
+    EXPECT_NO_THROW(mcp.WaitForExit(1, std::chrono::seconds(3)));
+    std::cout
+        << "MCP_SMALL_OUTPUT_FLOOD "
+        << nlohmann::json{{"method", method},
+                          {"submitted", submitted},
+                          {"shutdown_ms",
+                           std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin).count()}}
+               .dump()
+        << '\n';
+  }
 }
 TEST_F(LossyMcpGrpcTest, PingAndCancellationWorkDuringAnActiveGrpcCall) {
   const auto config = ConfigureMcp();
@@ -2669,6 +3244,10 @@ TEST_F(McpGrpcTest, RawTechnicalBytesAndLargeBodiesHaveExplicitRepresentationsAn
   auto large = mcp.Call(3, "ffido_get_message", {{"reference", reference}});
   EXPECT_TRUE(large.at("isError"));
   EXPECT_NE(large.dump().find("RESOURCE_EXHAUSTED"), std::string::npos);
+  auto near_limit = mcp.Call(5, "ffido_get_message", {{"reference", reference}, {"body_limit", 32000}});
+  ASSERT_FALSE(near_limit.at("isError").get<bool>());
+  EXPECT_GT(near_limit.dump().size(), 384 * 1024u);
+  EXPECT_LT(near_limit.dump().size(), 512 * 1024u);
   auto block = mcp.Call(4, "ffido_get_message", {{"reference", reference}, {"body_limit", 1024}});
   ASSERT_FALSE(block.at("isError").get<bool>());
   const auto data = block.at("structuredContent").at("data");
@@ -2678,6 +3257,47 @@ TEST_F(McpGrpcTest, RawTechnicalBytesAndLargeBodiesHaveExplicitRepresentationsAn
   mcp.Finish();
 }
 
+TEST_F(McpGrpcTest, SecretFsyncFailurePreservesDraftAndDoesNotDuplicatePublication) {
+  for (const std::string stage : {"prepared", "attempted", "completed"}) {
+    const auto config = ConfigureMcp();
+    const auto root = std::filesystem::canonical(temp.path() / "mcp-state").string();
+    std::map<std::string, std::string> environment{{"FFIDO_TEST_SYNC_ROOT", root}, {"FFIDO_TEST_SYNC_STATE", stage}};
+#ifdef __APPLE__
+    environment["DYLD_INSERT_LIBRARIES"] = FFIDO_MCP_FAULT_LIBRARY;
+#else
+    environment["LD_PRELOAD"] = FFIDO_MCP_FAULT_LIBRARY;
+#endif
+    test::McpProcess mcp(config.string(), environment);
+    mcp.Initialize();
+    auto prepared = mcp.Call(2, "ffido_prepare_message",
+                             {{"area_id", "RU.TEST"}, {"subject", "Fault " + stage}, {"body", "Synthetic text"}});
+    if (stage == "prepared") {
+      EXPECT_TRUE(prepared.at("isError").get<bool>());
+      prepared = mcp.Call(3, "ffido_prepare_message",
+                          {{"area_id", "RU.TEST"}, {"subject", "Fault " + stage}, {"body", "Synthetic text"}});
+    }
+    ASSERT_FALSE(prepared.at("isError").get<bool>()) << prepared.dump();
+    const auto draft = prepared.at("structuredContent").at("data").at("draft_id").get<std::string>();
+    const auto path = temp.path() / "mcp-state" / (draft + ".json");
+    const auto before = nlohmann::json::parse(test::ReadFile(path));
+    const auto sent = mcp.Call(10, "ffido_send_message", {{"draft_id", draft}, {"confirm", true}});
+    EXPECT_EQ(sent.at("isError").get<bool>(), stage != "prepared");
+    service::ConferenceService areas(catalog, metadata, AccessPolicy());
+    EXPECT_EQ(areas.GetConference("RU.TEST", "A")->total_count, stage == "attempted"   ? 1
+                                                                : stage == "completed" ? 3
+                                                                                       : 1);
+    const auto repeated = mcp.Call(11, "ffido_send_message", {{"draft_id", draft}, {"confirm", true}});
+    ASSERT_FALSE(repeated.at("isError").get<bool>()) << repeated.dump();
+    const auto after = nlohmann::json::parse(test::ReadFile(path));
+    EXPECT_EQ(before.at("request").at("operation_id"), after.at("request").at("operation_id"));
+    EXPECT_EQ(after.at("state"), "completed");
+    for (const auto& entry : std::filesystem::directory_iterator(temp.path() / "mcp-state"))
+      EXPECT_FALSE(entry.path().filename().string().starts_with(".tmp-"));
+    mcp.Finish();
+  }
+  service::ConferenceService areas(catalog, metadata, AccessPolicy());
+  EXPECT_EQ(areas.GetConference("RU.TEST", "A")->total_count, 3);
+}
 TEST_F(McpGrpcTest, ConcurrentSendUsesOneOperationAndRevokedLocalPostPermissionBlocksReplay) {
   const auto config = ConfigureMcp();
   std::string draft;
@@ -2688,7 +3308,7 @@ TEST_F(McpGrpcTest, ConcurrentSendUsesOneOperationAndRevokedLocalPostPermissionB
         mcp.Call(2, "ffido_prepare_message", {{"area_id", "RU.TEST"}, {"subject", "Тема"}, {"body", "Text"}});
     ASSERT_FALSE(prepared.at("isError").get<bool>());
     draft = prepared.at("structuredContent").at("data").at("draft_id");
-    for (int id : {3, 4})
+    for (int id : {3, 4, 5})
       mcp.Send({{"jsonrpc", "2.0"},
                 {"id", id},
                 {"method", "tools/call"},
@@ -2698,6 +3318,10 @@ TEST_F(McpGrpcTest, ConcurrentSendUsesOneOperationAndRevokedLocalPostPermissionB
     ASSERT_FALSE(second.at("isError").get<bool>());
     EXPECT_EQ(first.at("structuredContent").at("data").at("message"),
               second.at("structuredContent").at("data").at("message"));
+    const auto third = mcp.Read().at("result");
+    ASSERT_FALSE(third.at("isError").get<bool>());
+    EXPECT_EQ(first.at("structuredContent").at("data").at("message"),
+              third.at("structuredContent").at("data").at("message"));
     mcp.Finish();
   }
   auto value = nlohmann::json::parse(test::ReadFile(config));
@@ -2768,6 +3392,75 @@ class GrpcKoiLargeTest : public GrpcTest {
   }
 };
 }  // namespace
+
+TEST_F(McpGrpcTest, NearLimitOutputMemoryIsReleasedOnSuccessFailureAndEof) {
+  grpc::ClientContext context;
+  Auth(context, a);
+  wire::CreateMessageResponse created;
+  ASSERT_TRUE(client->CreateMessage(&context, Request(), &created).ok());
+  ExistingBody(temp.path() / "file", 65536, char(2));
+  const auto config = ConfigureMcp();
+  for (const std::string outcome : {"normal", "oversized", "eof", "closed", "flood"}) {
+    const auto report = temp.path() / (outcome + "-memory.json");
+    const auto ready = temp.path() / (outcome + "-ready");
+    const auto release = temp.path() / (outcome + "-release");
+    {
+      std::ofstream output(release);
+      output << "release";
+    }
+    test::McpProcess mcp(config.string(),
+                         {{"FFIDO_TEST_MEASUREMENTS", report.string()},
+                          {"FFIDO_TEST_SERIALIZE_READY", ready.string()},
+                          {"FFIDO_TEST_SERIALIZE_RELEASE", release.string()}},
+                         FFIDO_MCP_SERIALIZATION_PROBE);
+    mcp.Initialize();
+    const nlohmann::json reference{{"conference_id", "RU.TEST"}, {"message_id", created.message().message_id()}};
+    if (outcome == "normal" || outcome == "oversized") {
+      const auto response = mcp.Call(3, "ffido_get_message",
+                                     {{"reference", reference}, {"body_limit", outcome == "normal" ? 32768 : 65536}});
+      EXPECT_EQ(response.at("isError").get<bool>(), outcome == "oversized");
+      mcp.Finish();
+    } else {
+      mcp.Send({{"jsonrpc", "2.0"},
+                {"id", 3},
+                {"method", "tools/call"},
+                {"params",
+                 {{"name", "ffido_get_message"}, {"arguments", {{"reference", reference}, {"body_limit", 32768}}}}}});
+      const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+      while (!std::filesystem::exists(ready) && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      ASSERT_TRUE(std::filesystem::exists(ready));
+      if (outcome == "closed")
+        mcp.CloseOutput();
+      if (outcome == "flood") {
+        try {
+          for (int id = 10; id < 138; ++id)
+            mcp.Send({{"jsonrpc", "2.0"}, {"id", id}, {"method", "tools/list"}});
+        } catch (const std::runtime_error&) { /* Expected output-pressure shutdown. */
+        }
+        mcp.WaitForExit(1, std::chrono::seconds(10));
+      } else
+        mcp.Finish(1, std::chrono::seconds(10));
+    }
+    const auto values = nlohmann::json::parse(test::ReadFile(report));
+    for (const auto* name : {"protobuf_bytes", "json_bytes", "serialized_bytes", "queued_bytes",
+                             "queued_capacity_bytes", "json_models", "serialized_models"})
+      EXPECT_EQ(values.at(name), 0) << outcome << " " << name;
+    EXPECT_GT(values.at("protobuf_peak_bytes").get<uint64_t>(), 32768u);
+    if (outcome == "oversized") {
+      // Master rejects oversized JSON before materializing its serialized payload.
+      EXPECT_LT(values.at("serialized_peak_bytes").get<uint64_t>(), 32768u);
+      EXPECT_LT(values.at("queued_peak_bytes").get<uint64_t>(), 32768u);
+    } else {
+      EXPECT_GT(values.at("serialized_peak_bytes").get<uint64_t>(), 32768u);
+    }
+    EXPECT_LE(values.at("queued_peak_bytes").get<uint64_t>(), 4u * 1024 * 1024);
+    EXPECT_LE(values.at("protobuf_peak_bytes").get<uint64_t>(), 4u * 32 * 1024 * 1024);
+    auto record = values;
+    record["outcome"] = outcome;
+    std::cout << "MCP_MEMORY " << record.dump() << '\n';
+  }
+}
 
 TEST_F(GrpcKoiLargeTest, LargeExistingBodySurvivesUtf8ExpansionAndTransport) {
   wire::CreateMessageResponse created;
@@ -2872,6 +3565,7 @@ TEST_F(CrosspostGrpcTest, BrokenAreaStatisticsDoNotAbortTheRpcCatalog) {
   for (const auto& area : result.conferences()) {
     if (area.id() == "RU.TEST") {
       EXPECT_FALSE(area.statistics_known());
+      EXPECT_TRUE(area.generation().empty());
       EXPECT_EQ(area.availability(), wire::AREA_AVAILABILITY_AVAILABLE);
     } else
       EXPECT_TRUE(area.statistics_known());
@@ -2898,6 +3592,7 @@ class GrpcThousandAreaTest : public GrpcTest {
 };
 }  // namespace
 TEST_F(GrpcThousandAreaTest, ServerListsAllPagesWithUnchangedLowNofile) {
+  measurements::Enable();
   std::set<std::string> seen;
   for (int offset = 0; offset < 1000; offset += 100) {
     wire::ListConferencesRequest request;
@@ -2912,6 +3607,9 @@ TEST_F(GrpcThousandAreaTest, ServerListsAllPagesWithUnchangedLowNofile) {
     for (const auto& area : result.conferences())
       EXPECT_TRUE(seen.insert(area.id()).second);
   }
+  const auto observed = test::MeasurementValues();
+  measurements::Disable();
+  std::cout << "THOUSAND_AREAS_MEASURE " << observed.dump() << '\n';
   EXPECT_EQ(seen.size(), 1000u);
   for (const auto& [id, area] : catalog->areas())
     EXPECT_EQ(area.files->descriptors[0], -1);
@@ -2943,13 +3641,20 @@ TEST_F(GrpcKoiLargeTest, CancellationDuringLargeReadReleasesTheFileLease) {
       std::this_thread::yield();
     }
     context.TryCancel();
+    const auto cancelled_at = std::chrono::steady_clock::now();
     EXPECT_TRUE(active);
     EXPECT_EQ(reading.get().error_code(), grpc::StatusCode::CANCELLED);
     {
-      auto lease =
-          storage::JamLease::Acquire(owner, false, std::chrono::steady_clock::now() + std::chrono::seconds(10));
+      auto lease = storage::JamLease::Acquire(owner, false, std::chrono::steady_clock::now() + std::chrono::seconds(1));
       ASSERT_TRUE(lease);
     }
+    std::cout << "CANCEL_RELEASE "
+              << nlohmann::json{{"attempt", attempt},
+                                {"milliseconds", std::chrono::duration<double, std::milli>(
+                                                     std::chrono::steady_clock::now() - cancelled_at)
+                                                     .count()}}
+                     .dump()
+              << '\n';
     EXPECT_EQ(owner->descriptors[0], -1);
   }
 }
@@ -2979,6 +3684,7 @@ TEST_F(LargeCatalogGrpcTest, LightweightPagesAndBookmarkMutationNeverOpenJam) {
   EXPECT_TRUE(response.has_more());
   for (const auto& value : response.conferences()) {
     EXPECT_FALSE(value.statistics_known());
+    EXPECT_TRUE(value.generation().empty());
     EXPECT_EQ(value.total_count(), 0);
     EXPECT_EQ(value.unread_count(), 0);
     EXPECT_FALSE(value.has_last_message_date());
@@ -3031,6 +3737,124 @@ TEST_F(LargeCatalogGrpcTest, BookmarkStatisticsAreLimitedToRequestedPage) {
   EXPECT_FALSE(client->ListBookmarks(&next, request, &response).ok());
 }
 
+namespace {
+class CatalogMeasurementGrpcTest : public GrpcTest {
+  int AreaCount() const override {
+    return test::BenchmarkOption("FFIDO_BENCH_AREAS", 1);
+  }
+  int MaxConcurrent() const override {
+    return 64;
+  }
+};
+}  // namespace
+TEST_F(CatalogMeasurementGrpcTest, CatalogMeasurementFixture) {
+  const int count = test::BenchmarkOption("FFIDO_BENCH_MESSAGES", 100);
+  const int parallel = test::BenchmarkOption("FFIDO_BENCH_PARALLEL", 1);
+  const bool light = test::BenchmarkOption("FFIDO_BENCH_LIGHT", 0) != 0;
+  ASSERT_GT(count, 0);
+  ASSERT_TRUE(parallel == 1 || parallel == 16 || parallel == 64);
+  const auto base = temp.path() / "file";
+  {
+    auto header = msgapi::jam_wire::Decode([&] {
+      std::array<uint8_t, 1024> bytes{};
+      std::ifstream input(base.string() + ".jhr", std::ios::binary);
+      input.read(reinterpret_cast<char*>(bytes.data()), bytes.size());
+      return bytes;
+    }());
+    header.active_msgs = count;
+    const auto bytes = msgapi::jam_wire::Encode(header);
+    std::ofstream jhr(base.string() + ".jhr", std::ios::binary | std::ios::trunc);
+    std::ofstream jdx(base.string() + ".jdx", std::ios::binary | std::ios::trunc);
+    jhr.write(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+    for (int n = 0; n < count; ++n) {
+      msgapi::JamMessageHeader item{};
+      item.signature = msgapi::kJamSignature;
+      item.revision = 1;
+      item.message_number = 42 + n;
+      item.date_written = 100 + n;
+      const auto record = msgapi::jam_wire::Encode(item);
+      const auto index = msgapi::jam_wire::Encode(msgapi::JamIndexRecord{0, uint32_t(1024 + 76 * n)});
+      jhr.write(reinterpret_cast<const char*>(record.data()), record.size());
+      jdx.write(reinterpret_cast<const char*>(index.data()), index.size());
+    }
+  }
+  for (const auto& [id, area] : catalog->areas()) {
+    if (id == "RU.TEST")
+      continue;
+    for (const auto* extension : {".jhr", ".jdt", ".jdx"})
+      std::filesystem::copy_file(base.string() + extension, (temp.path() / area.config.filename).string() + extension,
+                                 std::filesystem::copy_options::overwrite_existing);
+  }
+  for (const std::string phase : {"cold", "warm"}) {
+    measurements::Enable();
+    test::RssSampler rss;
+    const auto begin = std::chrono::steady_clock::now();
+    std::vector<std::future<std::pair<int, double>>> calls;
+    for (int q = 0; q < parallel; ++q)
+      calls.push_back(std::async(std::launch::async, [&] {
+        wire::ListConferencesRequest request;
+        request.mutable_page()->set_limit(20);
+        request.set_sort(wire::CONFERENCE_SORT_NAME);
+        request.set_omit_statistics(light);
+        wire::ListConferencesResponse response;
+        grpc::ClientContext context;
+        Auth(context, b);
+        const auto started = std::chrono::steady_clock::now();
+        const auto status = client->ListConferences(&context, request, &response);
+        if (status.ok()) {
+          EXPECT_EQ(response.total(), catalog->areas().size());
+          for (const auto& item : response.conferences()) {
+            EXPECT_EQ(item.statistics_known(), !light);
+            EXPECT_EQ(item.total_count(), light ? 0 : count);
+            EXPECT_EQ(item.unread_count(), light ? 0 : count);
+          }
+        } else {
+          EXPECT_TRUE(status.error_code() == grpc::StatusCode::DEADLINE_EXCEEDED ||
+                      status.error_code() == grpc::StatusCode::RESOURCE_EXHAUSTED)
+              << status.error_code() << " " << status.error_message();
+        }
+        return std::pair{static_cast<int>(status.error_code()),
+                         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count()};
+      }));
+    std::vector<double> timings, successful;
+    nlohmann::json errors = nlohmann::json::object();
+    int completed = 0;
+    for (auto& call : calls) {
+      const auto [code, ms] = call.get();
+      timings.push_back(ms);
+      if (!code) {
+        ++completed;
+        successful.push_back(ms);
+      } else
+        errors[std::to_string(code)] = errors.value(std::to_string(code), 0) + 1;
+    }
+    auto result = test::MeasurementValues();
+    measurements::Disable();
+    result["rss"] = rss.Stop();
+    result["latency_ms"] = timings;
+    result["successful_latency_ms"] = successful;
+    result["latency"] = test::Latencies(timings);
+    result["phase"] = phase;
+    result["areas"] = catalog->areas().size();
+    result["messages_per_area"] = count;
+    result["parallel"] = parallel;
+    result["light"] = light;
+    result["completed"] = completed;
+    result["errors"] = errors;
+    result["wall_ms"] = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin).count();
+    std::cout << "CATALOG_MEASURE " << result.dump() << '\n';
+    // Offered concurrency is a measurement axis, not a new no-overload SLA.
+    // Keep correctness strict for every success; retain all overload outcomes.
+    if (parallel == 1)
+      EXPECT_EQ(completed, 1);
+    EXPECT_GT(result.at("sql_executions").get<uint64_t>(), 0u);
+    const auto rows = std::min<size_t>(20, catalog->areas().size());
+    EXPECT_GE(result.at("jam_opens").get<uint64_t>(), light ? 0u : completed * rows);
+    EXPECT_LE(result.at("jam_opens").get<uint64_t>(), light ? 0u : parallel * rows);
+    EXPECT_EQ(result.at("jam_read_bytes").get<uint64_t>() == 0, light);
+  }
+}
+
 TEST_F(LargeCatalogGrpcTest, CatalogPerformanceFixture) {
   for (int i = 0; i < 40; ++i) {
     auto request = Request("catalog-benchmark-" + std::to_string(i));
@@ -3048,6 +3872,7 @@ TEST_F(LargeCatalogGrpcTest, CatalogPerformanceFixture) {
                                  std::filesystem::copy_options::overwrite_existing);
   }
   auto measure = [&](std::string_view label, bool light, bool favorites, bool all, std::string query = "") {
+    measurements::Enable();
     const auto begin = std::chrono::steady_clock::now();
     int rpc = 0, rows = 0;
     int64_t headers = 0;
@@ -3074,10 +3899,13 @@ TEST_F(LargeCatalogGrpcTest, CatalogPerformanceFixture) {
       request.mutable_page()->set_offset(rows);
     }
     const auto ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin).count();
+    const auto observed = test::MeasurementValues();
+    measurements::Disable();
     // These work counts follow the verified one-open/two-header-pass statistics
     // path on this deletion-free fixture; timing is measured independently.
     std::cout << "CATALOG_BENCH "
               << nlohmann::json{{"case", label},
+                                {"observed", observed},
                                 {"milliseconds", ms},
                                 {"rpc", rpc},
                                 {"areas_returned", rows},
@@ -3212,4 +4040,334 @@ TEST_F(LargeCatalogGrpcTest, LightweightCatalogDoesNotHideSqliteFailure) {
   grpc::ClientContext context;
   context.AddMetadata("authorization", "Bearer " + a);
   EXPECT_EQ(client->ListConferences(&context, request, &response).error_code(), grpc::StatusCode::INTERNAL);
+}
+
+TEST_F(GrpcTest, OfflineNumberCursorWireErrorsGenerationAndReadingState) {
+  {
+    const auto before = test::ReadingSnapshot(temp.path() / "metadata.db");
+    wire::ListMessagesRequest empty;
+    empty.set_conference_id("RU.TEST");
+    empty.mutable_page()->set_limit(1);
+    empty.set_sort(wire::MESSAGE_SORT_NUMBER_ASCENDING);
+    wire::ListMessagesResponse output;
+    {
+      grpc::ClientContext c;
+      Auth(c, a);
+      ASSERT_TRUE(client->ListMessages(&c, empty, &output).ok());
+    }
+    EXPECT_EQ(output.messages_size(), 0);
+    EXPECT_FALSE(output.generation().empty());
+    EXPECT_EQ(output.total(), 0);
+    empty.set_after_message_id(output.generation() + "#42");
+    {
+      grpc::ClientContext c;
+      Auth(c, a);
+      EXPECT_EQ(client->ListMessages(&c, empty, &output).error_code(), grpc::StatusCode::FAILED_PRECONDITION);
+    }
+    EXPECT_EQ(test::ReadingSnapshot(temp.path() / "metadata.db"), before);
+  }
+  std::string generation;
+  {
+    auto lease = storage::JamAccess::Open(*catalog, "RU.TEST", true, service::RequestDeadline());
+    ASSERT_TRUE(lease);
+    generation = (*lease)->generation();
+    for (uint32_t date : {300u, 200u, 1u}) {
+      msgapi::JamMessage raw;
+      raw.SetText("preview");
+      raw.SetDates(date, date, date);
+      ASSERT_EQ((*lease)->messages().AddMessage(raw), msgapi::JamError::kSuccess);
+    }
+    ASSERT_EQ((*lease)->messages().DeleteMessage(43), msgapi::JamError::kSuccess);
+  }
+  // Seed non-empty read/history/position rows, including their revisions.
+  wire::MessageReference reference;
+  reference.set_conference_id("RU.TEST");
+  reference.set_message_id(generation + "#42");
+  {
+    grpc::ClientContext c;
+    Auth(c, a);
+    wire::Message result;
+    ASSERT_TRUE(client->GetMessage(&c, reference, &result).ok());
+  }
+  const auto state = test::ReadingSnapshot(temp.path() / "metadata.db");
+  wire::ListMessagesRequest request;
+  request.set_conference_id("RU.TEST");
+  request.mutable_page()->set_limit(1);
+  request.set_sort(wire::MESSAGE_SORT_NUMBER_ASCENDING);
+  wire::ListMessagesResponse result;
+  const auto list = [&] {
+    result.Clear();
+    grpc::ClientContext c;
+    Auth(c, a);
+    auto status = client->ListMessages(&c, request, &result);
+    EXPECT_EQ(test::ReadingSnapshot(temp.path() / "metadata.db"), state);
+    return status;
+  };
+  ASSERT_TRUE(list().ok());
+  EXPECT_EQ(result.generation(), generation);
+  EXPECT_EQ(result.total(), 2);
+  ASSERT_EQ(result.messages_size(), 1);
+  EXPECT_EQ(result.messages(0).id(), generation + "#42");
+  EXPECT_TRUE(result.has_more());
+  request.mutable_page()->set_offset(1);
+  ASSERT_TRUE(list().ok());
+  EXPECT_EQ(result.messages(0).id(), generation + "#44");
+  EXPECT_EQ(result.actual_offset(), 1);
+  EXPECT_FALSE(result.has_more());
+  request.mutable_page()->set_offset(0);
+  for (const auto& cursor : {generation + "#42", generation + "#43"}) {
+    request.set_after_message_id(cursor);
+    ASSERT_TRUE(list().ok());
+    ASSERT_EQ(result.messages_size(), 1);
+    EXPECT_EQ(result.messages(0).id(), generation + "#44");
+    EXPECT_EQ(result.messages(0).body_preview(), "preview");
+    EXPECT_EQ(result.actual_offset(), 0);
+    EXPECT_FALSE(result.has_more());
+  }
+  request.set_after_message_id(generation + "#44");
+  ASSERT_TRUE(list().ok());
+  EXPECT_EQ(result.messages_size(), 0);
+  EXPECT_EQ(result.total(), 2);
+  EXPECT_EQ(result.generation(), generation);
+  for (const auto& cursor : {"bad", "#42", "g#", "g#1#2", "g#-1", "g#+1", "g#x", "g#4294967296"}) {
+    request.set_after_message_id(cursor);
+    EXPECT_EQ(list().error_code(), grpc::StatusCode::INVALID_ARGUMENT);
+  }
+  for (const auto& cursor : std::vector<std::string>{"old#42", generation + "#41", generation + "#45"}) {
+    request.set_after_message_id(cursor);
+    EXPECT_EQ(list().error_code(), grpc::StatusCode::FAILED_PRECONDITION);
+  }
+  request.set_after_message_id(generation + "#42");
+  request.mutable_page()->set_offset(1);
+  EXPECT_EQ(list().error_code(), grpc::StatusCode::INVALID_ARGUMENT);
+  request.mutable_page()->set_offset(0);
+  request.set_sort(wire::MESSAGE_SORT_DATE_ASCENDING);
+  EXPECT_EQ(list().error_code(), grpc::StatusCode::INVALID_ARGUMENT);
+  request.clear_after_message_id();
+  for (auto sort : {wire::MESSAGE_SORT_DATE_ASCENDING, wire::MESSAGE_SORT_DATE_DESCENDING}) {
+    request.set_sort(sort);
+    ASSERT_TRUE(list().ok());
+    EXPECT_EQ(result.messages(0).id(), generation + (sort == wire::MESSAGE_SORT_DATE_ASCENDING ? "#44" : "#42"));
+  }
+  request.set_sort(wire::MESSAGE_SORT_NUMBER_ASCENDING);
+  request.set_query("q");
+  EXPECT_EQ(list().error_code(), grpc::StatusCode::INVALID_ARGUMENT);
+  request.clear_query();
+  request.set_anchor_message_id(generation + "#42");
+  EXPECT_EQ(list().error_code(), grpc::StatusCode::INVALID_ARGUMENT);
+  request.clear_anchor_message_id();
+  {
+    grpc::ClientContext c;
+    Auth(c, a);
+    wire::FindMessageRequest find;
+    wire::FindMessageResponse output;
+    find.set_sort(wire::MESSAGE_SORT_NUMBER_ASCENDING);
+    find.set_conference_id("RU.TEST");
+    find.set_query("q");
+    EXPECT_EQ(client->FindMessage(&c, find, &output).error_code(), grpc::StatusCode::INVALID_ARGUMENT);
+  }
+  {
+    grpc::ClientContext c;
+    Auth(c, a);
+    wire::SearchArchiveMessagesRequest search;
+    wire::SearchArchiveMessagesResponse output;
+    search.set_sort(wire::MESSAGE_SORT_NUMBER_ASCENDING);
+    EXPECT_EQ(client->SearchArchiveMessages(&c, search, &output).error_code(), grpc::StatusCode::INVALID_ARGUMENT);
+  }
+  const auto verify_generation = [&](const std::string& expected) {
+    request.clear_after_message_id();
+    ASSERT_TRUE(list().ok());
+    EXPECT_EQ(result.generation(), expected);
+    wire::GetConferenceRequest conference;
+    conference.set_conference_id("RU.TEST");
+    wire::Conference output;
+    {
+      grpc::ClientContext c;
+      Auth(c, a);
+      ASSERT_TRUE(client->GetConference(&c, conference, &output).ok());
+    }
+    EXPECT_EQ(output.generation(), expected);
+    wire::GetThreadRequest thread;
+    thread.set_conference_id("RU.TEST");
+    thread.set_thread_id(expected + "#42");
+    thread.mutable_page()->set_limit(1);
+    thread.mutable_page()->set_offset(100);
+    {
+      grpc::ClientContext c;
+      Auth(c, a);
+      ASSERT_TRUE(client->GetThread(&c, thread, &result).ok());
+    }
+    EXPECT_EQ(result.generation(), expected);
+    EXPECT_EQ(result.messages_size(), 0);
+    wire::GetArchiveThreadRequest archive;
+    archive.mutable_message()->set_conference_id("RU.TEST");
+    archive.mutable_message()->set_message_id(expected + "#42");
+    *archive.mutable_page() = thread.page();
+    result.Clear();
+    {
+      grpc::ClientContext c;
+      Auth(c, a);
+      ASSERT_TRUE(client->GetArchiveThread(&c, archive, &result).ok());
+    }
+    EXPECT_EQ(result.generation(), expected);
+    EXPECT_EQ(result.messages_size(), 0);
+  };
+  verify_generation(generation);
+  for (const auto* extension : {".jhr", ".jdx", ".jdt"}) {
+    const auto path = (temp.path() / "file").string() + extension;
+    std::filesystem::copy_file(path, path + ".replacement");
+    std::filesystem::rename(path + ".replacement", path);
+  }
+  EXPECT_FALSE(list().ok());  // Existing catalog rejects replaced file identities before reload.
+  server->Shutdown();
+  server->Wait();
+  client.reset();
+  server.reset();
+  service.reset();
+  std::vector<EchoAreaConfig> areas;
+  for (const auto& [name, area] : catalog->areas()) {
+    (void)name;
+    areas.push_back(area.config);
+  }
+  auto rebuilt = storage::JamCatalog::Build(temp.path(), areas, catalog->coordination());
+  ASSERT_TRUE(rebuilt);
+  catalog = std::shared_ptr<storage::JamCatalog>(std::move(*rebuilt));
+  service = std::make_unique<service::GrpcService>(catalog, metadata, AccessPolicy());
+  grpc::SslServerCredentialsOptions tls;
+  tls.pem_key_cert_pairs.push_back(
+      {test::ReadFile(temp.path() / "key.pem"), test::ReadFile(temp.path() / "certificate.pem")});
+  grpc::ServerBuilder builder;
+  int port = 0;
+  builder.AddListeningPort("127.0.0.1:0", grpc::SslServerCredentials(tls), &port);
+  builder.RegisterService(service.get());
+  server = builder.BuildAndStart();
+  ASSERT_TRUE(server);
+  grpc::SslCredentialsOptions roots;
+  roots.pem_root_certs = test::ReadFile(temp.path() / "certificate.pem");
+  client = wire::Ffido::NewStub(grpc::CreateChannel("127.0.0.1:" + std::to_string(port), grpc::SslCredentials(roots)));
+  ASSERT_TRUE(list().ok());
+  const auto replacement = result.generation();
+  EXPECT_NE(replacement, generation);
+  verify_generation(replacement);
+  {
+    std::fstream out(temp.path() / "file.jhr", std::ios::in | std::ios::out | std::ios::binary);
+    out.seekp(1024);
+    out.write("BAD!", 4);
+  }
+  request.set_after_message_id(replacement + "#43");
+  ASSERT_TRUE(list().ok());
+  EXPECT_EQ(result.messages(0).id(), replacement + "#44");
+  EXPECT_EQ(test::ReadingSnapshot(temp.path() / "metadata.db"), state);
+}
+
+TEST_F(GrpcTest, OfflineArchiveSubfieldsPreserveEveryByteCollapseAndReadState) {
+  wire::MessageReference reference;
+  reference.set_conference_id("RU.TEST");
+  {
+    auto lease = storage::JamAccess::Open(*catalog, "RU.TEST", true, service::RequestDeadline());
+    ASSERT_TRUE(lease);
+    ASSERT_EQ((*lease)->messages().AddMessage(test::OfflineRawMessage()), msgapi::JamError::kSuccess);
+    reference.set_message_id((*lease)->generation() + "#42");
+  }
+  const auto jhr = test::ReadFile(temp.path() / "file.jhr");
+  const auto jdt = test::ReadFile(temp.path() / "file.jdt");
+  const auto jdx = test::ReadFile(temp.path() / "file.jdx");
+  domain::PersonalMessageFilter filter;
+  filter.id = "00000000-0000-0000-0000-000000000001";
+  filter.subject = "hidden";
+  ASSERT_TRUE(metadata->ReplacePersonalFilters("A", 0, "offline", {filter}));
+  const auto state = test::ReadingSnapshot(temp.path() / "metadata.db");
+  wire::ListMessagesRequest list;
+  list.set_conference_id("RU.TEST");
+  list.mutable_page()->set_limit(1);
+  list.set_sort(wire::MESSAGE_SORT_NUMBER_ASCENDING);
+  list.set_respect_personal_filters(true);
+  {
+    grpc::ClientContext c;
+    Auth(c, a);
+    wire::ListMessagesResponse output;
+    ASSERT_TRUE(client->ListMessages(&c, list, &output).ok());
+    ASSERT_EQ(output.messages_size(), 1);
+    EXPECT_TRUE(output.messages(0).body_preview().empty());
+    EXPECT_TRUE(output.messages(0).has_personal_collapse());
+  }
+  wire::ReadArchiveMessageRequest request;
+  *request.mutable_message() = reference;
+  request.set_body_limit(65536);
+  wire::ReadArchiveMessageResponse response;
+  const auto read = [&] {
+    response.Clear();
+    grpc::ClientContext c;
+    Auth(c, a);
+    auto status = client->ReadArchiveMessage(&c, request, &response);
+    EXPECT_EQ(test::ReadingSnapshot(temp.path() / "metadata.db"), state);
+    return status;
+  };
+  request.set_reveal(true);
+  ASSERT_TRUE(read().ok());
+  EXPECT_EQ(response.subfields_size(), 0);
+  EXPECT_EQ(response.attributes2(), 0u);
+  request.set_include_subfields(true);
+  ASSERT_TRUE(read().ok());
+  EXPECT_EQ(response.attributes2(), 0x80000001u);
+  {
+    auto lease = storage::JamAccess::Open(*catalog, "RU.TEST", false, service::RequestDeadline());
+    ASSERT_TRUE(lease);
+    auto raw = (*lease)->messages().ReadRawMetadata(42);
+    ASSERT_TRUE(raw);
+    ASSERT_EQ(response.subfields_size(), raw->subfields().size());
+    for (int i = 0; i < response.subfields_size(); ++i) {
+      EXPECT_EQ(response.subfields(i).low_id(), static_cast<uint32_t>(raw->subfields()[i].type()));
+      EXPECT_EQ(response.subfields(i).high_id(), raw->subfields()[i].high_id());
+      EXPECT_EQ(response.subfields(i).value(), raw->subfields()[i].ToString());
+    }
+  }
+  {
+    grpc::ClientContext c;
+    Auth(c, a);
+    wire::MessageTechnicalData technical;
+    ASSERT_TRUE(client->GetMessageTechnicalData(&c, reference, &technical).ok());
+    EXPECT_EQ(technical.attributes2(), response.attributes2());
+  }
+  request.set_reveal(false);
+  ASSERT_TRUE(read().ok());
+  EXPECT_TRUE(response.collapsed());
+  EXPECT_TRUE(response.message().body().empty());
+  EXPECT_EQ(response.subfields_size(), 0);
+  EXPECT_EQ(response.attributes2(), 0u);
+  request.set_reveal(true);
+  request.set_body_offset(1);
+  EXPECT_EQ(read().error_code(), grpc::StatusCode::INVALID_ARGUMENT);
+  request.set_include_subfields(false);
+  ASSERT_TRUE(read().ok());
+  EXPECT_EQ(response.subfields_size(), 0);
+  EXPECT_EQ(response.attributes2(), 0u);
+  EXPECT_EQ(test::ReadFile(temp.path() / "file.jhr"), jhr);
+  EXPECT_EQ(test::ReadFile(temp.path() / "file.jdt"), jdt);
+  EXPECT_EQ(test::ReadFile(temp.path() / "file.jdx"), jdx);
+  // Extend the last (only) record with a legal unknown field to exactly 64 KiB.
+  auto bytes = jhr;
+  const auto header = test::Wire32(jdx, 4);
+  const auto length = test::Wire32(bytes, header + 8);
+  const uint32_t padding = 65536 - length - 8;
+  std::array<uint8_t, 8> field{};
+  msgapi::jam_wire::Put16(field.data(), 60001);
+  msgapi::jam_wire::Put32(field.data() + 4, padding);
+  bytes.append(reinterpret_cast<const char*>(field.data()), field.size());
+  bytes.append(padding, 'z');
+  msgapi::jam_wire::Put32(reinterpret_cast<uint8_t*>(bytes.data()) + header + 8, 65536);
+  const auto save = [&] {
+    std::ofstream out(temp.path() / "file.jhr", std::ios::binary);
+    out.write(bytes.data(), bytes.size());
+  };
+  save();
+  request.set_include_subfields(true);
+  request.set_body_offset(0);
+  ASSERT_TRUE(read().ok());
+  EXPECT_EQ(response.subfields(response.subfields_size() - 1).value().size(), padding);
+  msgapi::jam_wire::Put32(reinterpret_cast<uint8_t*>(bytes.data()) + header + 8, 65537);
+  bytes.push_back('z');
+  save();
+  EXPECT_FALSE(read().ok());
+  EXPECT_EQ(response.subfields_size(), 0);
 }

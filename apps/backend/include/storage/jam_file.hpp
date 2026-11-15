@@ -9,12 +9,23 @@
 #include <string>
 #include <utility>
 
+#include "storage/measurements.hpp"
+#include "work_metrics.hpp"
+
 namespace msgapi {
 // Positional I/O seam permits deterministic short-I/O and failure tests.
 struct JamFileIo {
   virtual ~JamFileIo() = default;
   virtual ssize_t Read(int fd, void* bytes, size_t count, off_t offset) {
-    return pread(fd, bytes, count, offset);
+    const auto result = pread(fd, bytes, count, offset);
+    if (auto* metrics = fidoback::storage::work_metrics) {
+      ++metrics->read_calls;
+      if (result > 0)
+        metrics->read_bytes += static_cast<uint64_t>(result);
+    }
+    if (result > 0)
+      fidoback::measurements::Add(fidoback::measurements::jam_read_bytes, static_cast<uint64_t>(result));
+    return result;
   }
   virtual ssize_t Write(int fd, const void* bytes, size_t count, off_t offset) {
     return pwrite(fd, bytes, count, offset);

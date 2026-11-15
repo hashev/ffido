@@ -17,6 +17,9 @@ class MessageFooterSnapshots {
   final Map<String, Future<wire.MessageFooter?>> _operations = {};
   int _epoch = -1;
   MessageFooterSnapshots(this.api);
+  // The owner has closed the operation and will never retry this ID.
+  // Unknown outcomes must retain their snapshot.
+  void forgetCompleted(String operation) => _operations.remove(operation);
   Future<wire.MessageFooter?> capture(
     String operation, {
     bool enabled = true,

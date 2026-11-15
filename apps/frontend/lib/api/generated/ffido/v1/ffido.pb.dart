@@ -280,6 +280,7 @@ class Conference extends $pb.GeneratedMessage {
     $core.bool? personalMailbox,
     $core.String? lastOpenedMessageId,
     $fixnum.Int64? positionRevision,
+    $core.String? generation,
   }) {
     final result = Conference._();
     if (id != null) result.id = id;
@@ -299,6 +300,7 @@ class Conference extends $pb.GeneratedMessage {
     if (lastOpenedMessageId != null)
       result.lastOpenedMessageId = lastOpenedMessageId;
     if (positionRevision != null) result.positionRevision = positionRevision;
+    if (generation != null) result.generation = generation;
     return result;
   }
 
@@ -336,6 +338,7 @@ class Conference extends $pb.GeneratedMessage {
     ..a<$fixnum.Int64>(
         16, _omitFieldNames ? '' : 'positionRevision', $pb.PbFieldType.OU6,
         defaultOrMaker: $fixnum.Int64.ZERO)
+    ..aOS(17, _omitFieldNames ? '' : 'generation')
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -503,6 +506,15 @@ class Conference extends $pb.GeneratedMessage {
   $core.bool hasPositionRevision() => $_has(15);
   @$pb.TagNumber(16)
   void clearPositionRevision() => $_clearField(16);
+
+  @$pb.TagNumber(17)
+  $core.String get generation => $_getSZ(16);
+  @$pb.TagNumber(17)
+  set generation($core.String value) => $_setString(16, value);
+  @$pb.TagNumber(17)
+  $core.bool hasGeneration() => $_has(16);
+  @$pb.TagNumber(17)
+  void clearGeneration() => $_clearField(17);
 }
 
 class ListConferencesResponse extends $pb.GeneratedMessage {
@@ -591,6 +603,7 @@ class ListMessagesRequest extends $pb.GeneratedMessage {
     MessageSort? sort,
     $core.String? anchorMessageId,
     $core.bool? respectPersonalFilters,
+    $core.String? afterMessageId,
   }) {
     final result = ListMessagesRequest._();
     if (conferenceId != null) result.conferenceId = conferenceId;
@@ -600,6 +613,7 @@ class ListMessagesRequest extends $pb.GeneratedMessage {
     if (anchorMessageId != null) result.anchorMessageId = anchorMessageId;
     if (respectPersonalFilters != null)
       result.respectPersonalFilters = respectPersonalFilters;
+    if (afterMessageId != null) result.afterMessageId = afterMessageId;
     return result;
   }
 
@@ -624,6 +638,7 @@ class ListMessagesRequest extends $pb.GeneratedMessage {
         enumValues: MessageSort.values)
     ..aOS(5, _omitFieldNames ? '' : 'anchorMessageId')
     ..aOB(6, _omitFieldNames ? '' : 'respectPersonalFilters')
+    ..aOS(7, _omitFieldNames ? '' : 'afterMessageId')
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -704,6 +719,15 @@ class ListMessagesRequest extends $pb.GeneratedMessage {
   $core.bool hasRespectPersonalFilters() => $_has(5);
   @$pb.TagNumber(6)
   void clearRespectPersonalFilters() => $_clearField(6);
+
+  @$pb.TagNumber(7)
+  $core.String get afterMessageId => $_getSZ(6);
+  @$pb.TagNumber(7)
+  set afterMessageId($core.String value) => $_setString(6, value);
+  @$pb.TagNumber(7)
+  $core.bool hasAfterMessageId() => $_has(6);
+  @$pb.TagNumber(7)
+  void clearAfterMessageId() => $_clearField(7);
 }
 
 /// message_id — непрозрачный локальный ID с generation, а не FTN MsgID.
@@ -1008,6 +1032,7 @@ class Message extends $pb.GeneratedMessage {
   @$pb.TagNumber(14)
   void clearFtnMessageId() => $_clearField(14);
 
+  /// Raw JAM mask: Local=0x1, Private=0x4, ...; not the FTS-0001 attribute word.
   @$pb.TagNumber(15)
   $core.int get attributes => $_getIZ(14);
   @$pb.TagNumber(15)
@@ -1053,12 +1078,14 @@ class ListMessagesResponse extends $pb.GeneratedMessage {
     $fixnum.Int64? total,
     $core.bool? hasMore,
     $fixnum.Int64? actualOffset,
+    $core.String? generation,
   }) {
     final result = ListMessagesResponse._();
     if (messages != null) result.messages.addAll(messages);
     if (total != null) result.total = total;
     if (hasMore != null) result.hasMore = hasMore;
     if (actualOffset != null) result.actualOffset = actualOffset;
+    if (generation != null) result.generation = generation;
     return result;
   }
 
@@ -1080,6 +1107,7 @@ class ListMessagesResponse extends $pb.GeneratedMessage {
     ..aInt64(2, _omitFieldNames ? '' : 'total')
     ..aOB(3, _omitFieldNames ? '' : 'hasMore')
     ..aInt64(4, _omitFieldNames ? '' : 'actualOffset')
+    ..aOS(5, _omitFieldNames ? '' : 'generation')
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -1134,6 +1162,15 @@ class ListMessagesResponse extends $pb.GeneratedMessage {
   $core.bool hasActualOffset() => $_has(3);
   @$pb.TagNumber(4)
   void clearActualOffset() => $_clearField(4);
+
+  @$pb.TagNumber(5)
+  $core.String get generation => $_getSZ(4);
+  @$pb.TagNumber(5)
+  set generation($core.String value) => $_setString(4, value);
+  @$pb.TagNumber(5)
+  $core.bool hasGeneration() => $_has(4);
+  @$pb.TagNumber(5)
+  void clearGeneration() => $_clearField(5);
 }
 
 class MessageFooter extends $pb.GeneratedMessage {
@@ -2400,6 +2437,7 @@ class SessionInfo extends $pb.GeneratedMessage {
     $2.Timestamp? expiresAt,
     $core.bool? supportsMessageFooter,
     $core.bool? supportsLightweightConferenceCatalog,
+    $core.bool? supportsOfflineSync,
   }) {
     final result = SessionInfo._();
     if (profile != null) result.profile = profile;
@@ -2409,6 +2447,8 @@ class SessionInfo extends $pb.GeneratedMessage {
     if (supportsLightweightConferenceCatalog != null)
       result.supportsLightweightConferenceCatalog =
           supportsLightweightConferenceCatalog;
+    if (supportsOfflineSync != null)
+      result.supportsOfflineSync = supportsOfflineSync;
     return result;
   }
 
@@ -2431,6 +2471,7 @@ class SessionInfo extends $pb.GeneratedMessage {
         subBuilder: $2.Timestamp.$_createMessage)
     ..aOB(3, _omitFieldNames ? '' : 'supportsMessageFooter')
     ..aOB(4, _omitFieldNames ? '' : 'supportsLightweightConferenceCatalog')
+    ..aOB(5, _omitFieldNames ? '' : 'supportsOfflineSync')
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -2495,6 +2536,15 @@ class SessionInfo extends $pb.GeneratedMessage {
   $core.bool hasSupportsLightweightConferenceCatalog() => $_has(3);
   @$pb.TagNumber(4)
   void clearSupportsLightweightConferenceCatalog() => $_clearField(4);
+
+  @$pb.TagNumber(5)
+  $core.bool get supportsOfflineSync => $_getBF(4);
+  @$pb.TagNumber(5)
+  set supportsOfflineSync($core.bool value) => $_setBool(4, value);
+  @$pb.TagNumber(5)
+  $core.bool hasSupportsOfflineSync() => $_has(4);
+  @$pb.TagNumber(5)
+  void clearSupportsOfflineSync() => $_clearField(5);
 }
 
 class LoginResponse extends $pb.GeneratedMessage {
@@ -4639,6 +4689,7 @@ class MessageTechnicalData extends $pb.GeneratedMessage {
   @$pb.TagNumber(1)
   MessageReference ensureMessage() => $_ensure(0);
 
+  /// Raw JAM mask: Local=0x1, Private=0x4, ...; not the FTS-0001 attribute word.
   @$pb.TagNumber(2)
   $core.int get attributes => $_getIZ(1);
   @$pb.TagNumber(2)
@@ -5803,12 +5854,14 @@ class ReadArchiveMessageRequest extends $pb.GeneratedMessage {
     $fixnum.Int64? bodyOffset,
     $core.int? bodyLimit,
     $core.bool? reveal,
+    $core.bool? includeSubfields,
   }) {
     final result = ReadArchiveMessageRequest._();
     if (message != null) result.message = message;
     if (bodyOffset != null) result.bodyOffset = bodyOffset;
     if (bodyLimit != null) result.bodyLimit = bodyLimit;
     if (reveal != null) result.reveal = reveal;
+    if (includeSubfields != null) result.includeSubfields = includeSubfields;
     return result;
   }
 
@@ -5832,6 +5885,7 @@ class ReadArchiveMessageRequest extends $pb.GeneratedMessage {
         defaultOrMaker: $fixnum.Int64.ZERO)
     ..aI(3, _omitFieldNames ? '' : 'bodyLimit', fieldType: $pb.PbFieldType.OU3)
     ..aOB(4, _omitFieldNames ? '' : 'reveal')
+    ..aOB(5, _omitFieldNames ? '' : 'includeSubfields')
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -5898,6 +5952,15 @@ class ReadArchiveMessageRequest extends $pb.GeneratedMessage {
   $core.bool hasReveal() => $_has(3);
   @$pb.TagNumber(4)
   void clearReveal() => $_clearField(4);
+
+  @$pb.TagNumber(5)
+  $core.bool get includeSubfields => $_getBF(4);
+  @$pb.TagNumber(5)
+  set includeSubfields($core.bool value) => $_setBool(4, value);
+  @$pb.TagNumber(5)
+  $core.bool hasIncludeSubfields() => $_has(4);
+  @$pb.TagNumber(5)
+  void clearIncludeSubfields() => $_clearField(5);
 }
 
 class ReadArchiveMessageResponse extends $pb.GeneratedMessage {
@@ -5907,6 +5970,8 @@ class ReadArchiveMessageResponse extends $pb.GeneratedMessage {
     $fixnum.Int64? nextOffset,
     $core.bool? complete,
     $core.bool? collapsed,
+    $core.Iterable<MessageTechnicalSubfield>? subfields,
+    $core.int? attributes2,
   }) {
     final result = ReadArchiveMessageResponse._();
     if (message != null) result.message = message;
@@ -5914,6 +5979,8 @@ class ReadArchiveMessageResponse extends $pb.GeneratedMessage {
     if (nextOffset != null) result.nextOffset = nextOffset;
     if (complete != null) result.complete = complete;
     if (collapsed != null) result.collapsed = collapsed;
+    if (subfields != null) result.subfields.addAll(subfields);
+    if (attributes2 != null) result.attributes2 = attributes2;
     return result;
   }
 
@@ -5940,6 +6007,10 @@ class ReadArchiveMessageResponse extends $pb.GeneratedMessage {
         defaultOrMaker: $fixnum.Int64.ZERO)
     ..aOB(4, _omitFieldNames ? '' : 'complete')
     ..aOB(5, _omitFieldNames ? '' : 'collapsed')
+    ..pPM<MessageTechnicalSubfield>(6, _omitFieldNames ? '' : 'subfields',
+        subBuilder: MessageTechnicalSubfield.$_createMessage)
+    ..aI(7, _omitFieldNames ? '' : 'attributes2',
+        fieldType: $pb.PbFieldType.OU3)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -6016,6 +6087,18 @@ class ReadArchiveMessageResponse extends $pb.GeneratedMessage {
   $core.bool hasCollapsed() => $_has(4);
   @$pb.TagNumber(5)
   void clearCollapsed() => $_clearField(5);
+
+  @$pb.TagNumber(6)
+  $pb.PbList<MessageTechnicalSubfield> get subfields => $_getList(5);
+
+  @$pb.TagNumber(7)
+  $core.int get attributes2 => $_getIZ(6);
+  @$pb.TagNumber(7)
+  set attributes2($core.int value) => $_setUnsignedInt32(6, value);
+  @$pb.TagNumber(7)
+  $core.bool hasAttributes2() => $_has(6);
+  @$pb.TagNumber(7)
+  void clearAttributes2() => $_clearField(7);
 }
 
 class GetArchiveThreadRequest extends $pb.GeneratedMessage {

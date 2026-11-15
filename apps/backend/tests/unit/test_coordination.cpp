@@ -1,12 +1,21 @@
 #include <fcntl.h>
 #include <gtest/gtest.h>
+#include <poll.h>
 #include <sys/file.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
+#include <algorithm>
+#include <atomic>
 #include <fstream>
 #include <future>
+#include <iostream>
+#include <nlohmann/json.hpp>
+#include <thread>
+#include <vector>
 
 #include "../support/temp_directory.hpp"
+#include "service/request_context.hpp"
 #include "storage/jam_access.hpp"
 using namespace fidoback::storage;
 using namespace std::chrono_literals;
@@ -147,4 +156,131 @@ TEST(Coordination, InheritedExclusiveLeaseDoesNotReacquireOrDowngradeLifecycleLo
   close(fd);
   EXPECT_EQ(flock(contender, LOCK_EX | LOCK_NB), 0);
   close(contender);
+}
+
+TEST(Coordination, ExclusiveProbeUnderSustainedReadersHasBoundedTestLifetime) {
+  fidoback::test::TempDirectory temp;
+  const auto path = temp.path() / "probe.lock";
+  auto coordinator = CoordinationLock::Open(path);
+  ASSERT_TRUE(coordinator);
+  std::vector<double> samples;
+  int timeouts = 0;
+  for (int sample = 0; sample < 20; ++sample) {
+    int ready[2], result[2];
+    ASSERT_EQ(pipe(ready), 0);
+    ASSERT_EQ(pipe(result), 0);
+    const auto child = fork();
+    ASSERT_GE(child, 0);
+    if (child == 0) {
+      close(ready[1]);
+      close(result[0]);
+      char command;
+      if (read(ready[0], &command, 1) != 1)
+        _exit(2);
+      const int fd = open(path.c_str(), O_RDWR);
+      const auto begin = std::chrono::steady_clock::now();
+      bool acquired = false;
+      while (std::chrono::steady_clock::now() - begin < 200ms) {
+        if (fd >= 0 && flock(fd, LOCK_EX | LOCK_NB) == 0) {
+          acquired = true;
+          break;
+        }
+        poll(nullptr, 0, 1);
+      }
+      const double output[2] = {
+          acquired ? 1.0 : 0.0,
+          std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin).count()};
+      const auto written = write(result[1], output, sizeof(output));
+      if (fd >= 0)
+        close(fd);
+      _exit(written == sizeof(output) ? 0 : 3);
+    }
+    close(ready[0]);
+    close(result[1]);
+    std::atomic<bool> done = false;
+    std::atomic<int> started = 0;
+    std::vector<std::thread> readers;
+    for (int i = 0; i < 4; ++i)
+      readers.emplace_back([&] {
+        auto first = (*coordinator)->Shared(std::chrono::steady_clock::now() + 1s);
+        ++started;
+        if (first)
+          poll(nullptr, 0, 2);
+        if (first)
+          first->reset();
+        while (!done.load()) {
+          auto lease = (*coordinator)->Shared(std::chrono::steady_clock::now() + 1s);
+          if (lease)
+            poll(nullptr, 0, 1);
+        }
+      });
+    while (started.load() != 4)
+      std::this_thread::yield();
+    const char command = 'x';
+    EXPECT_EQ(write(ready[1], &command, 1), 1);
+    close(ready[1]);
+    double observed[2]{};
+    const auto count = read(result[0], observed, sizeof(observed));
+    close(result[0]);
+    done = true;
+    for (auto& reader : readers)
+      reader.join();
+    int status = 0;
+    EXPECT_EQ(waitpid(child, &status, 0), child);
+    EXPECT_TRUE(WIFEXITED(status));
+    ASSERT_EQ(count, sizeof(observed));
+    samples.push_back(observed[1]);
+    if (observed[0] == 0)
+      ++timeouts;
+  }
+  std::sort(samples.begin(), samples.end());
+  std::cout << "COORDINATION_BENCH "
+            << nlohmann::json{{"samples", samples},     {"timeouts", timeouts}, {"readers", 4},
+                              {"probe_budget_ms", 200}, {"p50_ms", samples[9]}, {"p95_ms", samples[18]}}
+                   .dump()
+            << '\n';
+  const int exclusive = open(path.c_str(), O_RDWR);
+  ASSERT_GE(exclusive, 0);
+  EXPECT_EQ(flock(exclusive, LOCK_EX | LOCK_NB), 0);
+  close(exclusive);
+}
+
+TEST(RequestLock, DoesNotAcquireAfterCancellationOrDeadline) {
+  using namespace fidoback::service;
+  std::timed_mutex mutex;
+  std::stop_source stop;
+  stop.request_stop();
+  for (const auto& budget : {RequestBudget{std::chrono::steady_clock::now() + 5s, stop.get_token()},
+                             RequestBudget{std::chrono::steady_clock::now() - 1ms, {}}}) {
+    RequestScope scope(budget);
+    std::unique_lock lock(mutex, std::defer_lock);
+    EXPECT_FALSE(AcquireRequestLock(lock));
+    EXPECT_FALSE(lock.owns_lock());
+  }
+  std::stop_source after_acquisition;
+  RequestBudget active{std::chrono::steady_clock::now() + 5s, after_acquisition.get_token()};
+  RequestScope scope(active);
+  std::unique_lock lock(mutex, std::defer_lock);
+  EXPECT_TRUE(AcquireRequestLock(lock));
+  after_acquisition.request_stop();
+  EXPECT_FALSE(RequestActive());
+  EXPECT_TRUE(lock.owns_lock());  // Cancellation cannot expose a half-finished critical section.
+}
+TEST(RequestLock, ContentionDoesNotResetTheAbsoluteDeadline) {
+  using namespace fidoback::service;
+  std::timed_mutex mutex;
+  std::unique_lock owner(mutex);
+  const auto deadline = std::chrono::steady_clock::now() + 50ms;
+  auto waiter = std::async(std::launch::async, [&] {
+    RequestBudget budget{deadline, {}};
+    RequestScope scope(budget);
+    std::unique_lock lock(mutex, std::defer_lock);
+    return std::pair{AcquireRequestLock(lock), std::chrono::steady_clock::now()};
+  });
+  const auto ready = waiter.wait_for(1s);
+  owner.unlock();
+  const auto [acquired, finished] = waiter.get();
+  EXPECT_EQ(ready, std::future_status::ready);
+  EXPECT_FALSE(acquired);
+  EXPECT_GE(finished, deadline);
 }

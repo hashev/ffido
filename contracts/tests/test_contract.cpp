@@ -267,3 +267,67 @@ TEST(Contract, PublicationPreviewIsAdditiveAndOldRequestsRemainValid) {
   ASSERT_TRUE(decoded.ParseFromString(preview.SerializeAsString()));
   EXPECT_EQ(decoded.SerializeAsString(), preview.SerializeAsString());
 }
+
+TEST(Contract, OfflineReadFieldsAreAdditiveAndPreserveDefaultsAndBytes) {
+  using namespace ffido::v1;
+  using F = google::protobuf::FieldDescriptor;
+  const auto check = [](const google::protobuf::Descriptor* descriptor, const char* name,
+                        int number, F::Type type, bool repeated = false) {
+    const auto* field = descriptor->FindFieldByName(name);
+    ASSERT_NE(field, nullptr);
+    EXPECT_EQ(field->number(), number);
+    EXPECT_EQ(field->type(), type);
+    EXPECT_EQ(field->is_repeated(), repeated);
+  };
+  check(SessionInfo::descriptor(), "supports_offline_sync", 5, F::TYPE_BOOL);
+  check(Conference::descriptor(), "generation", 17, F::TYPE_STRING);
+  check(ListMessagesResponse::descriptor(), "generation", 5, F::TYPE_STRING);
+  check(ListMessagesRequest::descriptor(), "after_message_id", 7, F::TYPE_STRING);
+  check(ReadArchiveMessageRequest::descriptor(), "include_subfields", 5, F::TYPE_BOOL);
+  check(ReadArchiveMessageResponse::descriptor(), "subfields", 6, F::TYPE_MESSAGE, true);
+  check(ReadArchiveMessageResponse::descriptor(), "attributes2", 7, F::TYPE_UINT32);
+  EXPECT_EQ(MESSAGE_SORT_NUMBER_ASCENDING, 3);
+  EXPECT_FALSE(SessionInfo{}.supports_offline_sync());
+  EXPECT_TRUE(Conference{}.generation().empty());
+  EXPECT_TRUE(ListMessagesResponse{}.generation().empty());
+  EXPECT_TRUE(ListMessagesRequest{}.after_message_id().empty());
+  EXPECT_FALSE(ReadArchiveMessageRequest{}.include_subfields());
+  EXPECT_EQ(ReadArchiveMessageResponse{}.attributes2(), 0u);
+  EXPECT_EQ(ReadArchiveMessageResponse{}.subfields_size(), 0);
+  SessionInfo session;
+  session.set_supports_offline_sync(true);
+  SessionInfo restored;
+  ASSERT_TRUE(restored.ParseFromString(session.SerializeAsString()));
+  EXPECT_TRUE(restored.supports_offline_sync());
+  Conference conference;
+  conference.set_generation("opaque");
+  Conference conference_copy;
+  ASSERT_TRUE(conference_copy.ParseFromString(conference.SerializeAsString()));
+  EXPECT_EQ(conference_copy.generation(), "opaque");
+  ListMessagesResponse list;
+  list.set_generation("opaque");
+  ListMessagesResponse list_copy;
+  ASSERT_TRUE(list_copy.ParseFromString(list.SerializeAsString()));
+  EXPECT_EQ(list_copy.generation(), "opaque");
+  ListMessagesRequest request;
+  request.set_sort(MESSAGE_SORT_NUMBER_ASCENDING);
+  request.set_after_message_id("opaque#4294967295");
+  ListMessagesRequest request_copy;
+  ASSERT_TRUE(request_copy.ParseFromString(request.SerializeAsString()));
+  EXPECT_EQ(request_copy.after_message_id(), request.after_message_id());
+  EXPECT_EQ(request_copy.sort(), MESSAGE_SORT_NUMBER_ASCENDING);
+  ReadArchiveMessageRequest read;
+  read.set_include_subfields(true);
+  ReadArchiveMessageRequest read_copy;
+  ASSERT_TRUE(read_copy.ParseFromString(read.SerializeAsString()));
+  EXPECT_TRUE(read_copy.include_subfields());
+  ReadArchiveMessageResponse response;
+  response.set_attributes2(0x80000001u);
+  auto* field = response.add_subfields();
+  field->set_low_id(65000);
+  field->set_high_id(65535);
+  field->set_value(std::string("A\0\xff", 3));
+  ReadArchiveMessageResponse response_copy;
+  ASSERT_TRUE(response_copy.ParseFromString(response.SerializeAsString()));
+  EXPECT_EQ(response_copy.SerializeAsString(), response.SerializeAsString());
+}

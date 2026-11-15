@@ -49,18 +49,21 @@ struct MessageDetail {
   bool is_read = false;
   std::vector<std::string> attachments;
   std::vector<std::string> ftn_kludges;
-};
-
-struct ArchiveMessage {
-  MessageDetail message;
-  uint64_t body_offset = 0, next_offset = 0;
-  bool complete = false, collapsed = false;
+  std::string effective_encoding;
 };
 
 struct MessageTechnicalSubfield {
   uint32_t low_id = 0, high_id = 0;
   std::string value;
 };
+struct ArchiveMessage {
+  MessageDetail message;
+  uint32_t attributes2 = 0;
+  std::vector<MessageTechnicalSubfield> subfields;
+  uint64_t body_offset = 0, next_offset = 0;
+  bool complete = false, collapsed = false;
+};
+
 struct MessageTechnicalData {
   std::string conference, id;
   uint32_t attributes = 0, attributes2 = 0;
@@ -130,6 +133,7 @@ struct CreateCrosspostResponse {
 
 /// @brief Список сообщений с пагинацией.
 struct MessageListResponse {
+  std::string generation;
   int64_t actual_offset = 0;
   std::vector<MessageSummary> messages;
   int64_t total = 0;
@@ -137,6 +141,7 @@ struct MessageListResponse {
 };
 
 struct ThreadListResponse {
+  std::string generation;
   std::vector<MessageDetail> messages;
   int64_t total = 0;
   bool has_more = false;

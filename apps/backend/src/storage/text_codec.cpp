@@ -7,7 +7,7 @@
 
 namespace fidoback::storage {
 std::expected<std::string, TextError> ConvertText(std::string_view text, std::string_view from, std::string_view to,
-                                                  size_t max_bytes) {
+                                                  size_t max_bytes, const std::function<bool()>& active) {
   if (text.size() > max_bytes)
     return std::unexpected(TextError::kLimit);
   if (from.empty() || to.empty() || from.find('\0') != std::string_view::npos ||
@@ -28,6 +28,8 @@ std::expected<std::string, TextError> ConvertText(std::string_view text, std::st
   std::string output;
   bool flushing = false;
   do {
+    if (active && !active())
+      return std::unexpected(TextError::kInterrupted);
     std::array<char, 4096> buffer{};
     char* cursor = buffer.data();
     size_t space = buffer.size();

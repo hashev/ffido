@@ -220,7 +220,10 @@ Json Client::Call(const std::string& tool, const Json& arguments, const std::sha
   const auto binding = session.profile().user_id() + ":" + session.profile().address();
   Json result;
   if (tool == "ffido_list_areas") {
-    Json areas = Json::array();
+    Json page = Json::array();
+    const auto offset = arguments.value("offset", uint64_t{0});
+    const auto limit = arguments.value("limit", uint64_t{20});
+    uint64_t total = 0;
     // Query exact allowed IDs so hidden global counts and names never enter MCP results.
     for (const auto& id : config_.read_areas) {
       wire::GetConferenceRequest request;
@@ -235,15 +238,14 @@ Json Client::Call(const std::string& tool, const Json& arguments, const std::sha
       Check(status);
       const auto query = arguments.value("query", std::string{});
       if (query.empty() || response.name().find(query) != std::string::npos ||
-          response.description().find(query) != std::string::npos)
-        areas.push_back(Encode(response));
+          response.description().find(query) != std::string::npos) {
+        if (total >= offset && page.size() < limit)
+          page.push_back(Encode(response));
+        ++total;
+      }
     }
-    const auto start = std::min<uint64_t>(arguments.value("offset", uint64_t{0}), areas.size());
-    const auto end = std::min<uint64_t>(start + arguments.value("limit", uint64_t{20}), areas.size());
-    Json page = Json::array();
-    for (auto i = start; i < end; ++i)
-      page.push_back(areas[i]);
-    result = {{"areas", std::move(page)}, {"total", areas.size()}, {"has_more", end < areas.size()}};
+    const bool more = offset < total && page.size() < total - offset;
+    result = {{"areas", std::move(page)}, {"total", total}, {"has_more", more}};
   } else if (tool == "ffido_search_messages") {
     wire::SearchArchiveMessagesRequest request;
     for (const auto& id : arguments.at("area_ids")) {
@@ -293,7 +295,6 @@ Json Client::Call(const std::string& tool, const Json& arguments, const std::sha
       result = Encode(response);
     }
   } else {
-    std::lock_guard lock(draft_mutex_);
     if (tool == "ffido_prepare_message") {
       const auto area = arguments.at("area_id").get<std::string>();
       Area(area, true);
@@ -326,6 +327,16 @@ Json Client::Call(const std::string& tool, const Json& arguments, const std::sha
       const auto id = arguments.at("draft_id").get<std::string>();
       if (id.size() != 48 || id.find_first_not_of("0123456789abcdef") != std::string::npos)
         throw Error("INVALID_ARGUMENT", "Invalid draft ID");
+      std::shared_ptr<std::timed_mutex> owner;
+      {
+        std::lock_guard registry(draft_mutex_);
+        std::erase_if(draft_locks_, [](const auto& item) { return item.second.expired(); });
+        owner = draft_locks_[id].lock();
+        if (!owner)
+          draft_locks_[id] = owner = std::make_shared<std::timed_mutex>();
+      }
+      std::unique_lock lock(*owner, std::defer_lock);
+      operation->Acquire(lock);
       const auto path = config_.state_dir / (id + ".json");
       auto draft = Json::parse(ReadSecret(path));
       if (draft.at("endpoint") != config_.endpoint || draft.at("profile") != binding)

@@ -1,5 +1,7 @@
 #include "storage/jam_access.hpp"
 
+#include "storage/measurements.hpp"
+
 namespace fidoback::storage {
 std::expected<std::unique_ptr<JamAccess>, JamAccessError> JamAccess::Open(const JamCatalog& catalog,
                                                                           std::string_view conference, bool write,
@@ -27,8 +29,9 @@ std::expected<std::unique_ptr<JamAccess>, JamAccessError> JamAccess::Open(const 
   const auto& forced = (*area)->forced_encoding;
   if (!forced.empty())
     encoding = forced;
-  auto access = std::unique_ptr<JamAccess>(new JamAccess(std::move(coordination), std::move(*lease),
-                                                         std::move(encoding), deadline, cancellation, !forced.empty()));
+  auto access =
+      std::unique_ptr<JamAccess>(new JamAccess(std::move(coordination), std::move(*lease), std::move(encoding),
+                                               deadline, cancellation, !forced.empty(), (*area)->encoding_corrections));
   auto error = access->messages_.Open();
   if (error != msgapi::JamError::kSuccess)
     return std::unexpected(JamAccessError(error));
@@ -36,6 +39,7 @@ std::expected<std::unique_ptr<JamAccess>, JamAccessError> JamAccess::Open(const 
   const auto& header = access->messages_.base_header();
   access->generation_ = std::to_string(identity.st_dev) + ":" + std::to_string(identity.st_ino) + ":" +
                         std::to_string(header.date_created) + ":" + std::to_string(header.base_msg_num);
+  measurements::Add(measurements::jam_opens, 1);
   return access;
 }
 }  // namespace fidoback::storage

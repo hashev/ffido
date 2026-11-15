@@ -13,6 +13,7 @@ import 'package:fido/pages/history_screen.dart';
 import 'package:fido/repositories/account_repository.dart';
 
 import '../support/fake_transport.dart';
+import '../support/adaptive_appearance.dart';
 
 void main() {
   setUp(() => SharedPreferences.setMockInitialValues({}));
@@ -315,4 +316,179 @@ void main() {
     expect(find.text('Конференция'), findsNothing);
     expect(find.text('История просмотров пуста'), findsOneWidget);
   });
+
+  var fontsLoaded = false;
+  for (final modern in [false, true]) {
+    for (final width in [320.0, 1280.0]) {
+      for (final dark in [false, true]) {
+        for (final scale in [1.0, 2.0]) {
+          testWidgets(
+            'private favorites modern=$modern width=$width dark=$dark scale=$scale',
+            (t) async {
+              if (!fontsLoaded) {
+                await loadAdaptiveFonts();
+                fontsLoaded = true;
+              }
+              t.view.physicalSize = Size(width, 1000);
+              t.view.devicePixelRatio = 1;
+              addTearDown(t.view.resetPhysicalSize);
+              addTearDown(t.view.resetDevicePixelRatio);
+              final rows = [
+                wire.Conference(
+                  id: 'raw-id',
+                  name: 'Netmail',
+                  kind: wire.AreaKind.AREA_KIND_NETMAIL,
+                  unreadCount: Int64(3),
+                ),
+                wire.Conference(
+                  id: 'point-id',
+                  name: 'Почта поинта',
+                  kind: wire.AreaKind.AREA_KIND_NETMAIL,
+                  unreadCount: Int64.ZERO,
+                  personalMailbox: true,
+                ),
+                wire.Conference(
+                  id: 'unknown-id',
+                  name: 'Неизвестный ящик',
+                  kind: wire.AreaKind.AREA_KIND_NETMAIL,
+                  statisticsKnown: false,
+                ),
+                wire.Conference(
+                  id: 'carbon-id',
+                  name: 'personal.mail',
+                  kind: wire.AreaKind.AREA_KIND_LOCAL,
+                  unreadCount: Int64(7),
+                ),
+                wire.Conference(
+                  id: 'local-other',
+                  name: 'Локальный архив',
+                  kind: wire.AreaKind.AREA_KIND_LOCAL,
+                  unreadCount: Int64(9),
+                ),
+                wire.Conference(
+                  id: 'echo-id',
+                  name: 'Эха',
+                  unreadCount: Int64(2),
+                ),
+              ];
+              for (final row in rows) {
+                row.canRead = true;
+                row.isBookmarked = true;
+              }
+              final api = FakeTransport()
+                ..supportsLightweightConferenceCatalog = modern;
+              api.conferences = (_) async =>
+                  wire.ListConferencesResponse(conferences: rows);
+              api.bookmarks = (_) async => wire.ListBookmarksResponse(
+                bookmarks: [
+                  for (final row in rows) wire.Bookmark(conference: row),
+                ],
+              );
+              api.remove = (r) async {
+                rows.removeWhere((x) => x.id == r.conferenceId);
+                return Empty();
+              };
+              addTearDown(api.dispose);
+              final semantics = t.ensureSemantics();
+              final key = GlobalKey();
+              await t.pumpWidget(
+                RepaintBoundary(
+                  key: key,
+                  child: MaterialApp(
+                    debugShowCheckedModeBanner: false,
+                    theme: ThemeData(
+                      fontFamily: 'Roboto',
+                      brightness: dark ? Brightness.dark : Brightness.light,
+                    ),
+                    builder: (context, child) => MediaQuery(
+                      data: MediaQuery.of(context)
+                          .copyWith(textScaler: TextScaler.linear(scale)),
+                      child: child!,
+                    ),
+                    home: BookmarksScreen(repository: AccountRepository(api)),
+                  ),
+                ),
+              );
+              await t.pumpAndSettle();
+              final listScroll = find
+                  .descendant(
+                    of: find.byType(ListView),
+                    matching: find.byType(Scrollable),
+                  )
+                  .first;
+              for (final row in rows) {
+                await t.scrollUntilVisible(
+                  find.text(row.name),
+                  150,
+                  scrollable: listScroll,
+                );
+                await t.ensureVisible(find.text(row.name));
+                await t.pumpAndSettle();
+                final tile = find
+                    .ancestor(
+                      of: find.text(row.name),
+                      matching: find.byType(ListTile),
+                    )
+                    .first;
+                expect(
+                  find.descendant(
+                    of: tile,
+                    matching: find.text(
+                      row.id == 'unknown-id' ? '—' : row.unreadCount.toString(),
+                    ),
+                  ),
+                  findsOneWidget,
+                );
+                expect(t.takeException(), isNull);
+              }
+              t.state<ScrollableState>(listScroll).position.jumpTo(0);
+              await t.pumpAndSettle();
+              if (modern) {
+                await adaptiveScreenshot(
+                  t,
+                  key,
+                  'favorite-private-$width-$dark-$scale',
+                );
+              }
+              final initial = api.calls
+                  .where(
+                    (x) =>
+                        x is wire.ListConferencesRequest ||
+                        x is wire.PageRequest,
+                  )
+                  .length;
+              final tile = find
+                  .ancestor(
+                    of: find.text('Netmail'),
+                    matching: find.byType(ListTile),
+                  )
+                  .first;
+              final bookmark = find.descendant(
+                of: tile,
+                matching: find.byTooltip('Удалить из закладок'),
+              );
+              await t.tap(bookmark);
+              await t.pumpAndSettle();
+              expect(find.text('Netmail'), findsNothing);
+              expect(
+                api.calls.where(
+                  (x) =>
+                      x is wire.ListConferencesRequest || x is wire.PageRequest,
+                ),
+                hasLength(initial),
+              );
+              if (modern) {
+                final request = api.calls
+                    .whereType<wire.ListConferencesRequest>()
+                    .single;
+                expect(request.bookmarkedOnly, isTrue);
+                expect(request.omitStatistics, isFalse);
+              }
+              semantics.dispose();
+            },
+          );
+        }
+      }
+    }
+  }
 }

@@ -59,6 +59,8 @@ class ApiClient implements ApiTransport, MessageFooterSupport {
 
   @override
   int get epoch => _epoch;
+  bool get isClosed => _closed;
+  int get authenticationVersion => _loginVersion;
   @override
   Uri get endpoint => _endpoint;
   @override
@@ -106,7 +108,7 @@ class ApiClient implements ApiTransport, MessageFooterSupport {
     if (_endpoint == nextEndpoint && _token == value) return;
     final previous = _channel;
     final calls = _active.toList();
-    _epoch++;
+    final configuredEpoch = ++_epoch;
     _endpoint = nextEndpoint;
     _token = value;
     session = null;
@@ -115,6 +117,9 @@ class ApiClient implements ApiTransport, MessageFooterSupport {
     _changes.add(_epoch);
     await Future.wait(calls.map((cancel) => cancel()));
     await previous?.terminate();
+    if (_closed || configuredEpoch != _epoch) {
+      throw const CancelledException();
+    }
   }
 
   Future<wire.LoginResponse> login({
@@ -145,6 +150,7 @@ class ApiClient implements ApiTransport, MessageFooterSupport {
           options: rpc.CallOptions(timeout: timeout),
         );
     final cancel = call.cancel;
+    int? acceptedEpoch;
     _active.add(cancel);
     try {
       final result = await call;
@@ -163,6 +169,13 @@ class ApiClient implements ApiTransport, MessageFooterSupport {
       // Do not cancel this completed call when configure retires the old session.
       _active.remove(cancel);
       await configure(endpoint: target.toString(), token: result.sessionSecret);
+      if (_closed ||
+          version != _loginVersion ||
+          _endpoint != target ||
+          _token != result.sessionSecret) {
+        throw const CancelledException(rpcName: 'Login');
+      }
+      acceptedEpoch = epoch;
       session = result.session;
       return result;
     } on grpc.GrpcError catch (error) {
@@ -179,30 +192,69 @@ class ApiClient implements ApiTransport, MessageFooterSupport {
     } finally {
       _active.remove(cancel);
       await channel.terminate();
+      if (acceptedEpoch != null &&
+          (_closed || version != _loginVersion || epoch != acceptedEpoch)) {
+        throw const CancelledException(rpcName: 'Login');
+      }
     }
   }
 
   Future<wire.SessionInfo> restoreSession() async {
+    final captured = epoch;
     final result = await _invoke(
       'RestoreSession',
       (c, o) => c.restoreSession(Empty(), options: o),
     );
+    _check(captured, null, 'RestoreSession');
     session = result;
     return result;
   }
 
   Future<void> logout() async {
-    ++_loginVersion;
+    final token = _token;
+    // Revoke on an independent channel so local retirement cannot cancel it.
+    rpc.ClientChannel? channel;
+    rpc.ResponseFuture<Empty>? call;
     try {
-      if (hasToken) {
-        await _invoke('Logout', (c, o) => c.logout(Empty(), options: o));
-      }
-    } finally {
+      channel = token == null ? null : _factory(_endpoint);
+      call = channel == null
+          ? null
+          : wire.FfidoClient(channel).logout(
+              Empty(),
+              options: rpc.CallOptions(
+                timeout: timeout,
+                metadata: {'authorization': 'Bearer $token'},
+              ),
+            );
+    } catch (_) {
       await clearAuthToken();
+      rethrow;
+    }
+    // Attach the error handler before waiting for channel retirement.
+    final revoked = call?.then<void>(
+      (_) {},
+      onError: (Object error, StackTrace stack) {
+        if (error is grpc.GrpcError) {
+          throw mapGrpcError(error, const {}, 'Logout');
+        }
+        Error.throwWithStackTrace(error, stack);
+      },
+    );
+    // Observe errors immediately even if retirement is still in progress.
+    unawaited(revoked?.catchError((Object _) {}));
+    try {
+      await clearAuthToken();
+      await revoked;
+    } finally {
+      await channel?.terminate();
     }
   }
 
-  Future<void> clearAuthToken() => configure(endpoint: endpoint.toString());
+  Future<void> clearAuthToken() {
+    ++_loginVersion;
+    return configure(endpoint: endpoint.toString());
+  }
+
   Future<void> setAuthToken(String token) =>
       configure(endpoint: endpoint.toString(), token: token);
   wire.FfidoClient get _client {

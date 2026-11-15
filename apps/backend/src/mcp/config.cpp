@@ -10,6 +10,7 @@
 #include <utility>
 
 #include "mcp.hpp"
+#include "storage/measurements.hpp"
 namespace ffido_mcp {
 namespace {
 struct Fd {
@@ -137,6 +138,9 @@ Config LoadConfig(const std::filesystem::path& path) {
   return result;
 }
 Json Encode(const google::protobuf::Message& message) {
+  fidoback::measurements::Bytes protobuf(fidoback::measurements::protobuf_bytes,
+                                         fidoback::measurements::protobuf_peak_bytes,
+                                         fidoback::measurements::enabled.load() ? message.ByteSizeLong() : 0);
   google::protobuf::util::JsonPrintOptions options;
   options.preserve_proto_field_names = true;
   options.always_print_fields_with_no_presence = true;
@@ -188,8 +192,18 @@ std::shared_ptr<grpc::ClientContext> CallContext::Next() {
 void CallContext::Cancel() {
   std::lock_guard lock(mutex);
   cancelled = true;
+  wake.notify_all();
   if (current)
     current->TryCancel();
+}
+void CallContext::Acquire(std::unique_lock<std::timed_mutex>& lock) {
+  std::unique_lock guard(mutex);
+  while (!cancelled && std::chrono::system_clock::now() < deadline) {
+    if (lock.try_lock())
+      return;
+    wake.wait_until(guard, std::min(deadline, std::chrono::system_clock::now() + std::chrono::milliseconds(10)));
+  }
+  throw Error(cancelled ? "GRPC_1" : "GRPC_4", "MCP operation no longer active");
 }
 void Client::Login() {
   if (!isatty(STDIN_FILENO))

@@ -1,5 +1,6 @@
 #pragma once
 #include <array>
+#include <atomic>
 #include <expected>
 #include <map>
 #include <memory>
@@ -37,7 +38,8 @@ public:
   }
   std::expected<domain::MessageListResponse, domain::ApiError> GetMessages(
       std::string_view conference, const domain::PaginationRequest& page, std::string_view sort, std::string_view user,
-      std::string_view query = {}, std::string_view anchor_message_id = {}, bool respect_filters = false);
+      std::string_view query = {}, std::string_view anchor_message_id = {}, bool respect_filters = false,
+      std::string_view after_message_id = {});
   std::expected<domain::MessageDetail, domain::ApiError> GetMessage(std::string_view conference,
                                                                     std::string_view message, std::string_view user);
   std::expected<domain::ArchiveSearchResponse, domain::ApiError> SearchArchive(
@@ -47,11 +49,9 @@ public:
     archive_max_hits_ = max_hits;
     archive_ttl_ = std::chrono::seconds(ttl_seconds);
   }
-  std::expected<domain::ArchiveMessage, domain::ApiError> ReadArchiveMessage(std::string_view conference,
-                                                                             std::string_view message,
-                                                                             std::string_view user,
-                                                                             uint64_t body_offset, uint32_t body_limit,
-                                                                             bool reveal = false);
+  std::expected<domain::ArchiveMessage, domain::ApiError> ReadArchiveMessage(
+      std::string_view conference, std::string_view message, std::string_view user, uint64_t body_offset,
+      uint32_t body_limit, bool reveal = false, bool include_subfields = false);
   std::expected<domain::ThreadListResponse, domain::ApiError> GetArchiveThread(
       std::string_view conference, std::string_view message, std::string_view user,
       const domain::PaginationRequest& page = {});
@@ -105,6 +105,29 @@ private:
     size_t area = 0;
   };
   struct ArchiveScan {
+    std::mutex mutex;
+    std::atomic<bool> retired{false};
+    std::shared_ptr<std::atomic<size_t>> budget;
+    size_t base_bytes = 0, reserved_bytes = 0;
+    bool Reserve(size_t bytes) {
+      if (bytes > 32 * 1024 * 1024)
+        return false;
+      if (bytes <= reserved_bytes)
+        return true;
+      const auto extra = bytes - reserved_bytes;
+      auto total = budget->load();
+      do {
+        if (total > 128 * 1024 * 1024 - extra)
+          return false;
+      } while (!budget->compare_exchange_weak(total, total + extra));
+      reserved_bytes = bytes;
+      return true;
+    }
+    ~ArchiveScan() {
+      if (budget)
+        budget->fetch_sub(reserved_bytes);
+    }
+
     domain::ArchiveSearchRequest request;
     std::string user;
     uint64_t filters_revision = 0;
@@ -116,7 +139,8 @@ private:
   };
   static std::expected<ArchiveFingerprint, domain::ApiError> Fingerprint(storage::JamAccess& access);
   std::mutex archive_mutex_;
-  std::map<std::string, ArchiveScan> archive_scans_;
+  std::map<std::string, std::shared_ptr<ArchiveScan>> archive_scans_;
+  std::shared_ptr<std::atomic<size_t>> archive_bytes_ = std::make_shared<std::atomic<size_t>>(0);
   size_t archive_scan_budget_ = 100000, archive_max_hits_ = 100000;
   std::chrono::seconds archive_ttl_{600};
   std::expected<domain::MessageDetail, domain::ApiError> FilteredDetail(storage::JamAccess& access,

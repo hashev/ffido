@@ -33,6 +33,8 @@ class UueDraft {
 class UueRepository {
   final ApiTransport api;
   late final _footers = MessageFooterSnapshots(api);
+  void forgetCompletedOperation(String operation) =>
+      _footers.forgetCompleted(operation);
   final void Function(String)? onChanged;
   UueRepository(this.api, {this.onChanged});
   int get epoch => api.epoch;

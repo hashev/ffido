@@ -4,6 +4,8 @@
 #include <optional>
 #include <regex>
 
+#include "storage/measurements.hpp"
+
 namespace fidoback::ftn::uue {
 namespace {
 struct Line {
@@ -121,6 +123,8 @@ std::expected<std::string, Error> Decode(std::string_view block, const Limits& l
     return std::unexpected(Error::kInvalid);
   bool zero = false;
   std::string out;
+  measurements::Bytes decoded(measurements::assembly_bytes, measurements::assembly_peak_bytes);
+  size_t decoded_capacity = 0;
   for (size_t pos = line.end; pos < block.size();) {
     line = Next(block, pos);
     pos = line.end;
@@ -130,6 +134,8 @@ std::expected<std::string, Error> Decode(std::string_view block, const Limits& l
       return out;
     }
     auto result = Data(line.text, out, limits.decoded_bytes);
+    decoded.Grow(out.capacity() - decoded_capacity);
+    decoded_capacity = out.capacity();
     if (!result)
       return std::unexpected(result.error());
     zero = *result;
@@ -185,6 +191,8 @@ std::expected<std::string, Error> Assemble(const std::vector<std::string_view>& 
   // imply verification of the sum printed by an external encoder.
   static const std::regex section(R"((sum -r/size [0-9]+/[0-9]+ section.*|section [0-9]+ end.*))", std::regex::icase);
   std::string stream;
+  measurements::Bytes stream_bytes(measurements::assembly_bytes, measurements::assembly_peak_bytes);
+  size_t stream_capacity = 0;
   bool started = false;
   bool ended = false;
   for (size_t i = 0; i < parts.size(); ++i) {
@@ -209,6 +217,8 @@ std::expected<std::string, Error> Assemble(const std::vector<std::string_view>& 
       }
       stream += line.text;
       stream += '\n';
+      stream_bytes.Grow(stream.capacity() - stream_capacity);
+      stream_capacity = stream.capacity();
       data_in_part = true;
       if (line.text == "end") {
         ended = true;

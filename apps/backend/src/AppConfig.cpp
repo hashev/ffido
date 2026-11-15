@@ -134,6 +134,12 @@ std::expected<AppConfig, ConfigError> ParseAppConfig(const nlohmann::json& j) {
       };
       if (!valid_encoding(cfg.ftn.default_encoding))
         return std::unexpected(ConfigError::kInvalidValue);
+      if (ftn.contains("jam_message_encoding_corrections_path")) {
+        auto path = ftn.at("jam_message_encoding_corrections_path").get<std::string>();
+        if (path.empty() || path.size() > 4096 || path.find('\0') != std::string::npos)
+          return std::unexpected(ConfigError::kInvalidValue);
+        cfg.ftn.jam_message_encoding_corrections_path = std::move(path);
+      }
       if (ftn.contains("jam_encoding_overrides")) {
         const auto& rules = ftn.at("jam_encoding_overrides");
         if (!rules.is_object() || rules.size() > 10000)
@@ -303,6 +309,7 @@ std::expected<AppConfig, ConfigError> LoadAppConfig(std::string_view config_path
     config->ftn.areacfg_path = resolve(config->ftn.areacfg_path).string();
     config->ftn.jam_base_path = resolve(config->ftn.jam_base_path).string();
     config->ftn.coordination_lock = resolve(config->ftn.coordination_lock);
+    config->ftn.jam_message_encoding_corrections_path = resolve(config->ftn.jam_message_encoding_corrections_path);
     config->auth.hpt_config_path = resolve(config->auth.hpt_config_path);
     config->auth.session_key_path = resolve(config->auth.session_key_path);
     config->database.metadata_path = resolve(config->database.metadata_path);

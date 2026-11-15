@@ -103,6 +103,9 @@ jobs:
           else
             flutter build "$TARGET" --release --build-name="$FFIDO_BUILD_NAME" --build-number="$FFIDO_BUILD_NUMBER"
           fi
+      - name: Test native macOS updater lifecycle
+        if: matrix.os == 'macos'
+        run: python scripts/update/test_macos_lifecycle.py --frameworks apps/frontend/build/macos/SourcePackages/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64
       - name: Build standalone desktop updater
         if: matrix.os == 'windows' || matrix.os == 'linux'
         run: |
@@ -190,6 +193,10 @@ jobs:
           persist-credentials: false
       - id: dependency-lock
         run: python scripts/release/dependency_lock.py --github-output
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3
+        with:
+          distribution: temurin
+          java-version: ${{ steps.dependency-lock.outputs.java }}
       - id: sdk
         run: echo "root=$ANDROID_HOME" >> "$GITHUB_OUTPUT"
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
@@ -220,6 +227,7 @@ jobs:
           path: |
             build/android-update-qa-api${{ matrix.api }}/*.json
             build/android-update-qa-api${{ matrix.api }}/*.log
+            build/android-update-qa-api${{ matrix.api }}/*.xml
             ${{ runner.temp }}/ffido-emulator.log
           if-no-files-found: ignore
   backend:
@@ -396,15 +404,17 @@ jobs:
             --build-arg "FFIDO_STABLE=$(jq -r .stable build/identity.json)"
           )
           cache=type=gha,version=2,scope=ffido-server-amd64
+          verification_cache="$cache-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           docker buildx build "${build_args[@]}" \
             --cache-from "$cache" --cache-to "$cache,mode=max" \
+            --cache-to "$verification_cache,mode=max" \
             --output type=oci,dest=build/container/image.tar .
           # A new daemon has no local layers, so this verifies the exported cache.
           cache_builder=ffido-cache-check
           trap 'docker buildx rm --force "$cache_builder" >/dev/null 2>&1 || true' EXIT
           docker buildx create --name "$cache_builder" --driver docker-container
           timeout 600s docker buildx build --builder "$cache_builder" "${build_args[@]}" \
-            --cache-from "$cache" --target builder --output type=cacheonly .
+            --cache-from "$verification_cache" --target builder --output type=cacheonly .
       - uses: ./.github/actions/docker-native-cache
         if: always() && steps.docker-native.outcome == 'success'
         with:

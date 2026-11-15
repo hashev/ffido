@@ -13,6 +13,41 @@
 namespace fidoback::service {
 namespace {
 using domain::ApiError;
+// Account for bounded decoder/stream growth and one legacy source's temporary
+// representations. This is admission accounting, not an allocator/RSS counter.
+uint64_t AssemblyWork(const UueConfig& config) {
+  return 8 * config.max_file_bytes + 12 * uint64_t(msgapi::jam_wire::kMaxReadBody) +
+         12 * uint64_t(msgapi::jam_wire::kMaxSubfields) * config.max_parts;
+}
+class WorkingReservation {
+public:
+  WorkingReservation(std::atomic<uint64_t>& used, uint64_t bytes, uint64_t limit) : used_(used) {
+    if (bytes <= limit) {
+      if (used_.fetch_add(bytes) <= limit - bytes)
+        bytes_ = bytes;
+      else
+        used_.fetch_sub(bytes);
+    }
+  }
+  ~WorkingReservation() {
+    if (bytes_)
+      used_.fetch_sub(bytes_);
+  }
+  explicit operator bool() const {
+    return bytes_ != 0;
+  }
+  WorkingReservation(const WorkingReservation&) = delete;
+  WorkingReservation& operator=(const WorkingReservation&) = delete;
+
+private:
+  std::atomic<uint64_t>& used_;
+  uint64_t bytes_ = 0;
+};
+ApiError InactiveRequest() {
+  return std::chrono::steady_clock::now() >= RequestDeadline()
+             ? ApiError{domain::ErrorCode::kDeadline, "Request deadline exceeded", {}}
+             : ApiError{domain::ErrorCode::kCancelled, "Request cancelled", {}};
+}
 ApiError Invalid(std::string_view message) {
   return ApiError::Validation(message);
 }
@@ -68,10 +103,51 @@ std::expected<std::string, ApiError> UueService::Fingerprint(const domain::Messa
     text += std::to_string(line.size()) + ":" + line;
   return HexDigest(text);
 }
+std::expected<std::shared_ptr<void>, ApiError> UueService::Reserve(uint64_t bytes, std::string_view user) {
+  // Cache and transient work have separate pools with the existing quota values.
+  // A single operation fits; only overlapping materialization can exhaust this pool.
+  bytes = std::min({bytes, config_.user_quota_bytes, config_.global_quota_bytes});
+  if (!bytes)
+    return std::unexpected(ApiError{domain::ErrorCode::kResource, "UUE transient quota exceeded", {}});
+  auto reservation = std::make_shared<TransientReservation>();
+  reservation->budget = transient_;
+  reservation->user = user;
+  std::lock_guard lock(transient_->mutex);
+  const auto found = transient_->users.find(reservation->user);
+  const auto used = found == transient_->users.end() ? 0 : found->second;
+  if (bytes > config_.user_quota_bytes - used || bytes > config_.global_quota_bytes - transient_->bytes)
+    return std::unexpected(ApiError{domain::ErrorCode::kResource, "UUE transient quota exceeded", {}});
+  transient_->users[reservation->user] += bytes;
+  transient_->bytes += bytes;
+  reservation->bytes = bytes;
+  measurements::Gauge(measurements::reserved_bytes, measurements::reserved_peak_bytes, transient_->bytes);
+  return std::static_pointer_cast<void>(reservation);
+}
+uint64_t UueService::TransientBytes() {
+  std::lock_guard lock(transient_->mutex);
+  return transient_->bytes;
+}
+std::pair<uint64_t, uint64_t> UueService::CacheBytes() {
+  return CacheUsage(false);
+}
+std::pair<uint64_t, uint64_t> UueService::CacheCapacityBytes() {
+  return CacheUsage(true);
+}
+std::pair<uint64_t, uint64_t> UueService::CacheUsage(bool capacity) {
+  std::lock_guard lock(mutex_);
+  uint64_t cached = 0, live = 0;
+  for (const auto& [id, file] : files_)
+    cached += capacity ? file.bytes->capacity() : file.bytes->size();
+  for (const auto& [weak, user] : live_payloads_)
+    if (auto payload = weak.lock())
+      live += capacity ? payload->capacity() : payload->size();
+  return {cached, live};
+}
 void UueService::Prune() {
   const auto now = clock_();
   std::erase_if(index_, [&](const auto& item) { return item.second.expires <= now; });
   std::erase_if(files_, [&](const auto& item) { return item.second.expires <= now; });
+  std::erase_if(live_payloads_, [](const auto& item) { return item.first.expired(); });
 }
 std::expected<std::vector<UuePart>, ApiError> UueService::Parts(std::string_view conference,
                                                                 const domain::MessageDetail& message) {
@@ -81,7 +157,11 @@ std::expected<std::vector<UuePart>, ApiError> UueService::Parts(std::string_view
   // Fingerprints include source identity; no stale content is served from this derived index.
   const auto key = std::string(conference) + ":" + *fingerprint;
   {
+    measurements::Timer cache_wait(measurements::cache_wait_ns);
     std::lock_guard lock(mutex_);
+    storage::WorkTimer work_cache_hold(&storage::WorkMetrics::cache_hold_ns);
+    cache_wait.Finish();
+    measurements::Timer cache_hold(measurements::cache_hold_ns);
     Prune();
     if (auto cached = index_.find(key); cached != index_.end())
       return cached->second.parts;
@@ -144,6 +224,7 @@ std::expected<std::vector<UuePart>, ApiError> UueService::Parts(std::string_view
       value.diagnostic = "Multipart metadata must identify exactly one stream";
   {
     std::lock_guard lock(mutex_);
+    storage::WorkTimer cache_hold(&storage::WorkMetrics::cache_hold_ns);
     if (index_.size() >= 512)
       index_.erase(index_.begin());
     index_[key] = {result, clock_() + std::chrono::minutes(5)};
@@ -208,15 +289,34 @@ std::expected<UueAttachment, ApiError> UueService::Assemble(const std::vector<Uu
                                                             bool explicit_order, std::string_view user) {
   if (sources.empty() || sources.size() > config_.max_parts)
     return std::unexpected(Invalid("Invalid UUE sources"));
+  if (!RequestActive())
+    return std::unexpected(InactiveRequest());
+  // One maximum-sized operation always fits, even with a small configured cache;
+  // only concurrent temporary work consumes the additional global quota.
+  WorkingReservation working(in_flight_bytes_, AssemblyWork(config_),
+                             config_.global_quota_bytes + AssemblyWork(config_));
+  if (!working)
+    return std::unexpected(ApiError{domain::ErrorCode::kResource, "UUE working memory budget exhausted", {}});
+  // Two encoded-file units plus one decoded-file unit. The codec's stream,
+  // string growth and source validation scratch are measured separately; credits
+  // are an admission budget, not a promise that allocator RSS equals the quota.
+  auto reservation = Reserve(3 * config_.max_file_bytes, user);
+  if (!reservation)
+    return std::unexpected(reservation.error());
+  measurements::Bytes buffers(measurements::assembly_bytes, measurements::assembly_peak_bytes);
   std::vector<UuePart> parts;
   std::vector<std::string> bodies, fingerprints;
   size_t input = 0;
   for (const auto& source : sources) {
+    if (!RequestActive())
+      return std::unexpected(InactiveRequest());
     if (source.conference != sources[0].conference)
       return std::unexpected(Invalid("Cross-area UUE assembly denied"));
     auto message = messages_.PeekMessage(source.conference, source.message, user);
     if (!message)
       return std::unexpected(message.error());
+    measurements::Bytes source_body(measurements::assembly_bytes, measurements::assembly_peak_bytes,
+                                    message->body.capacity());
     auto candidates = Parts(source.conference, *message);
     if (!candidates)
       return std::unexpected(candidates.error());
@@ -235,6 +335,7 @@ std::expected<UueAttachment, ApiError> UueService::Assemble(const std::vector<Uu
       return std::unexpected(fingerprint.error());
     fingerprints.push_back(std::move(*fingerprint));
     bodies.push_back(message->body.substr(part.begin, size));
+    buffers.Grow(bodies.back().capacity());
     parts.push_back(std::move(part));
   }
   UueAttachment result;
@@ -316,11 +417,17 @@ std::expected<UueAttachment, ApiError> UueService::Assemble(const std::vector<Uu
   std::vector<std::string_view> ordered;
   for (size_t i : order)
     ordered.push_back(bodies[i]);
+  if (!RequestActive())
+    return std::unexpected(InactiveRequest());
   auto decoded = ftn::uue::Assemble(ordered, CodecLimits());
+  if (!RequestActive())
+    return std::unexpected(InactiveRequest());
   if (!decoded) {
     result.state = decoded.error() == ftn::uue::Error::kIncomplete ? UueState::kIncomplete : UueState::kCorrupt;
     return result;
   }
+  measurements::Bytes decoded_bytes(measurements::assembly_bytes, measurements::assembly_peak_bytes,
+                                    decoded->capacity());
   if (meta && !ftn::uue::Verify(*decoded, *meta)) {
     result.state = UueState::kCorrupt;
     return result;
@@ -342,20 +449,31 @@ std::expected<UueAttachment, ApiError> UueService::Assemble(const std::vector<Uu
     return std::unexpected(id.error());
   result.id = *id;
   {
+    measurements::Timer cache_wait(measurements::cache_wait_ns);
     std::lock_guard lock(mutex_);
+    storage::WorkTimer work_cache_hold(&storage::WorkMetrics::cache_hold_ns);
+    cache_wait.Finish();
+    measurements::Timer cache_hold(measurements::cache_hold_ns);
     Prune();
+    if (auto existing = files_.find(result.id); existing != files_.end()) {
+      // Identity includes the decoded digest and all validated source fingerprints.
+      existing->second.expires = clock_() + std::chrono::minutes(5);
+      return result;
+    }
     size_t total_bytes = decoded->size(), user_bytes = decoded->size();
-    for (const auto& [key, entry] : files_) {
-      if (key == result.id)
-        continue;
-      total_bytes += entry.bytes.size();
-      if (entry.user == user)
-        user_bytes += entry.bytes.size();
+    for (const auto& [weak, owner] : live_payloads_) {
+      if (auto payload = weak.lock()) {
+        total_bytes += payload->size();
+        if (owner == user)
+          user_bytes += payload->size();
+      }
     }
     if (files_.size() >= 256 || total_bytes > config_.global_quota_bytes || user_bytes > config_.user_quota_bytes)
       return std::unexpected(ApiError{domain::ErrorCode::kResource, "UUE cache quota exceeded", {}});
-    files_[result.id] = {result, std::string(user), std::move(*decoded), std::move(fingerprints),
+    auto payload = std::make_shared<const std::string>(std::move(*decoded));
+    files_[result.id] = {result, std::string(user), payload, std::move(fingerprints),
                          clock_() + std::chrono::minutes(5)};
+    live_payloads_.emplace_back(payload, std::string(user));
   }
   return result;
 }
@@ -363,20 +481,46 @@ std::expected<UueChunk, ApiError> UueService::Chunk(std::string_view id, uint64_
                                                     std::string_view user) {
   if (!max_bytes || max_bytes > config_.chunk_bytes)
     return std::unexpected(Invalid("Invalid UUE chunk size"));
+  if (!RequestActive())
+    return std::unexpected(InactiveRequest());
+  auto reservation = Reserve(max_bytes, user);
+  if (!reservation)
+    return std::unexpected(reservation.error());
   CachedFile cached;
   {
+    measurements::Timer cache_wait(measurements::cache_wait_ns);
     std::lock_guard lock(mutex_);
+    storage::WorkTimer work_cache_hold(&storage::WorkMetrics::cache_hold_ns);
+    cache_wait.Finish();
+    measurements::Timer cache_hold(measurements::cache_hold_ns);
     Prune();
     auto found = files_.find(std::string(id));
     if (found == files_.end() || found->second.user != user)
       return std::unexpected(ApiError::NotFound("UUE file unavailable"));
+    const auto* payload = found->second.bytes.get();
     cached = found->second;
+    measurements::Add(measurements::cache_snapshots, 1);
+    if (cached.bytes.get() != payload)
+      measurements::Add(measurements::payload_copied_bytes, cached.bytes->size());
   }
+  if (!RequestActive())
+    return std::unexpected(InactiveRequest());
   for (size_t i = 0; i < cached.attachment.sources.size(); ++i) {
     const auto& source = cached.attachment.sources[i];
     auto message = messages_.PeekMessage(source.conference, source.message, user);
     if (!message) {
+      // A request-local interruption does not invalidate shared source data.
+      if (message.error().code == domain::ErrorCode::kCancelled || message.error().code == domain::ErrorCode::kDeadline)
+        return std::unexpected(message.error());
+      // An interrupted validation says nothing about source validity. Keep the
+      // immutable payload for a subsequent request with its own budget.
+      if (!RequestActive())
+        return std::unexpected(ApiError{
+            RequestCancellation().stop_requested() ? domain::ErrorCode::kCancelled : domain::ErrorCode::kDeadline,
+            "Request no longer active",
+            {}});
       std::lock_guard lock(mutex_);
+      storage::WorkTimer cache_hold(&storage::WorkMetrics::cache_hold_ns);
       files_.erase(std::string(id));
       return std::unexpected(message.error());
     }
@@ -385,16 +529,24 @@ std::expected<UueChunk, ApiError> UueService::Chunk(std::string_view id, uint64_
       return std::unexpected(fingerprint.error());
     if (*fingerprint != cached.fingerprints[i]) {
       std::lock_guard lock(mutex_);
+      storage::WorkTimer cache_hold(&storage::WorkMetrics::cache_hold_ns);
       files_.erase(std::string(id));
       return std::unexpected(ApiError{domain::ErrorCode::kPrecondition, "UUE source changed", {}});
     }
   }
-  if (offset > cached.bytes.size())
+  if (offset > cached.bytes->size())
     return std::unexpected(Invalid("UUE offset exceeds size"));
   UueChunk result;
+  result.reservation = std::move(*reservation);
   result.offset = offset;
-  result.size = cached.bytes.size();
-  result.bytes = cached.bytes.substr(static_cast<size_t>(offset), max_bytes);
+  result.size = cached.bytes->size();
+  result.bytes = cached.bytes->substr(static_cast<size_t>(offset), max_bytes);
+  if (storage::work_metrics)
+    storage::work_metrics->payload_copy_bytes += result.bytes.size();
+  measurements::Add(measurements::slice_copied_bytes, result.bytes.size());
+  if (measurements::enabled.load(std::memory_order_relaxed))
+    result.observation = std::make_shared<measurements::Bytes>(measurements::chunk_bytes,
+                                                               measurements::chunk_peak_bytes, result.bytes.size());
   result.eof = offset + result.bytes.size() == result.size;
   return result;
 }
@@ -424,8 +576,11 @@ std::expected<uint64_t, ApiError> UueService::Upload(std::string_view operation,
       sha256.find_first_not_of("0123456789abcdef") != sha256.npos)
     return std::unexpected(Invalid("Invalid UUE upload or server limit exceeded"));
   std::unique_lock lock(send_mutexes_[std::hash<std::string_view>{}(user) % send_mutexes_.size()], std::defer_lock);
-  if (!lock.try_lock_until(RequestDeadline()))
-    return std::unexpected(ApiError{domain::ErrorCode::kUnavailable, "UUE operation busy", {}});
+  if (!AcquireRequestLock(lock))
+    return std::unexpected(
+        ApiError{RequestCancellation().stop_requested() ? domain::ErrorCode::kCancelled : domain::ErrorCode::kDeadline,
+                 "UUE operation busy",
+                 {}});
   auto pruned = metadata_->PruneUueUploads(UueNow() - config_.upload_ttl_seconds);
   if (!pruned)
     return std::unexpected(pruned.error());
@@ -538,8 +693,11 @@ std::expected<UueSendStatus, ApiError> UueService::Commit(std::string_view confe
   if (!OperationId(request.operation_id) || request.subject.empty())
     return std::unexpected(Invalid("Invalid UUE operation"));
   std::unique_lock lock(send_mutexes_[std::hash<std::string_view>{}(user) % send_mutexes_.size()], std::defer_lock);
-  if (!lock.try_lock_until(RequestDeadline()))
-    return std::unexpected(ApiError{domain::ErrorCode::kUnavailable, "UUE operation busy", {}});
+  if (!AcquireRequestLock(lock))
+    return std::unexpected(
+        ApiError{RequestCancellation().stop_requested() ? domain::ErrorCode::kCancelled : domain::ErrorCode::kDeadline,
+                 "UUE operation busy",
+                 {}});
   auto record = metadata_->GetUueUpload(user, request.operation_id);
   if (!record)
     return std::unexpected(record.error());

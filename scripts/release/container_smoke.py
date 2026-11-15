@@ -24,6 +24,11 @@ def smoke(image, upgrade=None):
         # The auth helper takes JSON on stdin, so --help can reject usage, but it must load.
         assert result.returncode in (0, 1, 2), command
         assert 'error while loading shared libraries' not in result.stderr
+    run(*base, '-i', '--entrypoint', '/bin/sh', image, '-ec',
+        'cat > /tmp/ffido-corrections.jsonl; '
+        'exec /opt/ffido/bin/ffido-jam-encoding-check --validate-only /tmp/ffido-corrections.jsonl',
+        input=json.dumps(dict(kind='manifest', version=1, count=0, source_sha256='a'*64))+'\n',
+        timeout=30)
     run(*base, '--entrypoint', '/bin/sh', image, '-ec',
         'test -f /opt/ffido/share/ffido/ffido-source.tar.gz; '
         'test -f /opt/ffido/share/ffido/relink/relink.sh; '

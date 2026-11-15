@@ -10,6 +10,7 @@ namespace fidoback::domain {
 
 /// @brief Представление FTN-эхоконференции в API.
 struct Conference {
+  std::string generation;
   std::string id;                 ///< Имя эхоконференции (напр. "comp.lang.dart")
   std::string name;               ///< Отображаемое имя
   std::string description;        ///< Описание

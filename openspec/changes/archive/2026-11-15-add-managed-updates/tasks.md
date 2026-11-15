@@ -39,7 +39,7 @@
 - [x] 6.2 Реализовать download/staging, managed releases/current, update lock, preflight и переключение полного комплекта; проверить на временных установках подпись, layout, права, место, unsafe archive и повторный запуск после сбоя.
 - [x] 6.3 Связать apply с существующим механизмом исключения работающего экземпляра и проверкой schema/форматов; проверить отказ при запущенном сервере, сохранение состояния и отказ неизвестной миграции без изменения SQLite/JAM.
 - [x] 6.4 Добавить проверку готовности TLS gRPC с timeout и безопасный rollback совместимого комплекта; проверить ошибку старта, предыдущую версию и запрет несовместимого rollback на синтетическом состоянии.
-- [ ] 6.5 Описать в apps/backend/README.md и README.md bootstrap managed layout, foreground/systemd/launchd stop→apply→start, readiness и backup с HPT; выполнить команды на временной установке Linux/macOS.
+- [x] 6.5 Описать в apps/backend/README.md и README.md bootstrap managed layout, foreground/systemd/launchd stop→apply→start, readiness и backup с HPT; выполнить команды на временной установке Linux/macOS.
 
 ## 7. Docker
 
@@ -66,3 +66,15 @@ macOS/Android: реальные release A→B с production-ключами и с
 Пункт 6.5 остаётся открытым: документирование и выполненные native-проверки
 не заменяют ещё не проведённую проверку stop → apply → start → readiness
 под настоящим systemd. Архивация изменения не выполнялась.
+
+
+## Завершение 6.5 (2026-11-15)
+
+Прежний systemd-блокер снят: stop → apply → start → TLS gRPC readiness и
+rollback проверены в изолированной Linux VM с настоящим PID 1 systemd и
+непривилегированным пользователем службы; повторён launchd на macOS.
+Проверены HPT scan, остановка systemd timer/service до согласованного backup,
+сохранение SQLite/JAM/ключей/config/uploads и очистка временных служб.
+README актуализированы; текущие доказательства и ограничения — в docs/testing.md,
+раздел «Завершение add-managed-updates: systemd/launchd и HPT».
+Все 30 задач завершены; прежняя запись о блокере выше сохранена как история.

@@ -2583,6 +2583,7 @@ class _ComposeScreenState extends State<_ComposeScreen> {
         await WidgetsBinding.instance.endOfFrame;
         if (!mounted) return;
       }
+      widget.repository.forgetCompletedOperation(operationId);
       Navigator.pop(context, true);
     } catch (e) {
       if (!mounted || widget.repository.epoch != epoch) return;

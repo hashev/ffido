@@ -108,6 +108,15 @@ TEST(JamCatalog, AliasesShareOwnerAndRejectDifferentCompanions) {
   ASSERT_TRUE(a);
   ASSERT_TRUE(b);
   EXPECT_EQ((*a)->files, (*b)->files);
+  JamEncodingCorrections corrections;
+  corrections.bases["base"][1] = {std::string(64, '0'), "CP866", "KOI8-R"};
+  ASSERT_TRUE((*result)->BindEncodingCorrections(corrections));
+  EXPECT_EQ((*a)->encoding_corrections, (*b)->encoding_corrections);
+  ASSERT_TRUE((*a)->encoding_corrections);
+  EXPECT_EQ((*a)->encoding_corrections->size(), 1);
+  corrections.bases["alias"][1] = {std::string(64, '1'), "CP866", "UTF-8"};
+  EXPECT_FALSE((*result)->BindEncodingCorrections(std::move(corrections)));
+  EXPECT_EQ((*a)->encoding_corrections->at(1).encoding, "KOI8-R");
   fs::remove(temporary.path() / "alias.jdx");
   {
     std::ofstream file(temporary.path() / "alias.jdx");

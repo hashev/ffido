@@ -1,7 +1,11 @@
 #pragma once
 #include <grpcpp/grpcpp.h>
 
+#include <condition_variable>
 #include <filesystem>
+#include <functional>
+#include <map>
+#include <memory>
 #include <mutex>
 #include <nlohmann/json.hpp>
 #include <set>
@@ -37,11 +41,13 @@ Json Prompts();
 Json Prompt(const std::string& name, const Json& arguments);
 struct CallContext {
   std::mutex mutex;
+  std::condition_variable wake;
   std::shared_ptr<grpc::ClientContext> current;
   bool cancelled = false;
   std::chrono::system_clock::time_point deadline = std::chrono::system_clock::now() + std::chrono::seconds(5);
   std::shared_ptr<grpc::ClientContext> Next();
   void Cancel();
+  void Acquire(std::unique_lock<std::timed_mutex>& lock);
 };
 class Client {
 public:
@@ -54,8 +60,9 @@ private:
   std::unique_ptr<wire::Ffido::Stub> stub_;
   std::string token_;
   std::mutex draft_mutex_;
+  std::map<std::string, std::weak_ptr<std::timed_mutex>> draft_locks_;
   void Area(std::string_view id, bool post = false) const;
   void Authorize(grpc::ClientContext& context) const;
 };
-int Serve(Client& client);
+int Serve(Client& client, const std::function<void(const Json&)>& before_serialization = {});
 }  // namespace ffido_mcp
