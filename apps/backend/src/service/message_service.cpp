@@ -3,6 +3,7 @@
 #include <openssl/rand.h>
 
 #include <algorithm>
+#include <charconv>
 #include <compare>
 #include <mutex>
 #include <nlohmann/json.hpp>
@@ -78,16 +79,29 @@ std::string OriginAddress(const msgapi::JamMessage& message) {
   return canonical ? *canonical : std::string{};
 }
 
-std::string DisplayText(std::string_view text) {
+domain::ApiError ReadInterrupted() {
+  return {RequestCancellation().stop_requested() ? domain::ErrorCode::kCancelled : domain::ErrorCode::kDeadline,
+          "Request interrupted",
+          {}};
+}
+std::expected<std::string, domain::ApiError> DisplayText(std::string_view text) {
   std::string result;
   result.reserve(text.size());
-  for (size_t i = 0; i < text.size(); ++i) {
-    if (text[i] == '\r') {
-      result += '\n';
-      if (i + 1 < text.size() && text[i + 1] == '\n')
-        ++i;
+  for (size_t position = 0; position < text.size();) {
+    if (!RequestActive())
+      return std::unexpected(ReadInterrupted());
+    // Bound cancellation latency without per-byte string growth under a JAM lease.
+    const auto part = text.substr(position, 4096);
+    const auto cr = part.find('\r');
+    if (cr == std::string_view::npos) {
+      result.append(part);
+      position += part.size();
     } else {
-      result += text[i];
+      result.append(part.substr(0, cr));
+      result += '\n';
+      position += cr + 1;
+      if (position < text.size() && text[position] == '\n')
+        ++position;
     }
   }
   return result;
@@ -100,6 +114,8 @@ std::expected<domain::MessageDetail, domain::ApiError> MessageService::Detail(st
                                                                               bool body) {
   auto message = access.messages().ReadMessage(number, body);
   if (!message) {
+    if (!RequestActive())
+      return std::unexpected(ReadInterrupted());
     if (message.error() == msgapi::JamError::kInvalidMessageNumber ||
         message.error() == msgapi::JamError::kMessageDeleted)
       return std::unexpected(domain::ApiError::NotFound("Message not found"));
@@ -130,7 +146,10 @@ std::expected<domain::MessageDetail, domain::ApiError> MessageService::Detail(st
     result.to_address = std::move(*recipient);
   }
   result.subject = message->subject();
-  result.body = DisplayText(message->text());
+  auto displayed = DisplayText(message->text());
+  if (!displayed)
+    return std::unexpected(displayed.error());
+  result.body = std::move(*displayed);
   result.date = UtcDate(message->date_written());
   result.is_read = *read;
   result.in_reply_to = message->reply_to() ? MessageId(access, message->reply_to()) : "";
@@ -145,7 +164,7 @@ std::expected<domain::MessageDetail, domain::ApiError> MessageService::Detail(st
 }
 std::expected<domain::ArchiveMessage, domain::ApiError> MessageService::ReadArchiveMessage(
     std::string_view conference, std::string_view id, std::string_view user, uint64_t body_offset, uint32_t body_limit,
-    bool reveal) {
+    bool reveal, bool include_subfields) {
   RequestBudget budget{std::min(RequestDeadline(), std::chrono::steady_clock::now() + std::chrono::seconds(5)),
                        RequestCancellation()};
   RequestScope scope(budget);
@@ -154,6 +173,8 @@ std::expected<domain::ArchiveMessage, domain::ApiError> MessageService::ReadArch
     return std::unexpected(RequestActive() ? permission.error() : SearchInterrupted());
   if (!permission->read)
     return std::unexpected(EchoAccess::Denied());
+  if (include_subfields && body_offset != 0)
+    return std::unexpected(domain::ApiError::Validation("Subfields require body offset zero"));
   if (body_limit == 0 || body_limit > 65536)
     return std::unexpected(domain::ApiError::Validation("Body limit must be between 1 and 65536"));
   auto filters = metadata_->GetPersonalFilters(user);
@@ -187,6 +208,14 @@ std::expected<domain::ArchiveMessage, domain::ApiError> MessageService::ReadArch
     if (!detail)
       return std::unexpected(RequestActive() ? detail.error() : SearchInterrupted());
     detail->personal_collapse = std::move(collapse);
+  }
+  if (include_subfields) {
+    auto raw = (*access)->messages().ReadRawMetadata(*number);
+    if (!raw)
+      return std::unexpected(JamError(raw.error()));
+    result.attributes2 = raw->attributes2();
+    for (const auto& field : raw->subfields())
+      result.subfields.push_back({static_cast<uint32_t>(field.type()), field.high_id(), field.ToString()});
   }
   const auto& text = detail->body;
   const auto continuation = [&](size_t offset) {
@@ -383,13 +412,29 @@ std::expected<domain::MessagePresentation, domain::ApiError> MessageService::Get
 
 std::expected<domain::MessageListResponse, domain::ApiError> MessageService::GetMessages(
     std::string_view conference, const domain::PaginationRequest& page, std::string_view sort, std::string_view user,
-    std::string_view query, std::string_view anchor_message_id, bool respect_filters) {
+    std::string_view query, std::string_view anchor_message_id, bool respect_filters,
+    std::string_view after_message_id) {
   auto permission = access_->Permissions(*metadata_, user, conference);
   if (!permission)
     return std::unexpected(permission.error());
   if (!permission->read)
     return std::unexpected(EchoAccess::Denied());
-  if (!ValidPage(page) || (sort != "newest" && sort != "oldest"))
+  if ((sort == "number" && (!query.empty() || !anchor_message_id.empty())) ||
+      (!after_message_id.empty() && (sort != "number" || page.offset != 0)))
+    return std::unexpected(domain::ApiError::Validation("Invalid number cursor parameters"));
+  uint32_t after_number = 0;
+  std::string_view after_generation;
+  if (!after_message_id.empty()) {
+    const auto separator = after_message_id.find('#');
+    if (separator == std::string_view::npos || separator == 0 || separator + 1 == after_message_id.size())
+      return std::unexpected(domain::ApiError::Validation("Invalid number cursor"));
+    after_generation = after_message_id.substr(0, separator);
+    const auto digits = after_message_id.substr(separator + 1);
+    const auto parsed = std::from_chars(digits.data(), digits.data() + digits.size(), after_number);
+    if (parsed.ec != std::errc{} || parsed.ptr != digits.data() + digits.size())
+      return std::unexpected(domain::ApiError::Validation("Invalid number cursor"));
+  }
+  if (!ValidPage(page) || (sort != "newest" && sort != "oldest" && sort != "number"))
     return std::unexpected(domain::ApiError::Validation("Invalid page or sort"));
   auto filters =
       respect_filters
@@ -401,47 +446,83 @@ std::expected<domain::MessageListResponse, domain::ApiError> MessageService::Get
       storage::JamAccess::Open(*catalog_, conference, false, RequestDeadline(), RequestCancellation(), encoding_);
   if (!access)
     return std::unexpected(JamError(access.error()));
-  auto numbers = (*access)->messages().GetMessageNumbers();
-  if (!numbers)
-    return std::unexpected(domain::ApiError::Server("Message storage operation failed"));
-  std::vector<std::pair<uint32_t, uint32_t>> ordered;
-  for (auto number : *numbers) {
-    auto header = (*access)->messages().GetHeader(number);
-    if (!header)
-      return std::unexpected(domain::ApiError::Server("Message storage operation failed"));
-    if (!query.empty()) {
-      auto message = (*access)->messages().ReadMessage(number);
-      if (!message)
-        return std::unexpected(JamError(storage::JamAccessError{message.error()}));
-      if (message->subject().find(query) == std::string::npos &&
-          message->sender_name().find(query) == std::string::npos && message->text().find(query) == std::string::npos)
-        continue;
-    }
-    ordered.emplace_back(header->date_written, number);
-  }
-  std::sort(ordered.begin(), ordered.end());
-  if (sort == "newest")
-    std::reverse(ordered.begin(), ordered.end());
-  numbers->clear();
-  for (auto [date, number] : ordered) {
-    (void)date;
-    numbers->push_back(number);
-  }
+  std::expected<std::vector<uint32_t>, msgapi::JamError> numbers{std::vector<uint32_t>{}};
   domain::MessageListResponse result;
-  result.total = static_cast<int64_t>(numbers->size());
-  auto start = std::min<uint64_t>(page.offset, numbers->size());
-  if (!anchor_message_id.empty()) {
-    auto anchor = MessageNumber(**access, anchor_message_id);
-    if (!anchor)
-      return std::unexpected(anchor.error());
-    auto found = std::find(numbers->begin(), numbers->end(), *anchor);
-    if (found == numbers->end())
-      return std::unexpected(domain::ApiError::NotFound("Anchor message is unavailable in this view"));
-    const auto index = static_cast<uint64_t>(found - numbers->begin());
-    start = (index / static_cast<uint64_t>(page.limit)) * static_cast<uint64_t>(page.limit);
+  result.generation = (*access)->generation();
+  uint64_t start = 0, end = 0;
+  bool number_has_more = false;
+  if (sort == "number") {
+    auto& base = (*access)->messages();
+    const auto [first, last] = base.MessageNumberRange();
+    uint64_t next = first;
+    if (!after_message_id.empty()) {
+      if (after_generation != (*access)->generation() || after_number < first || after_number >= last)
+        return std::unexpected(domain::ApiError{domain::ErrorCode::kPrecondition, "Stale number cursor", {}});
+      next = uint64_t{after_number} + 1;
+    }
+    result.total = base.message_count();
+    uint64_t skipped = 0;
+    while (true) {
+      auto found = base.NextMessageNumber(next);
+      if (!found)
+        return std::unexpected(JamError(found.error()));
+      if (!*found)
+        break;
+      next = uint64_t{**found} + 1;
+      if (skipped < static_cast<uint64_t>(page.offset)) {
+        ++skipped;
+        continue;
+      }
+      if (numbers->size() == static_cast<size_t>(page.limit)) {
+        number_has_more = true;
+        break;
+      }
+      numbers->push_back(**found);
+    }
+    result.actual_offset = static_cast<int64_t>(skipped);
+    end = numbers->size();
+  } else {
+    numbers = (*access)->messages().GetMessageNumbers();
+    if (!numbers)
+      return std::unexpected(domain::ApiError::Server("Message storage operation failed"));
+    std::vector<std::pair<uint32_t, uint32_t>> ordered;
+    for (auto number : *numbers) {
+      auto header = (*access)->messages().GetHeader(number);
+      if (!header)
+        return std::unexpected(domain::ApiError::Server("Message storage operation failed"));
+      if (!query.empty()) {
+        auto message = (*access)->messages().ReadMessage(number);
+        if (!message)
+          return std::unexpected(JamError(storage::JamAccessError{message.error()}));
+        if (message->subject().find(query) == std::string::npos &&
+            message->sender_name().find(query) == std::string::npos && message->text().find(query) == std::string::npos)
+          continue;
+      }
+      ordered.emplace_back(header->date_written, number);
+    }
+    std::sort(ordered.begin(), ordered.end());
+    if (sort == "newest")
+      std::reverse(ordered.begin(), ordered.end());
+    numbers->clear();
+    for (auto [date, number] : ordered) {
+      (void)date;
+      numbers->push_back(number);
+    }
+    result.total = static_cast<int64_t>(numbers->size());
+    start = std::min<uint64_t>(page.offset, numbers->size());
+    if (!anchor_message_id.empty()) {
+      auto anchor = MessageNumber(**access, anchor_message_id);
+      if (!anchor)
+        return std::unexpected(anchor.error());
+      auto found = std::find(numbers->begin(), numbers->end(), *anchor);
+      if (found == numbers->end())
+        return std::unexpected(domain::ApiError::NotFound("Anchor message is unavailable in this view"));
+      const auto index = static_cast<uint64_t>(found - numbers->begin());
+      start = (index / static_cast<uint64_t>(page.limit)) * static_cast<uint64_t>(page.limit);
+    }
+    result.actual_offset = static_cast<int64_t>(start);
+    end = std::min<uint64_t>(start + page.limit, numbers->size());
   }
-  result.actual_offset = static_cast<int64_t>(start);
-  const auto end = std::min<uint64_t>(start + page.limit, numbers->size());
   for (auto i = start; i < end; ++i) {
     auto header = (*access)->messages().GetHeader(numbers->at(i));
     if (!header)
@@ -470,7 +551,7 @@ std::expected<domain::MessageListResponse, domain::ApiError> MessageService::Get
     summary.thread_id = detail->thread_id;
     result.messages.push_back(std::move(summary));
   }
-  result.has_more = end < numbers->size();
+  result.has_more = sort == "number" ? number_has_more : end < numbers->size();
   return result;
 }
 std::expected<domain::MessageDetail, domain::ApiError> MessageService::GetMessage(std::string_view conference,
@@ -977,7 +1058,10 @@ std::expected<domain::CreateMessageResponse, domain::ApiError> MessageService::C
     auto decoded = storage::ConvertText(operation.plan.text, value.encoding, "UTF-8");
     if (!decoded)
       return std::unexpected(domain::ApiError::Validation("Invalid publication encoding"));
-    value.body = DisplayText(*decoded);
+    auto displayed = DisplayText(*decoded);
+    if (!displayed)
+      return std::unexpected(displayed.error());
+    value.body = std::move(*displayed);
     value.wire_body_bytes = operation.plan.text.size();
     value.kind = static_cast<int>(kind);
     value.public_message = kind == AreaKind::kEcho;
@@ -1318,6 +1402,7 @@ std::expected<domain::ThreadListResponse, domain::ApiError> MessageService::GetT
       if (visited.insert(child).second)
         pending.push_back(child);
   domain::ThreadListResponse result;
+  result.generation = (*access)->generation();
   result.total = static_cast<int64_t>(pending.size());
   const auto start = std::min<uint64_t>(page.offset, pending.size()),
              end = std::min<uint64_t>(start + page.limit, pending.size());

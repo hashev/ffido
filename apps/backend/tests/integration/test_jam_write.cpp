@@ -676,6 +676,30 @@ TEST_F(JamWriteIntegrationTest, ParserCancellationAndInvalidDescriptorsFailClose
   EXPECT_EQ(invalid.Open(), JamError::kFileNotFound);
 }
 
+TEST_F(JamWriteIntegrationTest, CancellationDuringBodyConversionStopsBeforeTheWholePayload) {
+  JamMessageBase seed(test_dir_.string());
+  ASSERT_EQ(seed.Open(), JamError::kSuccess);
+  JamMessage message;
+  message.SetText(std::string(128 * 1024, 'a'));
+  ASSERT_EQ(seed.AddMessage(message), JamError::kSuccess);
+  seed.Close();
+  JamDescriptors files(test_dir_);
+  int checkpoints = 0;
+  JamMessageBase reader(files.values, "CP866", [&] { return ++checkpoints < 4; });
+  ASSERT_EQ(reader.Open(), JamError::kSuccess);
+  checkpoints = 0;
+  auto interrupted = reader.ReadMessage(1);
+  ASSERT_FALSE(interrupted);
+  EXPECT_EQ(interrupted.error(), JamError::kReadError);
+  EXPECT_EQ(checkpoints, 4);
+  reader.Close();
+  JamMessageBase retry(files.values, "CP866");
+  ASSERT_EQ(retry.Open(), JamError::kSuccess);
+  auto complete = retry.ReadMessage(1);
+  ASSERT_TRUE(complete);
+  EXPECT_EQ(complete->text(), message.text());
+}
+
 TEST_F(JamWriteIntegrationTest, DeleteReportsReadOnlyHeaderAndIndexAndKeepsOldBody) {
   for (int readonly : {0, 2}) {
     CreateTestJamBase(test_dir_);

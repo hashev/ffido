@@ -1,5 +1,7 @@
 #include "storage/jam_access.hpp"
 
+#include "storage/measurements.hpp"
+
 namespace fidoback::storage {
 std::expected<std::unique_ptr<JamAccess>, JamAccessError> JamAccess::Open(const JamCatalog& catalog,
                                                                           std::string_view conference, bool write,
@@ -37,6 +39,7 @@ std::expected<std::unique_ptr<JamAccess>, JamAccessError> JamAccess::Open(const 
   const auto& header = access->messages_.base_header();
   access->generation_ = std::to_string(identity.st_dev) + ":" + std::to_string(identity.st_ino) + ":" +
                         std::to_string(header.date_created) + ":" + std::to_string(header.base_msg_num);
+  measurements::Add(measurements::jam_opens, 1);
   return access;
 }
 }  // namespace fidoback::storage

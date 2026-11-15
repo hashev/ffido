@@ -4,9 +4,12 @@
 
 #include <memory>
 
+#include "storage/measurements.hpp"
 #include "storage/work_metrics.hpp"
 namespace fidoback::service {
 std::expected<storage::TokenDigest, domain::ApiError> Sha256(std::string_view bytes) {
+  measurements::Add(measurements::hash_calls, 1);
+  measurements::Add(measurements::hashed_bytes, bytes.size());
   // Resolve the provider once with C++ static initialization synchronization.
   // Per-request digest contexts use the immutable fetched algorithm directly.
   static const std::unique_ptr<EVP_MD, decltype(&EVP_MD_free)> method(EVP_MD_fetch(nullptr, "SHA256", nullptr),

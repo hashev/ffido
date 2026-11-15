@@ -41,13 +41,15 @@ const MessageSort$json = {
     {'1': 'MESSAGE_SORT_UNSPECIFIED', '2': 0},
     {'1': 'MESSAGE_SORT_DATE_ASCENDING', '2': 1},
     {'1': 'MESSAGE_SORT_DATE_DESCENDING', '2': 2},
+    {'1': 'MESSAGE_SORT_NUMBER_ASCENDING', '2': 3},
   ],
 };
 
 /// Descriptor for `MessageSort`. Decode as a `google.protobuf.EnumDescriptorProto`.
 final $typed_data.Uint8List messageSortDescriptor = $convert.base64Decode(
     'CgtNZXNzYWdlU29ydBIcChhNRVNTQUdFX1NPUlRfVU5TUEVDSUZJRUQQABIfChtNRVNTQUdFX1'
-    'NPUlRfREFURV9BU0NFTkRJTkcQARIgChxNRVNTQUdFX1NPUlRfREFURV9ERVNDRU5ESU5HEAI=');
+    'NPUlRfREFURV9BU0NFTkRJTkcQARIgChxNRVNTQUdFX1NPUlRfREFURV9ERVNDRU5ESU5HEAIS'
+    'IQodTUVTU0FHRV9TT1JUX05VTUJFUl9BU0NFTkRJTkcQAw==');
 
 @$core.Deprecated('Use areaKindDescriptor instead')
 const AreaKind$json = {
@@ -321,6 +323,7 @@ const Conference$json = {
       '5': 4,
       '10': 'positionRevision'
     },
+    {'1': 'generation', '3': 17, '4': 1, '5': 9, '10': 'generation'},
   ],
   '8': [
     {'1': '_statistics_known'},
@@ -340,7 +343,8 @@ final $typed_data.Uint8List conferenceDescriptor = $convert.base64Decode(
     'YXZhaWxhYmlsaXR5Ei4KEHN0YXRpc3RpY3Nfa25vd24YDSABKAhIAFIPc3RhdGlzdGljc0tub3'
     'duiAEBEikKEHBlcnNvbmFsX21haWxib3gYDiABKAhSD3BlcnNvbmFsTWFpbGJveBIzChZsYXN0'
     'X29wZW5lZF9tZXNzYWdlX2lkGA8gASgJUhNsYXN0T3BlbmVkTWVzc2FnZUlkEisKEXBvc2l0aW'
-    '9uX3JldmlzaW9uGBAgASgEUhBwb3NpdGlvblJldmlzaW9uQhMKEV9zdGF0aXN0aWNzX2tub3du');
+    '9uX3JldmlzaW9uGBAgASgEUhBwb3NpdGlvblJldmlzaW9uEh4KCmdlbmVyYXRpb24YESABKAlS'
+    'CmdlbmVyYXRpb25CEwoRX3N0YXRpc3RpY3Nfa25vd24=');
 
 @$core.Deprecated('Use listConferencesResponseDescriptor instead')
 const ListConferencesResponse$json = {
@@ -395,6 +399,7 @@ const ListMessagesRequest$json = {
       '5': 8,
       '10': 'respectPersonalFilters'
     },
+    {'1': 'after_message_id', '3': 7, '4': 1, '5': 9, '10': 'afterMessageId'},
   ],
 };
 
@@ -404,7 +409,8 @@ final $typed_data.Uint8List listMessagesRequestDescriptor = $convert.base64Decod
     'VJZBIpCgRwYWdlGAIgASgLMhUuZmZpZG8udjEuUGFnZVJlcXVlc3RSBHBhZ2USFAoFcXVlcnkY'
     'AyABKAlSBXF1ZXJ5EikKBHNvcnQYBCABKA4yFS5mZmlkby52MS5NZXNzYWdlU29ydFIEc29ydB'
     'IqChFhbmNob3JfbWVzc2FnZV9pZBgFIAEoCVIPYW5jaG9yTWVzc2FnZUlkEjgKGHJlc3BlY3Rf'
-    'cGVyc29uYWxfZmlsdGVycxgGIAEoCFIWcmVzcGVjdFBlcnNvbmFsRmlsdGVycw==');
+    'cGVyc29uYWxfZmlsdGVycxgGIAEoCFIWcmVzcGVjdFBlcnNvbmFsRmlsdGVycxIoChBhZnRlcl'
+    '9tZXNzYWdlX2lkGAcgASgJUg5hZnRlck1lc3NhZ2VJZA==');
 
 @$core.Deprecated('Use messageReferenceDescriptor instead')
 const MessageReference$json = {
@@ -510,6 +516,7 @@ const ListMessagesResponse$json = {
       '10': 'actualOffset',
       '17': true
     },
+    {'1': 'generation', '3': 5, '4': 1, '5': 9, '10': 'generation'},
   ],
   '8': [
     {'1': '_actual_offset'},
@@ -520,8 +527,8 @@ const ListMessagesResponse$json = {
 final $typed_data.Uint8List listMessagesResponseDescriptor = $convert.base64Decode(
     'ChRMaXN0TWVzc2FnZXNSZXNwb25zZRItCghtZXNzYWdlcxgBIAMoCzIRLmZmaWRvLnYxLk1lc3'
     'NhZ2VSCG1lc3NhZ2VzEhQKBXRvdGFsGAIgASgDUgV0b3RhbBIZCghoYXNfbW9yZRgDIAEoCFIH'
-    'aGFzTW9yZRIoCg1hY3R1YWxfb2Zmc2V0GAQgASgDSABSDGFjdHVhbE9mZnNldIgBAUIQCg5fYW'
-    'N0dWFsX29mZnNldA==');
+    'aGFzTW9yZRIoCg1hY3R1YWxfb2Zmc2V0GAQgASgDSABSDGFjdHVhbE9mZnNldIgBARIeCgpnZW'
+    '5lcmF0aW9uGAUgASgJUgpnZW5lcmF0aW9uQhAKDl9hY3R1YWxfb2Zmc2V0');
 
 @$core.Deprecated('Use messageFooterDescriptor instead')
 const MessageFooter$json = {
@@ -899,6 +906,13 @@ const SessionInfo$json = {
   '1': 'SessionInfo',
   '2': [
     {
+      '1': 'supports_offline_sync',
+      '3': 5,
+      '4': 1,
+      '5': 8,
+      '10': 'supportsOfflineSync'
+    },
+    {
       '1': 'supports_lightweight_conference_catalog',
       '3': 4,
       '4': 1,
@@ -933,11 +947,12 @@ const SessionInfo$json = {
 
 /// Descriptor for `SessionInfo`. Decode as a `google.protobuf.DescriptorProto`.
 final $typed_data.Uint8List sessionInfoDescriptor = $convert.base64Decode(
-    'CgtTZXNzaW9uSW5mbxJVCidzdXBwb3J0c19saWdodHdlaWdodF9jb25mZXJlbmNlX2NhdGFsb2'
-    'cYBCABKAhSJHN1cHBvcnRzTGlnaHR3ZWlnaHRDb25mZXJlbmNlQ2F0YWxvZxI2ChdzdXBwb3J0'
-    'c19tZXNzYWdlX2Zvb3RlchgDIAEoCFIVc3VwcG9ydHNNZXNzYWdlRm9vdGVyEisKB3Byb2ZpbG'
-    'UYASABKAsyES5mZmlkby52MS5Qcm9maWxlUgdwcm9maWxlEjkKCmV4cGlyZXNfYXQYAiABKAsy'
-    'Gi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wUglleHBpcmVzQXQ=');
+    'CgtTZXNzaW9uSW5mbxIyChVzdXBwb3J0c19vZmZsaW5lX3N5bmMYBSABKAhSE3N1cHBvcnRzT2'
+    'ZmbGluZVN5bmMSVQonc3VwcG9ydHNfbGlnaHR3ZWlnaHRfY29uZmVyZW5jZV9jYXRhbG9nGAQg'
+    'ASgIUiRzdXBwb3J0c0xpZ2h0d2VpZ2h0Q29uZmVyZW5jZUNhdGFsb2cSNgoXc3VwcG9ydHNfbW'
+    'Vzc2FnZV9mb290ZXIYAyABKAhSFXN1cHBvcnRzTWVzc2FnZUZvb3RlchIrCgdwcm9maWxlGAEg'
+    'ASgLMhEuZmZpZG8udjEuUHJvZmlsZVIHcHJvZmlsZRI5CgpleHBpcmVzX2F0GAIgASgLMhouZ2'
+    '9vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcFIJZXhwaXJlc0F0');
 
 @$core.Deprecated('Use loginResponseDescriptor instead')
 const LoginResponse$json = {
@@ -1840,6 +1855,13 @@ const ReadArchiveMessageRequest$json = {
     {'1': 'body_offset', '3': 2, '4': 1, '5': 4, '10': 'bodyOffset'},
     {'1': 'body_limit', '3': 3, '4': 1, '5': 13, '10': 'bodyLimit'},
     {'1': 'reveal', '3': 4, '4': 1, '5': 8, '10': 'reveal'},
+    {
+      '1': 'include_subfields',
+      '3': 5,
+      '4': 1,
+      '5': 8,
+      '10': 'includeSubfields'
+    },
   ],
 };
 
@@ -1848,7 +1870,7 @@ final $typed_data.Uint8List readArchiveMessageRequestDescriptor = $convert.base6
     'ChlSZWFkQXJjaGl2ZU1lc3NhZ2VSZXF1ZXN0EjQKB21lc3NhZ2UYASABKAsyGi5mZmlkby52MS'
     '5NZXNzYWdlUmVmZXJlbmNlUgdtZXNzYWdlEh8KC2JvZHlfb2Zmc2V0GAIgASgEUgpib2R5T2Zm'
     'c2V0Eh0KCmJvZHlfbGltaXQYAyABKA1SCWJvZHlMaW1pdBIWCgZyZXZlYWwYBCABKAhSBnJldm'
-    'VhbA==');
+    'VhbBIrChFpbmNsdWRlX3N1YmZpZWxkcxgFIAEoCFIQaW5jbHVkZVN1YmZpZWxkcw==');
 
 @$core.Deprecated('Use readArchiveMessageResponseDescriptor instead')
 const ReadArchiveMessageResponse$json = {
@@ -1866,6 +1888,15 @@ const ReadArchiveMessageResponse$json = {
     {'1': 'next_offset', '3': 3, '4': 1, '5': 4, '10': 'nextOffset'},
     {'1': 'complete', '3': 4, '4': 1, '5': 8, '10': 'complete'},
     {'1': 'collapsed', '3': 5, '4': 1, '5': 8, '10': 'collapsed'},
+    {
+      '1': 'subfields',
+      '3': 6,
+      '4': 3,
+      '5': 11,
+      '6': '.ffido.v1.MessageTechnicalSubfield',
+      '10': 'subfields'
+    },
+    {'1': 'attributes2', '3': 7, '4': 1, '5': 13, '10': 'attributes2'},
   ],
 };
 
@@ -1874,7 +1905,9 @@ final $typed_data.Uint8List readArchiveMessageResponseDescriptor = $convert.base
     'ChpSZWFkQXJjaGl2ZU1lc3NhZ2VSZXNwb25zZRIrCgdtZXNzYWdlGAEgASgLMhEuZmZpZG8udj'
     'EuTWVzc2FnZVIHbWVzc2FnZRIfCgtib2R5X29mZnNldBgCIAEoBFIKYm9keU9mZnNldBIfCgtu'
     'ZXh0X29mZnNldBgDIAEoBFIKbmV4dE9mZnNldBIaCghjb21wbGV0ZRgEIAEoCFIIY29tcGxldG'
-    'USHAoJY29sbGFwc2VkGAUgASgIUgljb2xsYXBzZWQ=');
+    'USHAoJY29sbGFwc2VkGAUgASgIUgljb2xsYXBzZWQSQAoJc3ViZmllbGRzGAYgAygLMiIuZmZp'
+    'ZG8udjEuTWVzc2FnZVRlY2huaWNhbFN1YmZpZWxkUglzdWJmaWVsZHMSIAoLYXR0cmlidXRlcz'
+    'IYByABKA1SC2F0dHJpYnV0ZXMy');
 
 @$core.Deprecated('Use getArchiveThreadRequestDescriptor instead')
 const GetArchiveThreadRequest$json = {

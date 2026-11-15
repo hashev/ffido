@@ -7,11 +7,19 @@
 #include <nlohmann/json.hpp>
 
 #include "domain/ftn_address.hpp"
+#include "storage/measurements.hpp"
 #include "storage/metadata_store.hpp"
 
 namespace fidoback::storage {
 
 namespace {
+
+int MeasuredStep(sqlite3_stmt* statement) {
+  // A ROW continuation is part of the same execution; reset/rebind starts another.
+  if (!sqlite3_stmt_busy(statement))
+    measurements::Add(measurements::sql_executions, 1);
+  return sqlite3_step(statement);
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // RAII-обёртки для SQLite C API
@@ -159,12 +167,16 @@ public:
   }
 
   ~SQLiteMetadataStore() override {
+    measurements::Timer metadata_wait(measurements::metadata_wait_ns);
     std::lock_guard lock(mutex_);
+    metadata_wait.Finish();
     db_.reset();  // RAII — sqlite3_close внутри SQLiteDb
   }
 
   std::expected<void, domain::ApiError> Init() override {
+    measurements::Timer metadata_wait(measurements::metadata_wait_ns);
     std::lock_guard lock(mutex_);
+    metadata_wait.Finish();
 
     if (db_)
       return {};
@@ -186,13 +198,13 @@ public:
     int schema_version;
     {
       StatementGuard version(prepare("PRAGMA user_version"));
-      if (!version.get() || sqlite3_step(version.get()) != SQLITE_ROW)
+      if (!version.get() || MeasuredStep(version.get()) != SQLITE_ROW)
         return fail();
       schema_version = sqlite3_column_int(version.get(), 0);
     }
     {
       StatementGuard mode(prepare("PRAGMA journal_mode"));
-      if (!mode.get() || sqlite3_step(mode.get()) != SQLITE_ROW || ColumnText(mode.get(), 0) != "wal")
+      if (!mode.get() || MeasuredStep(mode.get()) != SQLITE_ROW || ColumnText(mode.get(), 0) != "wal")
         return fail();
     }
     if (schema_version > 11 || schema_version < 0)
@@ -274,7 +286,7 @@ public:
         if (!users.get())
           valid = false;
         int row = SQLITE_DONE;
-        while (valid && (row = sqlite3_step(users.get())) == SQLITE_ROW) {
+        while (valid && (row = MeasuredStep(users.get())) == SQLITE_ROW) {
           const auto id = ColumnText(users.get(), 0);
           auto address = domain::CanonicalFtnAddress(ColumnText(users.get(), 1));
           if (!address || !addresses.emplace(*address, id).second) {
@@ -287,7 +299,7 @@ public:
         for (const auto& [address, id] : addresses) {
           StatementGuard update(prepare("UPDATE users SET ftn_address=? WHERE user_id=?"));
           if (!update.get() || !update.Bind(1, address) || !update.Bind(2, id) ||
-              sqlite3_step(update.get()) != SQLITE_DONE)
+              MeasuredStep(update.get()) != SQLITE_DONE)
             valid = false;
         }
       }
@@ -425,13 +437,17 @@ public:
   }
 
   std::expected<domain::PersonalMessageFilterSet, domain::ApiError> GetPersonalFilters(std::string_view user) override {
+    measurements::Timer metadata_wait(measurements::metadata_wait_ns);
     std::lock_guard lock(mutex_);
+    metadata_wait.Finish();
     return ReadPersonalFilters(user);
   }
   std::expected<uint64_t, domain::ApiError> ReplacePersonalFilters(
       std::string_view user, uint64_t expected, std::string_view operation,
       const std::vector<domain::PersonalMessageFilter>& rules, const std::function<bool()>& active) override {
+    measurements::Timer metadata_wait(measurements::metadata_wait_ns);
     std::lock_guard lock(mutex_);
+    metadata_wait.Finish();
     nlohmann::json encoded = nlohmann::json::array();
     for (const auto& r : rules)
       encoded.push_back({r.id, r.enabled, r.scope, r.conference, r.author, r.address, r.subject});
@@ -464,7 +480,7 @@ public:
                                     "WHERE user_id=? AND operation_id=?"));
     if (!previous.get() || !previous.Bind(1, user) || !previous.Bind(2, operation))
       return failure();
-    auto status = sqlite3_step(previous.get());
+    auto status = MeasuredStep(previous.get());
     if (status == SQLITE_ROW) {
       if (ColumnText(previous.get(), 0) != base || ColumnText(previous.get(), 1) != hash)
         return std::unexpected(domain::ApiError{domain::ErrorCode::kConflict, "Filter operation already exists", {}});
@@ -486,9 +502,9 @@ public:
         prepare("INSERT INTO personal_filter_mutations(user_id,operation_id,expected_revision,payload_hash,revision) "
                 "VALUES(?,?,?,?,?)"));
     if (!update.get() || !update.Bind(1, user) || !update.Bind(2, revision) || !update.Bind(3, payload) ||
-        sqlite3_step(update.get()) != SQLITE_DONE || !save.get() || !save.Bind(1, user) || !save.Bind(2, operation) ||
+        MeasuredStep(update.get()) != SQLITE_DONE || !save.get() || !save.Bind(1, user) || !save.Bind(2, operation) ||
         !save.Bind(3, base) || !save.Bind(4, hash) || !save.Bind(5, revision) ||
-        sqlite3_step(save.get()) != SQLITE_DONE)
+        MeasuredStep(save.get()) != SQLITE_DONE)
       return failure();
     if (active && !active())
       return std::unexpected(domain::ApiError{domain::ErrorCode::kCancelled, "Request interrupted", {}});
@@ -500,11 +516,13 @@ public:
 
   std::expected<std::optional<std::string>, domain::ApiError> GetCrosspost(std::string_view user,
                                                                            std::string_view id) override {
+    measurements::Timer metadata_wait(measurements::metadata_wait_ns);
     std::lock_guard lock(mutex_);
+    metadata_wait.Finish();
     StatementGuard q(prepare("SELECT manifest FROM crosspost_groups WHERE user_id=? AND operation_id=?"));
     if (!q.get() || !q.Bind(1, user) || !q.Bind(2, id))
       return std::unexpected(SqliteError(db_.get(), "crosspost"));
-    const auto rc = sqlite3_step(q.get());
+    const auto rc = MeasuredStep(q.get());
     if (rc == SQLITE_DONE)
       return std::optional<std::string>{};
     if (rc != SQLITE_ROW)
@@ -513,13 +531,15 @@ public:
   }
   std::expected<void, domain::ApiError> PrepareCrosspost(std::string_view user, std::string_view id,
                                                          std::string_view manifest) override {
+    measurements::Timer metadata_wait(measurements::metadata_wait_ns);
     std::lock_guard lock(mutex_);
+    metadata_wait.Finish();
     StatementGuard q(prepare("INSERT INTO crosspost_groups(user_id,operation_id,manifest) VALUES(?,?,?) "
                              "ON CONFLICT(user_id,operation_id) DO NOTHING"));
-    if (!q.get() || !q.Bind(1, user) || !q.Bind(2, id) || !q.Bind(3, manifest) || sqlite3_step(q.get()) != SQLITE_DONE)
+    if (!q.get() || !q.Bind(1, user) || !q.Bind(2, id) || !q.Bind(3, manifest) || MeasuredStep(q.get()) != SQLITE_DONE)
       return std::unexpected(SqliteError(db_.get(), "crosspost"));
     StatementGuard check(prepare("SELECT manifest FROM crosspost_groups WHERE user_id=? AND operation_id=?"));
-    if (!check.get() || !check.Bind(1, user) || !check.Bind(2, id) || sqlite3_step(check.get()) != SQLITE_ROW)
+    if (!check.get() || !check.Bind(1, user) || !check.Bind(2, id) || MeasuredStep(check.get()) != SQLITE_ROW)
       return std::unexpected(SqliteError(db_.get(), "crosspost"));
     if (ColumnText(check.get(), 0) != manifest)
       return std::unexpected(domain::ApiError{domain::ErrorCode::kConflict, "Crosspost operation already exists", {}});
@@ -528,12 +548,14 @@ public:
 
   std::expected<std::optional<UueUpload>, domain::ApiError> GetUueUpload(std::string_view user,
                                                                          std::string_view id) override {
+    measurements::Timer metadata_wait(measurements::metadata_wait_ns);
     std::lock_guard lock(mutex_);
+    metadata_wait.Finish();
     StatementGuard query(prepare("SELECT filename,sha256,size,data,manifest,state,revision,updated_at FROM uue_uploads "
                                  "WHERE user_id=? AND operation_id=?"));
     if (!query.get() || !query.Bind(1, user) || !query.Bind(2, id))
       return std::unexpected(SqliteError(db_.get(), "uue"));
-    const auto status = sqlite3_step(query.get());
+    const auto status = MeasuredStep(query.get());
     if (status == SQLITE_DONE)
       return std::optional<UueUpload>{};
     if (status != SQLITE_ROW)
@@ -556,7 +578,9 @@ public:
   }
   std::expected<void, domain::ApiError> SaveUueUpload(const UueUpload& value, uint64_t user_quota,
                                                       uint64_t global_quota) override {
+    measurements::Timer metadata_wait(measurements::metadata_wait_ns);
     std::lock_guard lock(mutex_);
+    metadata_wait.Finish();
     if (value.revision < 0 || value.revision == INT64_MAX || value.size > 16 * 1024 * 1024 ||
         value.data.size() > value.size || value.manifest.size() > 32 * 1024 * 1024)
       return std::unexpected(domain::ApiError::Validation("Invalid UUE staging record"));
@@ -578,7 +602,7 @@ public:
                 "length(data)+length(manifest) ELSE 0 END),0) FROM uue_uploads WHERE state!='completed' AND "
                 "NOT(user_id=? AND operation_id=?)"));
     if (!quota.get() || !quota.Bind(1, value.user) || !quota.Bind(2, value.user) || !quota.Bind(3, value.id) ||
-        sqlite3_step(quota.get()) != SQLITE_ROW)
+        MeasuredStep(quota.get()) != SQLITE_ROW)
       return std::unexpected(SqliteError(db_.get(), "uue"));
     const uint64_t addition = value.state == "completed" ? 0 : value.data.size() + value.manifest.size();
     if (addition > user_quota || addition > global_quota ||
@@ -588,7 +612,7 @@ public:
     StatementGuard previous(prepare("SELECT revision FROM uue_uploads WHERE user_id=? AND operation_id=?"));
     if (!previous.get() || !previous.Bind(1, value.user) || !previous.Bind(2, value.id))
       return std::unexpected(SqliteError(db_.get(), "uue"));
-    const auto status = sqlite3_step(previous.get());
+    const auto status = MeasuredStep(previous.get());
     if ((status == SQLITE_DONE && value.revision != 0) ||
         (status == SQLITE_ROW && sqlite3_column_int64(previous.get(), 0) != value.revision))
       return std::unexpected(domain::ApiError{domain::ErrorCode::kConflict, "UUE staging changed", {}});
@@ -605,7 +629,7 @@ public:
         !query.Blob(6, {reinterpret_cast<const uint8_t*>(value.data.data()), value.data.size()}) ||
         !query.Bind(7, value.manifest) || !query.Bind(8, value.state) || !query.Bind(9, value.revision + 1) ||
         !query.Bind(10, value.updated_at) || !query.Bind(11, value.revision) ||
-        sqlite3_step(query.get()) != SQLITE_DONE)
+        MeasuredStep(query.get()) != SQLITE_DONE)
       return std::unexpected(SqliteError(db_.get(), "uue"));
     if (sqlite3_changes(db_.get()) != 1)
       return std::unexpected(domain::ApiError{domain::ErrorCode::kConflict, "UUE staging changed", {}});
@@ -615,20 +639,24 @@ public:
     return {};
   }
   std::expected<void, domain::ApiError> PruneUueUploads(int64_t older_than) override {
+    measurements::Timer metadata_wait(measurements::metadata_wait_ns);
     std::lock_guard lock(mutex_);
+    metadata_wait.Finish();
     StatementGuard query(prepare("DELETE FROM uue_uploads WHERE state='uploading' AND updated_at<?"));
-    if (!query.get() || !query.Bind(1, older_than) || sqlite3_step(query.get()) != SQLITE_DONE)
+    if (!query.get() || !query.Bind(1, older_than) || MeasuredStep(query.get()) != SQLITE_DONE)
       return std::unexpected(SqliteError(db_.get(), "uue"));
     return {};
   }
   std::expected<std::vector<MailboxBinding>, domain::ApiError> MailboxBindings() override {
+    measurements::Timer metadata_wait(measurements::metadata_wait_ns);
     std::lock_guard lock(mutex_);
+    metadata_wait.Finish();
     StatementGuard query(prepare("SELECT address,base,generation,files FROM mailbox_bindings ORDER BY address"));
     if (!query.get())
       return std::unexpected(SqliteError(db_.get(), "mailboxes"));
     std::vector<MailboxBinding> result;
     int status;
-    while ((status = sqlite3_step(query.get())) == SQLITE_ROW)
+    while ((status = MeasuredStep(query.get())) == SQLITE_ROW)
       result.push_back({ColumnText(query.get(), 0), ColumnText(query.get(), 1), ColumnText(query.get(), 2),
                         ColumnText(query.get(), 3)});
     if (status != SQLITE_DONE)
@@ -636,7 +664,9 @@ public:
     return result;
   }
   std::expected<void, domain::ApiError> BindMailbox(const MailboxBinding& binding) override {
+    measurements::Timer metadata_wait(measurements::metadata_wait_ns);
     std::lock_guard lock(mutex_);
+    metadata_wait.Finish();
     auto address = domain::CanonicalFtnAddress(binding.address);
     if (!address || *address != binding.address || binding.base.empty() || binding.generation.empty() ||
         binding.files.empty())
@@ -647,17 +677,21 @@ public:
         "mailbox_bindings.generation=excluded.generation AND mailbox_bindings.files=excluded.files"));
     if (!query.get() || !query.Bind(1, binding.address) || !query.Bind(2, binding.base) ||
         !query.Bind(3, binding.generation) || !query.Bind(4, binding.files) ||
-        sqlite3_step(query.get()) != SQLITE_DONE || sqlite3_changes(db_.get()) != 1)
+        MeasuredStep(query.get()) != SQLITE_DONE || sqlite3_changes(db_.get()) != 1)
       return std::unexpected(domain::ApiError{domain::ErrorCode::kPrecondition, "Mailbox binding conflicts", {}});
     return {};
   }
 
   std::expected<std::vector<MailTransfer>, domain::ApiError> MailTransfers(bool include_done) override {
+    measurements::Timer metadata_wait(measurements::metadata_wait_ns);
     std::lock_guard lock(mutex_);
+    metadata_wait.Finish();
     return TransfersUnlocked({}, include_done);
   }
   std::expected<MailTransfer, domain::ApiError> PrepareTransfer(const MailTransfer& input) override {
+    measurements::Timer metadata_wait(measurements::metadata_wait_ns);
     std::lock_guard lock(mutex_);
+    metadata_wait.Finish();
     const auto failure = [&] { return std::unexpected(SqliteError(db_.get(), "transfer")); };
     if (input.source_key.empty() || input.delivery_key.empty() || input.source_generation.empty())
       return failure();
@@ -689,7 +723,7 @@ public:
       StatementGuard delivery(prepare("SELECT payload_hash FROM mail_deliveries WHERE delivery_key=?"));
       if (!delivery.get() || !delivery.Bind(1, input.delivery_key))
         return failure();
-      const auto status = sqlite3_step(delivery.get());
+      const auto status = MeasuredStep(delivery.get());
       if (status == SQLITE_ROW) {
         if (sqlite3_column_bytes(delivery.get(), 0) != 32)
           return failure();
@@ -701,7 +735,7 @@ public:
       } else if (status == SQLITE_DONE) {
         StatementGuard insert(prepare("INSERT INTO mail_deliveries VALUES(?,?)"));
         if (!insert.get() || !insert.Bind(1, input.delivery_key) || !insert.Bind(2, input.payload_hash) ||
-            sqlite3_step(insert.get()) != SQLITE_DONE)
+            MeasuredStep(insert.get()) != SQLITE_DONE)
           return failure();
       } else
         return failure();
@@ -713,16 +747,18 @@ public:
         !insert.Bind(7, transfer.payload_hash) || !insert.Bind(8, transfer.source_hash) ||
         !insert.Bind(9, transfer.target_conference) || !insert.Bind(10, transfer.target_operation) ||
         !insert.Bind(11, int64_t(transfer.state)) || !insert.Bind(12, int64_t(transfer.duplicate)) ||
-        !insert.Bind(13, int64_t(transfer.collision)) || sqlite3_step(insert.get()) != SQLITE_DONE ||
+        !insert.Bind(13, int64_t(transfer.collision)) || MeasuredStep(insert.get()) != SQLITE_DONE ||
         sqlite3_exec(db_.get(), "COMMIT", nullptr, nullptr, nullptr) != SQLITE_OK)
       return failure();
     return transfer;
   }
   std::expected<void, domain::ApiError> SetTransferState(std::string_view key, TransferState state) override {
+    measurements::Timer metadata_wait(measurements::metadata_wait_ns);
     std::lock_guard lock(mutex_);
+    metadata_wait.Finish();
     StatementGuard update(prepare("UPDATE mail_transfers SET state=? WHERE source_key=? AND (state<=? OR state=?)"));
     if (!update.get() || !update.Bind(1, int64_t(state)) || !update.Bind(2, key) || !update.Bind(3, int64_t(state)) ||
-        !update.Bind(4, int64_t(state)) || sqlite3_step(update.get()) != SQLITE_DONE || sqlite3_changes(db_.get()) != 1)
+        !update.Bind(4, int64_t(state)) || MeasuredStep(update.get()) != SQLITE_DONE || sqlite3_changes(db_.get()) != 1)
       return std::unexpected(SqliteError(db_.get(), "transfer state"));
     return {};
   }
@@ -738,7 +774,7 @@ public:
       return std::unexpected(SqliteError(db_.get(), "transfers"));
     std::vector<MailTransfer> result;
     int status;
-    while ((status = sqlite3_step(query.get())) == SQLITE_ROW) {
+    while ((status = MeasuredStep(query.get())) == SQLITE_ROW) {
       MailTransfer t;
       t.source_key = ColumnText(query.get(), 0);
       t.delivery_key = ColumnText(query.get(), 1);
@@ -769,14 +805,18 @@ public:
   }
 
   std::expected<int, domain::ApiError> ExportState() override {
+    measurements::Timer metadata_wait(measurements::metadata_wait_ns);
     std::lock_guard lock(mutex_);
+    metadata_wait.Finish();
     StatementGuard query(prepare("SELECT state FROM mail_pipeline WHERE id=1"));
-    if (!query.get() || sqlite3_step(query.get()) != SQLITE_ROW)
+    if (!query.get() || MeasuredStep(query.get()) != SQLITE_ROW)
       return std::unexpected(SqliteError(db_.get(), "export state"));
     return sqlite3_column_int(query.get(), 0);
   }
   std::expected<void, domain::ApiError> SetExportState(int expected, int next) override {
+    measurements::Timer metadata_wait(measurements::metadata_wait_ns);
     std::lock_guard lock(mutex_);
+    metadata_wait.Finish();
     if (sqlite3_exec(db_.get(), "BEGIN IMMEDIATE", nullptr, nullptr, nullptr) != SQLITE_OK)
       return std::unexpected(SqliteError(db_.get(), "export begin"));
     struct Transaction {
@@ -787,34 +827,38 @@ public:
     } transaction{db_.get()};
     StatementGuard update(prepare("UPDATE mail_pipeline SET state=? WHERE id=1 AND state=?"));
     if (!update.get() || !update.Bind(1, int64_t(next)) || !update.Bind(2, int64_t(expected)) ||
-        sqlite3_step(update.get()) != SQLITE_DONE || sqlite3_changes(db_.get()) != 1)
+        MeasuredStep(update.get()) != SQLITE_DONE || sqlite3_changes(db_.get()) != 1)
       return std::unexpected(SqliteError(db_.get(), "export transition"));
     const std::string phase = next == 1 ? "begin" : next == 2 ? "uncertain" : expected == 2 ? "reconciled" : "complete";
     StatementGuard log(prepare("INSERT INTO mail_export_log(phase) VALUES(?)"));
-    if (!log.get() || !log.Bind(1, phase) || sqlite3_step(log.get()) != SQLITE_DONE ||
+    if (!log.get() || !log.Bind(1, phase) || MeasuredStep(log.get()) != SQLITE_DONE ||
         sqlite3_exec(db_.get(), "COMMIT", nullptr, nullptr, nullptr) != SQLITE_OK)
       return std::unexpected(SqliteError(db_.get(), "export log"));
     return {};
   }
   std::expected<std::string, domain::ApiError> MailboxUser(std::string_view address) override {
+    measurements::Timer metadata_wait(measurements::metadata_wait_ns);
     std::lock_guard lock(mutex_);
+    metadata_wait.Finish();
     StatementGuard insert(prepare("INSERT INTO users(user_id,ftn_address) SELECT ?,address FROM mailbox_bindings WHERE "
                                   "address=? ON CONFLICT(ftn_address) DO NOTHING"));
     if (!insert.get() || !insert.Bind(1, "ftn:" + std::string(address)) || !insert.Bind(2, address) ||
-        sqlite3_step(insert.get()) != SQLITE_DONE)
+        MeasuredStep(insert.get()) != SQLITE_DONE)
       return std::unexpected(SqliteError(db_.get(), "mailbox identity"));
     StatementGuard query(prepare("SELECT user_id FROM users WHERE ftn_address=?"));
-    if (!query.get() || !query.Bind(1, address) || sqlite3_step(query.get()) != SQLITE_ROW)
+    if (!query.get() || !query.Bind(1, address) || MeasuredStep(query.get()) != SQLITE_ROW)
       return std::unexpected(SqliteError(db_.get(), "mailbox identity"));
     return ColumnText(query.get(), 0);
   }
   std::expected<int, domain::ApiError> MailDirection(ReadKey key) override {
+    measurements::Timer metadata_wait(measurements::metadata_wait_ns);
     std::lock_guard lock(mutex_);
+    metadata_wait.Finish();
     StatementGuard query(prepare("SELECT direction FROM mail_provenance WHERE conference=? AND generation=? AND "
                                  "CAST(message_number AS TEXT)=?"));
     if (!query.get() || !query.Bind(1, key.conference) || !query.Bind(2, key.generation) || !query.Bind(3, key.message))
       return std::unexpected(SqliteError(db_.get(), "direction"));
-    const auto status = sqlite3_step(query.get());
+    const auto status = MeasuredStep(query.get());
     if (status == SQLITE_DONE)
       return 0;
     if (status != SQLITE_ROW)
@@ -822,7 +866,9 @@ public:
     return sqlite3_column_int(query.get(), 0);
   }
   std::expected<std::vector<Operation>, domain::ApiError> PendingOutbox() override {
+    measurements::Timer metadata_wait(measurements::metadata_wait_ns);
     std::lock_guard lock(mutex_);
+    metadata_wait.Finish();
     StatementGuard query(
         prepare("SELECT "
                 "o.user_id,o.operation_id,o.conference,o.generation,o.ftn_msgid,o.payload_hash,o.message_number,o."
@@ -833,7 +879,7 @@ public:
       return std::unexpected(SqliteError(db_.get(), "outbox"));
     std::vector<Operation> result;
     int status;
-    while ((status = sqlite3_step(query.get())) == SQLITE_ROW) {
+    while ((status = MeasuredStep(query.get())) == SQLITE_ROW) {
       auto operation = DecodeOperation(query.get());
       if (!operation || result.size() >= 100000)
         return std::unexpected(SqliteError(db_.get(), "outbox"));
@@ -846,16 +892,20 @@ public:
   }
   std::expected<void, domain::ApiError> SetOutboxState(std::string_view user, std::string_view operation,
                                                        int state) override {
+    measurements::Timer metadata_wait(measurements::metadata_wait_ns);
     std::lock_guard lock(mutex_);
+    metadata_wait.Finish();
     StatementGuard update(prepare("UPDATE mail_outbox SET state=? WHERE user_id=? AND operation_id=? AND state<=?"));
     if (!update.get() || !update.Bind(1, int64_t(state)) || !update.Bind(2, user) || !update.Bind(3, operation) ||
-        !update.Bind(4, int64_t(state)) || sqlite3_step(update.get()) != SQLITE_DONE || sqlite3_changes(db_.get()) != 1)
+        !update.Bind(4, int64_t(state)) || MeasuredStep(update.get()) != SQLITE_DONE || sqlite3_changes(db_.get()) != 1)
       return std::unexpected(SqliteError(db_.get(), "outbox state"));
     return {};
   }
 
   std::expected<std::vector<domain::Bookmark>, domain::ApiError> GetBookmarks(std::string_view user_id) override {
+    measurements::Timer metadata_wait(measurements::metadata_wait_ns);
     std::lock_guard lock(mutex_);
+    metadata_wait.Finish();
     if (!db_.get())
       return std::unexpected(domain::ApiError::Server("DB not open"));
 
@@ -870,7 +920,7 @@ public:
 
     std::vector<domain::Bookmark> result;
     int rc;
-    while ((rc = sqlite3_step(stmt.get())) == SQLITE_ROW) {
+    while ((rc = MeasuredStep(stmt.get())) == SQLITE_ROW) {
       domain::Bookmark b;
       b.conference_id = ColumnText(stmt.get(), 0);
       b.added_at = ColumnText(stmt.get(), 1);
@@ -882,7 +932,9 @@ public:
   }
 
   std::expected<void, domain::ApiError> AddBookmark(std::string_view user_id, std::string_view conference_id) override {
+    measurements::Timer metadata_wait(measurements::metadata_wait_ns);
     std::lock_guard lock(mutex_);
+    metadata_wait.Finish();
     if (!db_.get())
       return std::unexpected(domain::ApiError::Server("DB not open"));
 
@@ -896,7 +948,7 @@ public:
     if (!stmt.Bind(2, conference_id))
       return std::unexpected(SqliteError(db_.get(), "bind"));
 
-    if (sqlite3_step(stmt.get()) != SQLITE_DONE) {
+    if (MeasuredStep(stmt.get()) != SQLITE_DONE) {
       return std::unexpected(SqliteError(db_.get(), "AddBookmark exec"));
     }
     return {};
@@ -904,7 +956,9 @@ public:
 
   std::expected<void, domain::ApiError> RemoveBookmark(std::string_view user_id,
                                                        std::string_view conference_id) override {
+    measurements::Timer metadata_wait(measurements::metadata_wait_ns);
     std::lock_guard lock(mutex_);
+    metadata_wait.Finish();
     if (!db_.get())
       return std::unexpected(domain::ApiError::Server("DB not open"));
 
@@ -918,7 +972,7 @@ public:
     if (!stmt.Bind(2, conference_id))
       return std::unexpected(SqliteError(db_.get(), "bind"));
 
-    if (sqlite3_step(stmt.get()) != SQLITE_DONE) {
+    if (MeasuredStep(stmt.get()) != SQLITE_DONE) {
       return std::unexpected(SqliteError(db_.get(), "RemoveBookmark exec"));
     }
     return {};
@@ -926,7 +980,9 @@ public:
 
   std::expected<bool, domain::ApiError> IsBookmarked(std::string_view user_id,
                                                      std::string_view conference_id) override {
+    measurements::Timer metadata_wait(measurements::metadata_wait_ns);
     std::lock_guard lock(mutex_);
+    metadata_wait.Finish();
     if (!db_.get())
       return std::unexpected(domain::ApiError::Server("DB not open"));
 
@@ -940,7 +996,7 @@ public:
     if (!stmt.Bind(2, conference_id))
       return std::unexpected(SqliteError(db_.get(), "bind"));
 
-    const int rc = sqlite3_step(stmt.get());
+    const int rc = MeasuredStep(stmt.get());
     if (rc == SQLITE_ROW) {
       return sqlite3_column_int(stmt.get(), 0) > 0;
     }
@@ -951,7 +1007,9 @@ public:
 
   std::expected<std::vector<domain::HistoryEntry>, domain::ApiError> GetHistory(std::string_view user_id,
                                                                                 int64_t limit) override {
+    measurements::Timer metadata_wait(measurements::metadata_wait_ns);
     std::lock_guard lock(mutex_);
+    metadata_wait.Finish();
     if (!db_.get())
       return std::unexpected(domain::ApiError::Server("DB not open"));
 
@@ -968,7 +1026,7 @@ public:
 
     std::vector<domain::HistoryEntry> result;
     int rc;
-    while ((rc = sqlite3_step(stmt.get())) == SQLITE_ROW) {
+    while ((rc = MeasuredStep(stmt.get())) == SQLITE_ROW) {
       result.push_back({ColumnText(stmt.get(), 0), ColumnText(stmt.get(), 1)});
     }
     if (rc != SQLITE_DONE)
@@ -977,7 +1035,9 @@ public:
   }
 
   std::expected<void, domain::ApiError> ClearHistory(std::string_view user_id) override {
+    measurements::Timer metadata_wait(measurements::metadata_wait_ns);
     std::lock_guard lock(mutex_);
+    metadata_wait.Finish();
     if (!db_.get())
       return std::unexpected(domain::ApiError::Server("DB not open"));
 
@@ -988,7 +1048,7 @@ public:
 
     if (!stmt.Bind(1, user_id))
       return std::unexpected(SqliteError(db_.get(), "bind"));
-    if (sqlite3_step(stmt.get()) != SQLITE_DONE) {
+    if (MeasuredStep(stmt.get()) != SQLITE_DONE) {
       return std::unexpected(SqliteError(db_.get(), "ClearHistory exec"));
     }
     return {};
@@ -996,7 +1056,9 @@ public:
 
   std::expected<void, domain::ApiError> AddToHistory(std::string_view user_id,
                                                      std::string_view conference_id) override {
+    measurements::Timer metadata_wait(measurements::metadata_wait_ns);
     std::lock_guard lock(mutex_);
+    metadata_wait.Finish();
     if (!db_.get())
       return std::unexpected(domain::ApiError::Server("DB not open"));
 
@@ -1012,14 +1074,16 @@ public:
     if (!stmt.Bind(2, conference_id))
       return std::unexpected(SqliteError(db_.get(), "bind"));
 
-    if (sqlite3_step(stmt.get()) != SQLITE_DONE) {
+    if (MeasuredStep(stmt.get()) != SQLITE_DONE) {
       return std::unexpected(SqliteError(db_.get(), "AddToHistory exec"));
     }
     return {};
   }
 
   std::expected<bool, domain::ApiError> IsMessageRead(std::string_view user_id, ReadKey key) override {
+    measurements::Timer metadata_wait(measurements::metadata_wait_ns);
     std::lock_guard lock(mutex_);
+    metadata_wait.Finish();
     if (!db_.get())
       return std::unexpected(domain::ApiError::Server("DB not open"));
 
@@ -1034,7 +1098,7 @@ public:
     if (!stmt.Bind(2, key.message) || !stmt.Bind(3, key.conference) || !stmt.Bind(4, key.generation))
       return std::unexpected(SqliteError(db_.get(), "bind"));
 
-    const int rc = sqlite3_step(stmt.get());
+    const int rc = MeasuredStep(stmt.get());
     if (rc == SQLITE_ROW) {
       return sqlite3_column_int(stmt.get(), 0) > 0;
     }
@@ -1044,7 +1108,9 @@ public:
   }
 
   std::expected<void, domain::ApiError> MarkMessageRead(std::string_view user_id, ReadKey key) override {
+    measurements::Timer metadata_wait(measurements::metadata_wait_ns);
     std::lock_guard lock(mutex_);
+    metadata_wait.Finish();
     if (!db_.get())
       return std::unexpected(domain::ApiError::Server("DB not open"));
 
@@ -1061,14 +1127,16 @@ public:
     if (!stmt.Bind(2, key.message) || !stmt.Bind(3, key.conference) || !stmt.Bind(4, key.generation))
       return std::unexpected(SqliteError(db_.get(), "bind"));
 
-    if (sqlite3_step(stmt.get()) != SQLITE_DONE) {
+    if (MeasuredStep(stmt.get()) != SQLITE_DONE) {
       return std::unexpected(SqliteError(db_.get(), "MarkMessageRead exec"));
     }
     return {};
   }
 
   std::expected<void, domain::ApiError> MarkMessageUnread(std::string_view user_id, ReadKey key) override {
+    measurements::Timer metadata_wait(measurements::metadata_wait_ns);
     std::lock_guard lock(mutex_);
+    metadata_wait.Finish();
     if (!db_.get())
       return std::unexpected(domain::ApiError::Server("DB not open"));
     StatementGuard stmt(
@@ -1076,14 +1144,16 @@ public:
     if (!stmt.get() || !stmt.Bind(1, user_id) || !stmt.Bind(2, key.conference) || !stmt.Bind(3, key.generation) ||
         !stmt.Bind(4, key.message))
       return std::unexpected(SqliteError(db_.get(), "MarkMessageUnread bind"));
-    if (sqlite3_step(stmt.get()) != SQLITE_DONE)
+    if (MeasuredStep(stmt.get()) != SQLITE_DONE)
       return std::unexpected(SqliteError(db_.get(), "MarkMessageUnread exec"));
     return {};
   }
 
   std::expected<int64_t, domain::ApiError> GetReadCount(std::string_view user_id, std::string_view conference_id,
                                                         std::string_view generation) override {
+    measurements::Timer metadata_wait(measurements::metadata_wait_ns);
     std::lock_guard lock(mutex_);
+    metadata_wait.Finish();
     if (!db_.get())
       return std::unexpected(domain::ApiError::Server("DB not open"));
 
@@ -1100,7 +1170,7 @@ public:
     if (!stmt.Bind(2, conference_id))
       return std::unexpected(SqliteError(db_.get(), "bind"));
 
-    const int rc = sqlite3_step(stmt.get());
+    const int rc = MeasuredStep(stmt.get());
     if (rc == SQLITE_ROW) {
       return sqlite3_column_int64(stmt.get(), 0);
     }
@@ -1116,7 +1186,9 @@ public:
     if (!std::is_sorted(numbers.begin(), numbers.end()) ||
         std::adjacent_find(numbers.begin(), numbers.end()) != numbers.end())
       return std::unexpected(domain::ApiError::Validation("Message numbers must be sorted and unique"));
+    measurements::Timer metadata_wait(measurements::metadata_wait_ns);
     std::lock_guard lock(mutex_);
+    metadata_wait.Finish();
     if (!db_)
       return std::unexpected(SqliteError(nullptr, "read count"));
     if (numbers.empty())
@@ -1141,7 +1213,7 @@ public:
       for (size_t i = 0; i < std::min(batch, numbers.size() - start); ++i)
         if (!query.Bind(static_cast<int>(i) + 4, std::to_string(numbers[start + i])))
           return std::unexpected(SqliteError(db_.get(), "batch read number"));
-      if (sqlite3_step(query.get()) != SQLITE_ROW)
+      if (MeasuredStep(query.get()) != SQLITE_ROW)
         return std::unexpected(SqliteError(db_.get(), "batch read query"));
       count += sqlite3_column_int64(query.get(), 0);
     }
@@ -1155,7 +1227,7 @@ public:
                                  "WHERE user_id=? AND operation_id=?"));
     if (!query.get() || !query.Bind(1, user) || !query.Bind(2, operation))
       return std::unexpected(SqliteError(db_.get(), "bulk lookup"));
-    const auto status = sqlite3_step(query.get());
+    const auto status = MeasuredStep(query.get());
     if (status == SQLITE_DONE)
       return std::optional<BulkReadResult>{};
     if (status != SQLITE_ROW)
@@ -1169,7 +1241,9 @@ public:
   std::expected<std::optional<BulkReadResult>, domain::ApiError> FindBulkRead(std::string_view user,
                                                                               std::string_view operation,
                                                                               std::string_view conference) override {
+    measurements::Timer metadata_wait(measurements::metadata_wait_ns);
     std::lock_guard lock(mutex_);
+    metadata_wait.Finish();
     return FindBulkReadUnlocked(user, operation, conference);
   }
   std::expected<BulkReadResult, domain::ApiError> MarkConferenceRead(std::string_view user, std::string_view operation,
@@ -1177,7 +1251,9 @@ public:
                                                                      std::string_view generation,
                                                                      const std::vector<uint32_t>& numbers,
                                                                      const std::function<bool()>& active) override {
+    measurements::Timer metadata_wait(measurements::metadata_wait_ns);
     std::lock_guard lock(mutex_);
+    metadata_wait.Finish();
     if (sqlite3_exec(db_.get(), "BEGIN IMMEDIATE", nullptr, nullptr, nullptr) != SQLITE_OK)
       return std::unexpected(SqliteError(db_.get(), "bulk begin"));
     auto rollback = [&](domain::ApiError error) -> std::expected<BulkReadResult, domain::ApiError> {
@@ -1202,14 +1278,14 @@ public:
         return rollback({domain::ErrorCode::kCancelled, "Bulk read cancelled before commit", {}});
       sqlite3_reset(insert.get());
       // reset preserves the three invariant bindings; only the message number changes.
-      if (!insert.Bind(4, std::to_string(number)) || sqlite3_step(insert.get()) != SQLITE_DONE)
+      if (!insert.Bind(4, std::to_string(number)) || MeasuredStep(insert.get()) != SQLITE_DONE)
         return rollback(SqliteError(db_.get(), "bulk insert"));
       result.marked_count += sqlite3_changes(db_.get());
     }
     StatementGuard receipt(prepare("INSERT INTO bulk_read_operations VALUES(?,?,?,?,?,?)"));
     if (!receipt.get() || !receipt.Bind(1, user) || !receipt.Bind(2, operation) || !receipt.Bind(3, conference) ||
         !receipt.Bind(4, generation) || !receipt.Bind(5, result.marked_count) ||
-        !receipt.Bind(6, result.snapshot_count) || sqlite3_step(receipt.get()) != SQLITE_DONE)
+        !receipt.Bind(6, result.snapshot_count) || MeasuredStep(receipt.get()) != SQLITE_DONE)
       return rollback(SqliteError(db_.get(), "bulk receipt"));
     if (active && !active())
       return rollback({domain::ErrorCode::kCancelled, "Bulk read cancelled before commit", {}});
@@ -1219,7 +1295,9 @@ public:
   }
 
   std::expected<ReadingPosition, domain::ApiError> RecordMessageView(std::string_view user, ReadKey key) override {
+    measurements::Timer metadata_wait(measurements::metadata_wait_ns);
     std::lock_guard lock(mutex_);
+    metadata_wait.Finish();
     if (!db_)
       return std::unexpected(SqliteError(nullptr, "closed"));
     if (sqlite3_exec(db_.get(), "BEGIN IMMEDIATE", nullptr, nullptr, nullptr) != SQLITE_OK)
@@ -1232,12 +1310,12 @@ public:
         prepare("INSERT INTO read_status(user_id,conference_id,generation,message_id) VALUES(?,?,?,?) "
                 "ON CONFLICT(user_id,conference_id,generation,message_id) DO UPDATE SET read_at=datetime('now')"));
     if (!read.get() || !read.Bind(1, user) || !read.Bind(2, key.conference) || !read.Bind(3, key.generation) ||
-        !read.Bind(4, key.message) || sqlite3_step(read.get()) != SQLITE_DONE)
+        !read.Bind(4, key.message) || MeasuredStep(read.get()) != SQLITE_DONE)
       return fail();
     StatementGuard history(prepare("INSERT INTO history(user_id,conference_id) VALUES(?,?) "
                                    "ON CONFLICT(user_id,conference_id) DO UPDATE SET viewed_at=datetime('now')"));
     if (!history.get() || !history.Bind(1, user) || !history.Bind(2, key.conference) ||
-        sqlite3_step(history.get()) != SQLITE_DONE)
+        MeasuredStep(history.get()) != SQLITE_DONE)
       return fail();
     StatementGuard position(
         prepare("INSERT INTO reading_positions VALUES(?,?,?,?,1) ON CONFLICT(user_id,conference) DO UPDATE SET "
@@ -1245,11 +1323,11 @@ public:
                 "WHERE reading_positions.revision<9223372036854775807"));
     if (!position.get() || !position.Bind(1, user) || !position.Bind(2, key.conference) ||
         !position.Bind(3, key.generation) || !position.Bind(4, key.message) ||
-        sqlite3_step(position.get()) != SQLITE_DONE || sqlite3_changes(db_.get()) != 1)
+        MeasuredStep(position.get()) != SQLITE_DONE || sqlite3_changes(db_.get()) != 1)
       return fail();
     StatementGuard revision(prepare("SELECT revision FROM reading_positions WHERE user_id=? AND conference=?"));
     if (!revision.get() || !revision.Bind(1, user) || !revision.Bind(2, key.conference) ||
-        sqlite3_step(revision.get()) != SQLITE_ROW)
+        MeasuredStep(revision.get()) != SQLITE_ROW)
       return fail();
     ReadingPosition result{std::string(key.generation), std::string(key.message),
                            static_cast<uint64_t>(sqlite3_column_int64(revision.get(), 0))};
@@ -1260,12 +1338,14 @@ public:
 
   std::expected<ReadingPosition, domain::ApiError> LastOpened(std::string_view user,
                                                               std::string_view conference) override {
+    measurements::Timer metadata_wait(measurements::metadata_wait_ns);
     std::lock_guard lock(mutex_);
+    metadata_wait.Finish();
     StatementGuard query(
         prepare("SELECT generation,message_id,revision FROM reading_positions WHERE user_id=? AND conference=?"));
     if (!query.get() || !query.Bind(1, user) || !query.Bind(2, conference))
       return std::unexpected(SqliteError(db_.get(), "position"));
-    const auto status = sqlite3_step(query.get());
+    const auto status = MeasuredStep(query.get());
     if (status == SQLITE_DONE)
       return ReadingPosition{};
     if (status != SQLITE_ROW || sqlite3_column_int64(query.get(), 2) <= 0)
@@ -1275,7 +1355,9 @@ public:
   }
 
   std::expected<domain::Profile, domain::ApiError> GetProfile(std::string_view user_id) override {
+    measurements::Timer metadata_wait(measurements::metadata_wait_ns);
     std::lock_guard lock(mutex_);
+    metadata_wait.Finish();
     if (!db_.get())
       return std::unexpected(domain::ApiError::Server("DB not open"));
 
@@ -1288,7 +1370,7 @@ public:
     if (!stmt.Bind(1, user_id))
       return std::unexpected(SqliteError(db_.get(), "bind"));
 
-    const int rc = sqlite3_step(stmt.get());
+    const int rc = MeasuredStep(stmt.get());
     if (rc != SQLITE_ROW) {
       if (rc != SQLITE_DONE)
         return std::unexpected(SqliteError(db_.get(), "query"));
@@ -1304,7 +1386,9 @@ public:
   }
 
   std::expected<void, domain::ApiError> SaveProfile(std::string_view user_id, const domain::Profile& profile) override {
+    measurements::Timer metadata_wait(measurements::metadata_wait_ns);
     std::lock_guard lock(mutex_);
+    metadata_wait.Finish();
     if (!db_.get())
       return std::unexpected(domain::ApiError::Server("DB not open"));
 
@@ -1328,7 +1412,7 @@ public:
     if (!stmt.Bind(5, profile.registered_at))
       return std::unexpected(SqliteError(db_.get(), "bind"));
 
-    if (sqlite3_step(stmt.get()) != SQLITE_DONE) {
+    if (MeasuredStep(stmt.get()) != SQLITE_DONE) {
       return std::unexpected(SqliteError(db_.get(), "SaveProfile exec"));
     }
     return {};
@@ -1336,7 +1420,9 @@ public:
 
   std::expected<void, domain::ApiError> ProvisionToken(std::string_view user, const domain::Profile& profile,
                                                        const TokenDigest& digest, int64_t expires_at) override {
+    measurements::Timer metadata_wait(measurements::metadata_wait_ns);
     std::lock_guard lock(mutex_);
+    metadata_wait.Finish();
     if (!db_)
       return std::unexpected(SqliteError(nullptr, "closed"));
     if (sqlite3_exec(db_.get(), "BEGIN IMMEDIATE", nullptr, nullptr, nullptr) != SQLITE_OK)
@@ -1351,28 +1437,32 @@ public:
                 "name=excluded.name,ftn_address=excluded.ftn_address,email=excluded.email,active=1"));
     if (!account.get() || !account.Bind(1, user) || !account.Bind(2, profile.name) ||
         !account.Bind(3, profile.address) || !account.Bind(4, profile.email) ||
-        !account.Bind(5, profile.registered_at) || sqlite3_step(account.get()) != SQLITE_DONE)
+        !account.Bind(5, profile.registered_at) || MeasuredStep(account.get()) != SQLITE_DONE)
       return fail();
     StatementGuard token(prepare("INSERT INTO tokens(digest,user_id,expires_at) VALUES(?,?,?)"));
     if (!token.get() || !token.Bind(1, digest) || !token.Bind(2, user) || !token.Bind(3, expires_at) ||
-        sqlite3_step(token.get()) != SQLITE_DONE)
+        MeasuredStep(token.get()) != SQLITE_DONE)
       return fail();
     if (sqlite3_exec(db_.get(), "COMMIT", nullptr, nullptr, nullptr) != SQLITE_OK)
       return fail();
     return {};
   }
   std::expected<void, domain::ApiError> RevokeToken(const TokenDigest& digest) override {
+    measurements::Timer metadata_wait(measurements::metadata_wait_ns);
     std::lock_guard lock(mutex_);
+    metadata_wait.Finish();
     if (!db_)
       return std::unexpected(SqliteError(nullptr, "closed"));
     StatementGuard statement(prepare("UPDATE tokens SET revoked=1 WHERE digest=?"));
-    if (!statement.get() || !statement.Bind(1, digest) || sqlite3_step(statement.get()) != SQLITE_DONE)
+    if (!statement.get() || !statement.Bind(1, digest) || MeasuredStep(statement.get()) != SQLITE_DONE)
       return std::unexpected(SqliteError(db_.get(), "revoke"));
     return {};
   }
   std::expected<AuthenticatedUser, domain::ApiError> AuthenticateToken(const TokenDigest& digest,
                                                                        int64_t now) override {
+    measurements::Timer metadata_wait(measurements::metadata_wait_ns);
     std::lock_guard lock(mutex_);
+    metadata_wait.Finish();
     if (!db_)
       return std::unexpected(SqliteError(nullptr, "closed"));
     StatementGuard statement(
@@ -1381,7 +1471,7 @@ public:
                 "WHERE t.digest=? AND t.revoked=0 AND t.expires_at>? AND u.active=1"));
     if (!statement.get() || !statement.Bind(1, digest) || !statement.Bind(2, now))
       return std::unexpected(SqliteError(db_.get(), "authenticate"));
-    const auto rc = sqlite3_step(statement.get());
+    const auto rc = MeasuredStep(statement.get());
     if (rc == SQLITE_DONE)
       return std::unexpected(domain::ApiError::Unauthorized("Invalid access token"));
     if (rc != SQLITE_ROW)
@@ -1394,7 +1484,9 @@ public:
 
   std::expected<void, domain::ApiError> SyncCredentials(
       const std::map<std::string, TokenDigest>& fingerprints) override {
+    measurements::Timer metadata_wait(measurements::metadata_wait_ns);
     std::lock_guard lock(mutex_);
+    metadata_wait.Finish();
     if (!db_ || sqlite3_exec(db_.get(), "BEGIN IMMEDIATE", nullptr, nullptr, nullptr) != SQLITE_OK)
       return std::unexpected(SqliteError(db_.get(), "credentials"));
     auto fail = [&]() -> std::expected<void, domain::ApiError> {
@@ -1405,7 +1497,7 @@ public:
       return fail();
     for (const auto& [address, fingerprint] : fingerprints) {
       StatementGuard row(prepare("INSERT INTO auth_credentials VALUES(?,?)"));
-      if (!row.get() || !row.Bind(1, address) || !row.Bind(2, fingerprint) || sqlite3_step(row.get()) != SQLITE_DONE)
+      if (!row.get() || !row.Bind(1, address) || !row.Bind(2, fingerprint) || MeasuredStep(row.get()) != SQLITE_DONE)
         return fail();
     }
     const char* revoke = "UPDATE tokens SET revoked=1 WHERE fingerprint IS NULL OR NOT EXISTS "
@@ -1421,7 +1513,9 @@ public:
                                                                    const TokenDigest& digest,
                                                                    const TokenDigest& fingerprint,
                                                                    int64_t expires_at) override {
+    measurements::Timer metadata_wait(measurements::metadata_wait_ns);
     std::lock_guard lock(mutex_);
+    metadata_wait.Finish();
     if (!db_ || sqlite3_exec(db_.get(), "BEGIN IMMEDIATE", nullptr, nullptr, nullptr) != SQLITE_OK)
       return std::unexpected(SqliteError(db_.get(), "session"));
     auto fail = [&]() -> std::expected<AuthenticatedUser, domain::ApiError> {
@@ -1433,13 +1527,13 @@ public:
                 "VALUES(?,?,?,'',?,1) ON CONFLICT(ftn_address) DO UPDATE SET name=excluded.name WHERE users.name=''"));
     const std::string id = "ftn:" + std::string(address);
     if (!account.get() || !account.Bind(1, id) || !account.Bind(2, name) || !account.Bind(3, address) ||
-        !account.Bind(4, registered_at) || sqlite3_step(account.get()) != SQLITE_DONE)
+        !account.Bind(4, registered_at) || MeasuredStep(account.get()) != SQLITE_DONE)
       return fail();
     StatementGuard user(
         prepare("SELECT user_id,name,ftn_address,email,registered_at FROM users WHERE ftn_address=? AND active=1"));
     if (!user.get() || !user.Bind(1, address))
       return fail();
-    const auto code = sqlite3_step(user.get());
+    const auto code = MeasuredStep(user.get());
     if (code == SQLITE_DONE) {
       sqlite3_exec(db_.get(), "ROLLBACK", nullptr, nullptr, nullptr);
       return std::unexpected(domain::ApiError::Unauthorized("Invalid credentials"));
@@ -1455,25 +1549,29 @@ public:
                 "SELECT ?,?,?,? WHERE EXISTS (SELECT 1 FROM auth_credentials WHERE address=? AND fingerprint=?)"));
     if (!token.get() || !token.Bind(1, digest) || !token.Bind(2, result.id) || !token.Bind(3, expires_at) ||
         !token.Bind(4, fingerprint) || !token.Bind(5, address) || !token.Bind(6, fingerprint) ||
-        sqlite3_step(token.get()) != SQLITE_DONE || sqlite3_changes(db_.get()) != 1)
+        MeasuredStep(token.get()) != SQLITE_DONE || sqlite3_changes(db_.get()) != 1)
       return fail();
     if (sqlite3_exec(db_.get(), "COMMIT", nullptr, nullptr, nullptr) != SQLITE_OK)
       return fail();
     return result;
   }
   std::expected<void, domain::ApiError> RevokeUserSessions(std::string_view user) override {
+    measurements::Timer metadata_wait(measurements::metadata_wait_ns);
     std::lock_guard lock(mutex_);
+    metadata_wait.Finish();
     if (!db_)
       return std::unexpected(SqliteError(nullptr, "closed"));
     StatementGuard update(prepare("UPDATE tokens SET revoked=1 WHERE user_id=?"));
-    if (!update.get() || !update.Bind(1, user) || sqlite3_step(update.get()) != SQLITE_DONE)
+    if (!update.get() || !update.Bind(1, user) || MeasuredStep(update.get()) != SQLITE_DONE)
       return std::unexpected(SqliteError(db_.get(), "revoke sessions"));
     return {};
   }
 
   std::expected<std::optional<Operation>, domain::ApiError> FindOperation(std::string_view user,
                                                                           std::string_view id) override {
+    measurements::Timer metadata_wait(measurements::metadata_wait_ns);
     std::lock_guard lock(mutex_);
+    metadata_wait.Finish();
     if (!db_)
       return std::unexpected(SqliteError(nullptr, "closed"));
     StatementGuard statement(prepare("SELECT "
@@ -1482,7 +1580,7 @@ public:
                                      "append,index_append,state FROM operations WHERE user_id=? AND operation_id=?"));
     if (!statement.get() || !statement.Bind(1, user) || !statement.Bind(2, id))
       return std::unexpected(SqliteError(db_.get(), "find"));
-    auto rc = sqlite3_step(statement.get());
+    auto rc = MeasuredStep(statement.get());
     if (rc == SQLITE_DONE)
       return std::optional<Operation>{};
     if (rc != SQLITE_ROW)
@@ -1493,7 +1591,9 @@ public:
     return std::optional<Operation>(std::move(*record));
   }
   std::expected<std::string, domain::ApiError> GetCommittedRecipient(ReadKey key, std::string_view ftn_msgid) override {
+    measurements::Timer metadata_wait(measurements::metadata_wait_ns);
     std::lock_guard lock(mutex_);
+    metadata_wait.Finish();
     if (!db_)
       return std::unexpected(SqliteError(nullptr, "closed"));
     if (ftn_msgid.empty())
@@ -1504,7 +1604,7 @@ public:
     if (!statement.get() || !statement.Bind(1, ftn_msgid) || !statement.Bind(2, key.conference) ||
         !statement.Bind(3, key.generation) || !statement.Bind(4, key.message))
       return std::unexpected(SqliteError(db_.get(), "recipient"));
-    const auto rc = sqlite3_step(statement.get());
+    const auto rc = MeasuredStep(statement.get());
     if (rc == SQLITE_DONE)
       return std::string{};
     if (rc != SQLITE_ROW)
@@ -1543,7 +1643,9 @@ public:
     return address;
   }
   std::expected<void, domain::ApiError> PrepareOperation(const Operation& operation) override {
+    measurements::Timer metadata_wait(measurements::metadata_wait_ns);
     std::lock_guard lock(mutex_);
+    metadata_wait.Finish();
     if (!db_)
       return std::unexpected(SqliteError(nullptr, "closed"));
     const bool mail = operation.mail_direction != 0;
@@ -1589,7 +1691,7 @@ public:
                             ? operation.conference + ":" + std::to_string(operation.mail_direction) + ":" + operation.id
                             : std::string{}))
       return std::unexpected(SqliteError(db_.get(), "prepare intent"));
-    if (sqlite3_step(statement.get()) != SQLITE_DONE || sqlite3_changes(db_.get()) != 1)
+    if (MeasuredStep(statement.get()) != SQLITE_DONE || sqlite3_changes(db_.get()) != 1)
       return std::unexpected(SqliteError(db_.get(), "prepare intent"));
     if (mail) {
       StatementGuard tag(prepare("INSERT INTO mail_intents VALUES(?,?,?,?) ON CONFLICT(user_id,operation_id) DO UPDATE "
@@ -1597,7 +1699,7 @@ public:
                                  "mail_intents.recipient=excluded.recipient"));
       if (!tag.get() || !tag.Bind(1, operation.user) || !tag.Bind(2, operation.id) ||
           !tag.Bind(3, int64_t(operation.mail_direction)) || !tag.Bind(4, operation.recipient) ||
-          sqlite3_step(tag.get()) != SQLITE_DONE || sqlite3_changes(db_.get()) != 1 ||
+          MeasuredStep(tag.get()) != SQLITE_DONE || sqlite3_changes(db_.get()) != 1 ||
           sqlite3_exec(db_.get(), "COMMIT", nullptr, nullptr, nullptr) != SQLITE_OK)
         return std::unexpected(SqliteError(db_.get(), "mail intent"));
     }
@@ -1605,7 +1707,9 @@ public:
   }
   std::expected<void, domain::ApiError> SetOperationState(std::string_view user, std::string_view id,
                                                           OperationState state) override {
+    measurements::Timer metadata_wait(measurements::metadata_wait_ns);
     std::lock_guard lock(mutex_);
+    metadata_wait.Finish();
     if (!db_)
       return std::unexpected(SqliteError(nullptr, "closed"));
     if (sqlite3_exec(db_.get(), "BEGIN IMMEDIATE", nullptr, nullptr, nullptr) != SQLITE_OK)
@@ -1618,7 +1722,7 @@ public:
     } transaction{db_.get()};
     StatementGuard statement(prepare("UPDATE operations SET state=? WHERE user_id=? AND operation_id=?"));
     if (!statement.get() || !statement.Bind(1, int64_t(state)) || !statement.Bind(2, user) || !statement.Bind(3, id) ||
-        sqlite3_step(statement.get()) != SQLITE_DONE || sqlite3_changes(db_.get()) != 1)
+        MeasuredStep(statement.get()) != SQLITE_DONE || sqlite3_changes(db_.get()) != 1)
       return std::unexpected(SqliteError(db_.get(), "commit intent"));
     if (state == OperationState::kCommitted) {
       const char* statements[] = {
@@ -1634,7 +1738,7 @@ public:
           "NOTHING"};
       for (const auto* sql : statements) {
         StatementGuard commit(prepare(sql));
-        if (!commit.get() || !commit.Bind(1, user) || !commit.Bind(2, id) || sqlite3_step(commit.get()) != SQLITE_DONE)
+        if (!commit.get() || !commit.Bind(1, user) || !commit.Bind(2, id) || MeasuredStep(commit.get()) != SQLITE_DONE)
           return std::unexpected(SqliteError(db_.get(), "mail commit"));
       }
     }
@@ -1643,7 +1747,9 @@ public:
     return {};
   }
   std::expected<std::vector<Operation>, domain::ApiError> PendingOperations() override {
+    measurements::Timer metadata_wait(measurements::metadata_wait_ns);
     std::lock_guard lock(mutex_);
+    metadata_wait.Finish();
     if (!db_)
       return std::unexpected(SqliteError(nullptr, "closed"));
     StatementGuard statement(prepare("SELECT "
@@ -1654,7 +1760,7 @@ public:
       return std::unexpected(SqliteError(db_.get(), "pending"));
     std::vector<Operation> records;
     int rc;
-    while ((rc = sqlite3_step(statement.get())) == SQLITE_ROW) {
+    while ((rc = MeasuredStep(statement.get())) == SQLITE_ROW) {
       auto record = DecodeOperation(statement.get());
       if (!record)
         return std::unexpected(record.error());
@@ -1677,7 +1783,7 @@ private:
     StatementGuard q(prepare("SELECT revision,rules FROM personal_filters WHERE user_id=?"));
     if (!q.get() || !q.Bind(1, user))
       return std::unexpected(SqliteError(db_.get(), "personal filters"));
-    const auto status = sqlite3_step(q.get());
+    const auto status = MeasuredStep(q.get());
     domain::PersonalMessageFilterSet result;
     if (status == SQLITE_DONE)
       return result;

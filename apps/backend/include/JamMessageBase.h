@@ -10,6 +10,8 @@
 #include <functional>
 #include <limits>
 #include <memory>
+#include <optional>
+#include <utility>
 #include <span>
 #include <string>
 #include <string_view>
@@ -625,6 +627,11 @@ public:
   }
 
   [[nodiscard]] std::expected<std::vector<uint32_t>, JamError> GetMessageNumbers() const;
+  // Half-open slot range; uint64_t keeps the boundary after UINT32_MAX representable.
+  std::pair<uint64_t, uint64_t> MessageNumberRange() const {
+    return {base_header_.base_msg_num, uint64_t{base_header_.base_msg_num} + index_structure_.size()};
+  }
+  [[nodiscard]] std::expected<std::optional<uint32_t>, JamError> NextMessageNumber(uint64_t first) const;
   std::expected<std::string, JamError> EffectiveEncoding(const JamMessage& message) const {
     if (!message.read_encoding_.empty())
       return message.read_encoding_;
@@ -829,6 +836,20 @@ inline JamMessageBase::JamMessageBase(std::string_view base_path, std::string_vi
   return message_numbers;
 }
 
+inline std::expected<std::optional<uint32_t>, JamError> JamMessageBase::NextMessageNumber(uint64_t first) const {
+  if (!is_open_)
+    return std::unexpected(JamError::kFileNotFound);
+  const auto [begin, end] = MessageNumberRange();
+  for (auto number = std::max(first, begin); number < end; ++number) {
+    auto header = ReadHeader(static_cast<uint32_t>(number));
+    if (header)
+      return std::optional<uint32_t>{static_cast<uint32_t>(number)};
+    if (header.error() != JamError::kMessageDeleted)
+      return std::unexpected(header.error());
+  }
+  return std::optional<uint32_t>{};
+}
+
 inline std::expected<JamMessageHeader, JamError> JamMessageBase::ReadHeader(uint32_t msg_num) const {
   if (active_ && !active_()) return std::unexpected(JamError::kReadError);
   if (!is_open_) {
@@ -1001,10 +1022,11 @@ inline std::expected<JamMessage, JamError> JamMessageBase::ReadRawMetadata(uint3
   auto encoding = ResolveReadEncoding(msg_num, msg_header, message, include_body);
   if (!encoding)
     return std::unexpected(encoding.error());
-  auto decoded = fidoback::storage::ConvertText(message.text_, *encoding, "UTF-8", 32 * 1024 * 1024);
+  auto decoded = fidoback::storage::ConvertText(message.text_, *encoding, "UTF-8", 32 * 1024 * 1024, active_);
   if (!decoded)
-    return std::unexpected(decoded.error() == fidoback::storage::TextError::kLimit ? JamError::kResourceLimit
-                                                                                 : JamError::kTextEncoding);
+    return std::unexpected(decoded.error() == fidoback::storage::TextError::kInterrupted ? JamError::kReadError
+                           : decoded.error() == fidoback::storage::TextError::kLimit     ? JamError::kResourceLimit
+                                                                                         : JamError::kTextEncoding);
   message.text_ = std::move(*decoded);
   message.read_encoding_ = *encoding;
   for (auto& field : message.subfields_) {

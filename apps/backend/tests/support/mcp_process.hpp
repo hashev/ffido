@@ -74,6 +74,9 @@ public:
   void Finish(int expected = 0, std::chrono::milliseconds timeout = std::chrono::seconds(10)) {
     close(input_);
     input_ = -1;
+    WaitForExit(expected, timeout);
+  }
+  void WaitForExit(int expected, std::chrono::milliseconds timeout) {
     int status = 0;
     const auto deadline = std::chrono::steady_clock::now() + timeout;
     for (;;) {

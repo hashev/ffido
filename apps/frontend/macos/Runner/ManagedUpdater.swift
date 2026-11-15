@@ -14,7 +14,7 @@ final class ManagedUpdater: NSObject, SPUUserDriver, SPUUpdaterDelegate {
   private var token = "", preparedToken = ""
   private var relaunchProfiles = Set<String>()
   private var watcher: DispatchSourceFileSystemObject?
-  private var seenMessages = Set<String>()
+  private(set) var seenMessages = Set<String>()
   private var downloaded: UInt64 = 0, total: UInt64 = 0
   private let profile: String
   private let canExit: (@escaping (Bool) -> Void) -> Void
@@ -125,7 +125,7 @@ final class ManagedUpdater: NSObject, SPUUserDriver, SPUUpdaterDelegate {
   private func receiveMessages() {
     guard let files = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) else { return }
     let messages = files.filter { $0.lastPathComponent.hasPrefix("message-") && $0.pathExtension == "json" }
-    // Completed cycles remove their files; retain deduplication only for live messages.
+    // Deleted coordination files must not remain in this long-lived watcher.
     seenMessages.formIntersection(messages.map { $0.lastPathComponent })
     for file in messages {
       guard !seenMessages.contains(file.lastPathComponent), let data = try? Data(contentsOf: file), data.count <= 4096,

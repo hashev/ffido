@@ -577,20 +577,101 @@ export PATH="/opt/ffido/update-runtime/bin:$PATH"
 этого пользователя; файл доступен оператору обновления. Не удаляйте lock при работе.
 Служба использует путь `/opt/ffido/current/bin/fidoback /etc/ffido/config.json`.
 
-Foreground: завершите сервер по SIGTERM, выполните apply, запустите новый сервер
-прежней командой и проверьте его. Для systemd последовательность такая:
+### systemd: отдельный пользователь и цикл обновления
 
-```sh
-sudo systemctl stop ffido.service
-/opt/ffido/current/bin/fidoback update apply --install-root /opt/ffido --config /etc/ffido/config.json
-sudo systemctl start ffido.service
-/opt/ffido/current/bin/fidoback --check-ready 127.0.0.1:8080 /etc/ffido/tls/ca.pem fido.example.org
+Для Linux установкой и `update-runtime` может владеть root, а служба должна
+работать от отдельного пользователя, например `ffido`. Каталоги `/opt/ffido`,
+`releases` и каждой версии должны быть проходимы этим пользователем (0755),
+но не доступны ему на запись. Закрытый каталог состояния `/var/lib/ffido`
+принадлежит службе (0700); TLS private key и HPT config доступны только нужным
+владельцу/группе. При начальном bootstrap создайте `.running.lock`, назначьте
+его пользователю службы и режим 0600; существующий inode lock не заменяйте.
+Root-оператор обновления сможет открыть тот же lock, службе не нужны права
+менять `current`, версии или trust store. Окружение updater остаётся вне `releases`.
+
+Пример `/etc/systemd/system/ffido.service` после bootstrap:
+
+```ini
+[Unit]
+Description=FFIDO TLS gRPC server
+After=network.target
+
+[Service]
+Type=simple
+User=ffido
+Group=ffido
+WorkingDirectory=/var/lib/ffido
+ExecStart=/opt/ffido/current/bin/fidoback /etc/ffido/config.json
+KillSignal=SIGTERM
+KillMode=mixed
+TimeoutStopSec=20
+Restart=no
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target
 ```
 
-На macOS аналогично: `launchctl bootout` своего plist, apply, затем
-`launchctl bootstrap` того же plist и `--check-ready`. Updater не угадывает label
-службы и не вызывает sudo. Запуск и остановку выполняйте с прежними пользователем,
-правами и путями; server daemon не получает полномочий обновлять установку.
+После создания unit выполните `sudo systemd-analyze verify
+/etc/systemd/system/ffido.service` и `sudo systemctl daemon-reload`.
+`systemctl start`/`is-active` не заменяют TLS gRPC readiness.
+
+Перед обновлением остановите **источники новых записей**: планировщик и unit HPT,
+мейлер и другие программы, использующие эти JAM. В примере предполагаются ваши
+`ffido-hpt.timer`/`ffido-hpt.service`; для существующей установки используйте её
+фактические имена и остановите также внешние cron/ручные задания. Затем:
+
+```sh
+sudo systemctl stop ffido-hpt.timer
+sudo systemctl stop ffido-hpt.service
+sudo systemctl stop ffido.service
+```
+
+Дождитесь завершения всех трёх unit и дочерних процессов. При ошибке stop или
+занятом coordination/instance lock не переходите к backup/apply. Сохраните
+**единый остановленный снимок** JAM (.jhr/.jdt/.jdx/.jlr), SQLite вместе с
+имеющимися WAL/SHM, uploads/operation state, конфигурации, HPT state/outbound,
+TLS и session key. Копия должна сохранять владельцев и закрытые режимы файлов;
+backup с ключами хранится в приватном каталоге. Не запускайте HPT между копированием
+JAM и SQLite и не восстанавливайте только одну из этих частей.
+
+После снимка примените уже скачанный и проверенный выпуск от имени владельца
+установки. Для root-owned layout оператор явно запускает:
+
+```sh
+sudo env PATH=/opt/ffido/update-runtime/bin:/usr/bin:/bin \
+  /opt/ffido/current/bin/fidoback update apply \
+  --install-root /opt/ffido --config /etc/ffido/config.json
+sudo systemctl start ffido.service
+/opt/ffido/current/bin/fidoback --check-ready \
+  127.0.0.1:8080 /etc/ffido/tls/ca.pem fido.example.org
+```
+
+Пока последняя команда не вернула 0, установка не считается готовой и HPT/мейлер
+не возобновляются. При ранней проверке допустим ограниченный повтор после startup;
+неверные CA или TLS server name необходимо исправить, а не обходить проверку.
+После успешной readiness верните ранее работавшие HPT service/timer и мейлер.
+Проверьте, что `current` указывает новый release и служба запущена из него.
+При отказе readiness остановите новый backend и разберите диагностику; успешный
+`apply` сам по себе не подтверждает работоспособность нового процесса.
+
+### Foreground и launchd
+
+Foreground: запретите новые HPT/мейлер jobs, завершите их и backend по SIGTERM,
+дождитесь выхода процессов, сохраните тот же согласованный снимок, выполните
+apply, запустите backend прежней командой и проверьте `--check-ready`.
+Возобновляйте остальные writers после готовности.
+
+На macOS используйте label и plist собственной установки: `launchctl bootout
+"gui/$(id -u)" /path/to/ffido-hpt.plist`, затем аналогичный bootout backend.
+После остановленного backup выполните apply от владельца managed layout,
+`launchctl bootstrap "gui/$(id -u)" /path/to/ffido.plist` и `--check-ready`;
+только затем верните HPT job. LaunchDaemon использует свой `system` domain,
+а не `gui/...`. Updater не угадывает label, не управляет чужими jobs и не вызывает
+sudo. Пользователь, WorkingDirectory, конфигурация и состояние сохраняются.
+
+Текущая проверка обоих supervisor с настоящим HPT и проверенным backup описана в
+[отчёте systemd/launchd](../../docs/testing.md#завершение-add-managed-updates-systemdlaunchd-и-hpt).
 
 `--check-ready HOST:PORT CA_FILE TLS_SERVER_NAME` проверяет TLS и существующий
 неизменяющий gRPC-запрос с deadline. Неверное имя или CA дают ненулевой результат.
@@ -858,3 +939,57 @@ Flutter согласованы с этим бюджетом; входящие з
 Локальный журнал содержит ID области и категорию причины, без тела письма и
 секретов. Административный отказ построения каталога дополнительно сообщает
 стадию и errno; wrapper сообщает неуспешную стадию с исходным exit code.
+
+
+### Временная память UUE
+
+Assemble и Chunk используют отдельный transient-пул на существующих значениях
+`uue.user_quota_bytes` / `uue.global_quota_bytes`. Резерв берётся до
+материализации данных и возвращается на normal/error/cancel; срез удерживает
+свой резерв до освобождения ответа. При давлении возвращается
+RESOURCE_EXHAUSTED. Квоты кеша и максимальные размеры файлов/срезов сохраняются;
+единицы допуска и RSS различаются. Формула резерва, поведение и измерения —
+в [UUE-вложениях](../../docs/uue-attachments.md) и [проверках](../../docs/testing.md).
+
+### Чтение для офлайн-синхронизации
+
+`Login` и `RestoreSession` объявляют `SessionInfo.supports_offline_sync=true`.
+Отсутствующий флаг старого сервера означает false. Все новые protobuf-поля
+аддитивны, прежние запросы сохраняют свою семантику.
+
+`Conference.generation` заполняется только при `statistics_known=true`; лёгкий
+каталог (`omit_statistics`) не открывает JAM и возвращает пустое поколение.
+`ListMessages`, `GetThread`, `GetArchiveThread` возвращают `generation` и на
+пустой успешной странице. Это существующий префикс `message_id` перед `#`,
+а не хеш total/date. Замена файлов требует штатного переоткрытия каталога;
+прежний каталог отказывает при изменении физических файлов. После переоткрытия
+новое поколение отражается в ID и ответах, даже при прежних числе писем и дате.
+Между запросами нет общего снимка: клиент проверяет поколение каждой страницы.
+
+Только `ListMessages` принимает `MESSAGE_SORT_NUMBER_ASCENDING=3`: живые письма
+идут по возрастанию JAM-номера независимо от дат. Без курсора действуют обычные
+`page.offset`/`page.limit`. С `after_message_id=generation#number` offset должен
+быть 0: возвращаются строго большие живые номера, `actual_offset=0`, `total`
+равен active_msgs всей базы, `has_more` означает наличие следующего живого письма.
+Удалённый номер в пределах слотов допустим; курсор на последнем слоте даёт пустую
+страницу. Заголовки на курсоре и ниже не читаются, включая вычисление total.
+Персональное сворачивание и previews сохраняются; прочитанность, история и
+reading position не записываются.
+
+Некорректный синтаксис/переполнение курсора дают `INVALID_ARGUMENT`; чужое
+поколение, номер до base_msg_num, за последним слотом или курсор в базе без
+слотов — `FAILED_PRECONDITION`. NUMBER_ASCENDING с query/anchor, after с другой
+сортировкой или ненулевым offset дают `INVALID_ARGUMENT`. `FindMessage` и
+`SearchArchiveMessages` эту сортировку не принимают. Прежние сортировки по дате
+сохраняются; поздно пришедшее письмо со старой датой доступно через больший номер.
+
+`ReadArchiveMessage.include_subfields=true` разрешён только с `body_offset=0`.
+Для нескрытого ответа возвращаются все `subfields` в исходном порядке: low_id,
+high_id, повторы, пустые значения и произвольные bytes, а также raw `attributes2`
+без изменения битов. Лимит **64 КиБ на весь блок подполей** не повышен:
+допустимый блок возвращается полностью, превышение отклоняется без усечения.
+Свёрнутый ответ при reveal=false не выдаёт подполя/attributes2; reveal=true
+возвращает их для того же доступного письма. При false новые поля пусты/нулевые,
+дополнительного raw-чтения нет. Ненулевой offset с opt-in даёт INVALID_ARGUMENT.
+Архивное чтение не меняет JAM, фильтры, read_status, history или reading_positions.
+`GetMessageTechnicalData` сохраняет прежнюю выборку LoID 4, 5, 2000.

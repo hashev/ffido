@@ -97,6 +97,7 @@ std::expected<domain::Conference, domain::ApiError> ConferenceService::Describe(
         result.last_opened_message = position->generation + "#" + position->message;
     }
   }
+  result.generation = (*access)->generation();
   return result;
 }
 std::expected<domain::ConferenceListResponse, domain::ApiError> ConferenceService::GetConferences(

@@ -17,7 +17,9 @@
 #include <vector>
 
 #include "mcp.hpp"
+#include "storage/measurements.hpp"
 namespace ffido_mcp {
+namespace observation = fidoback::measurements;
 namespace {
 constexpr size_t kResponseLimit = 512 * 1024;
 size_t StringSize(const std::string& value) {
@@ -72,6 +74,10 @@ public:
   ~Output() {
     Finish();
     fcntl(STDOUT_FILENO, F_SETFL, flags_);
+    observation::Gauge(observation::queued_bytes, observation::queued_peak_bytes, 0);
+    observation::Gauge(observation::queued_capacity_bytes, observation::queued_capacity_peak_bytes, 0);
+    observation::Gauge(observation::json_models, observation::json_peak_models, 0);
+    observation::Gauge(observation::json_bytes, observation::json_peak_bytes, 0);
   }
   bool failed() const {
     return failed_.load();
@@ -99,6 +105,7 @@ public:
     }
     bytes_ += charge;
     ++messages_;
+    ObserveQueue();
     lines_.emplace_back(std::move(value), charge);
     wake_.notify_one();
   }
@@ -112,6 +119,12 @@ public:
   }
 
 private:
+  void ObserveQueue() {
+    observation::Gauge(observation::queued_bytes, observation::queued_peak_bytes, bytes_);
+    observation::Gauge(observation::queued_capacity_bytes, observation::queued_capacity_peak_bytes, bytes_);
+    observation::Gauge(observation::json_models, observation::json_peak_models, messages_);
+    observation::Gauge(observation::json_bytes, observation::json_peak_bytes, bytes_);
+  }
   void Fail() {
     if (!failed_.exchange(true))
       std::cerr << "MCP output unavailable or pending response budget exhausted\n";
@@ -135,6 +148,7 @@ private:
         charge = lines_.front().second;
         lines_.pop_front();
       }
+      observation::Bytes serializing(observation::serialized_models, observation::serialized_peak_models, 1);
       try {
         if (observer_)
           observer_(value);
@@ -144,6 +158,7 @@ private:
         Fail();
         return;
       }
+      observation::Bytes serialized(observation::serialized_bytes, observation::serialized_peak_bytes, line.capacity());
       size_t offset = 0;
       while (offset < line.size()) {
         if (failed())
@@ -176,6 +191,7 @@ private:
       std::lock_guard lock(mutex_);
       bytes_ -= charge;
       --messages_;
+      ObserveQueue();
     }
   }
   int flags_ = -1;

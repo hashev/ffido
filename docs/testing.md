@@ -3445,3 +3445,950 @@ dry-run на актуальных данных подтвердил 301 818 из
 Рабочий config, активный манифест и контейнеры сверены до и после проверок.
 Полный backend gate с закреплённым HPT `c2a91d64cee0e6cd357376d30c9285ee3f9c624f`
 завершился успешно: 509 проверок, без пропусков.
+
+
+## Hardening: повторная приёмка 15 ноября 2026
+
+Проверки выполняются на текущем незакоммиченном дереве; прежние отчёты выше
+не выдаются за результаты этого прогона. Debug: штатный `./build.sh build`.
+Python из существующего `build/update-venv/bin/python`: `-m unittest discover
+-s scripts/update -p 'test_*.py' -v` — 64/64; аналогичный release suite —
+101/101. Логи: `/tmp/ffido-hardening-python-{update,release}-20261115.log`.
+`openspec validate harden-code-quality-and-concurrency --strict` прошёл.
+В рамках hardening исполняемые Android/Swift интеграции не изменены; их
+непроверенные lifecycle-сценарии остаются отдельной задачей 6.4.
+
+### Задача 4.6: короткие ответы и границы памяти MCP
+
+Добавлен `McpGrpcTest.SmallPingAndErrorFloodsRespectPendingMessageBudget`: после
+заполнения pipe ответами tools/list отдельные процессы получают 128 коротких
+ping либо unknown-method без чтения stdout. Ожидается exit 1 в пределах
+watchdog 3 с; helper завершает дочерний процесс при провале assertion.
+Целевая команда:
+
+```sh
+ctest --test-dir build/backend --output-on-failure -V -R 'SmallPingAndErrorFloods|ClosedOutputAndPending|OutputFloodTerminates|CancellationReachesBackendWhileAnotherWorkerOwnsSerializer'
+```
+
+Все четыре сценария прошли. Вместе они проверяют закрытый stdout, EOF с
+ожидающим выводом, flood, отмену при удерживаемом serializer и cleanup.
+Лог: `/tmp/ffido-hardening-writer-20261115.log`.
+
+Отдельные 20 MCP-процессов использовали искусственный token, endpoint
+127.0.0.1:1, initialize, 24 tools/list без чтения и 128 чередующихся
+ping/unknown. RPC и FTN-публикации не выполнялись. RSS измерен `ps -o rss=`
+до нагрузки и после подачи tools/list; это снимки, не непрерывный peak probe.
+RSS до нагрузки: 21 921 792–22 118 400 байт, медиана 22 020 096; при ожидающем
+выводе: 22 052 864–22 249 472, медиана 22 151 168. Все процессы завершились
+с exit 1: 54.16–159.98 мс после начала flood, медиана 94.49 мс. Raw JSONL:
+`/tmp/ffido-hardening-output-memory-20261115.jsonl`.
+
+Сверка `Output::Push/Run`: очередь ограничена 4 МиБ и 32 сообщениями;
+счётчики включают строку, вынутую writer из deque до завершения write.
+Сериализация выполняется одним владельцем. Эти пределы не включают исходный
+protobuf, JSON/structuredContent и его текстовую копию, ожидающую сериализации
+ответную модель worker, allocator и библиотеки gRPC. Наблюдаемый RSS поэтому
+не называется лимитом 4 МиБ. Near-limit in-flight приёмка остаётся задачей 6.9.
+
+### Задача 7.2: Debug и обязательный HPT gate
+
+`./build.sh build` завершился успешно.
+`FFIDO_TEST_HPT="$PWD/build/publication-deps/prefix/bin/hpt" python3 scripts/release/check_ctest.py build/backend`
+прошёл 509/509, без skips, 446.61 с. Дополнительный новый writer-тест прошёл
+после пересборки вместе с тремя связанными сценариями; уникальный охват —
+510 зарегистрированных cases. HPT взят из существующего закреплённого
+publication prefix. Лог: `/tmp/ffido-hardening-ctest-20261115.log`.
+`python3 scripts/check_cpp.py --build-dir build/backend` прошёл: 117 файлов,
+61 translation unit. Исправлены только два обнаруженных нарушения формата
+в archive_search.cpp и test_jam_write.cpp; проверки не ослаблялись. Лог:
+`/tmp/ffido-hardening-cpp-20261115.log`.
+
+### Задача 7.3: sanitizer gate остаётся открытым
+
+ASan/UBSan собран через штатный wrapper с
+`SANITIZER_DEPENDENCIES_PREFIX="$PWD/build/asan-ubsan-dependencies/prefix"`.
+Первый полный запуск без FFIDO_TEST_HPT прошёл с пятью HPT skips и не считается
+интеграционной приёмкой. Повтор с
+`FFIDO_TEST_HPT="$PWD/build/publication-deps/prefix/bin/hpt" CTEST_PARALLEL_LEVEL=4 python3 scripts/release/check_ctest.py build/backend-asan`
+прошёл 509/509 без skips за 196.60 с, включая McpInstall. Лог:
+`/tmp/ffido-hardening-asan-hpt-20261115.log`.
+
+Старый `build/mac-tsan-prefix` ссылается на отсутствующий OpenSSL 3.6.5 и
+не прошёл CMake generate (нет импортированных OpenSSL::SSL/Crypto). Сборка
+TSan повторена с подготовленным `build/tsan-dependencies/prefix` и успешно
+завершилась. Полный набор: один провал из 509, пять HPT skips. Провал —
+`GrpcKoiLargeTest.CancellationDuringLargeReadReleasesTheFileLease`: после
+клиентского CANCELLED не удаётся получить lease в течение 10 с. Отдельная
+команда `ctest --test-dir build/backend-tsan --output-on-failure --repeat until-fail:3 -R '^GrpcKoiLargeTest.CancellationDuringLargeReadReleasesTheFileLease$'`
+снова упала на первом повторе, 22.84 с. Это assertion failure, не отчёт TSan
+о data race; утверждать первопричину по одному assertion нельзя. Логи:
+`/tmp/ffido-hardening-tsan-20261115.log`,
+`/tmp/ffido-hardening-tsan-cancel-20261115.log`.
+
+LLDB MCP в текущем списке инструментов отсутствует. CLI `sample` своего
+тестового процесса не завершился за 15 с; CLI LLDB дошёл до `run`, но
+debugserver не вернул launch/стек за 75 с. Оба тестовых запуска остановлены;
+посторонние процессы не затрагивались. Стек не получен, runtime-диагностика
+через debugger не заявляется выполненной.
+
+### Неполные измерения 5.1, 6.7 и 6.9
+
+Повтор существующих fixtures:
+
+```sh
+ctest --test-dir build/backend --output-on-failure -V -R 'CatalogPerformanceFixture|CatalogStatisticsAndRegistryPerformanceFixture|UueChunkPerformanceFixture|UueCacheHasPerUserQuota|UueExpiredPayloadHeldByReaderStillCountsAgainstQuota'
+```
+
+5/5 прошли за 105.69 с; raw —
+`/tmp/ffido-hardening-performance-20261115.log`. В этом проходе не было
+параллельного CTest из другой конфигурации; фоновые native build/emulator и
+clang-tidy ещё работали, поэтому это не изолированный performance baseline.
+
+Каталог, 20 последовательных samples; p50 здесь — верхняя медиана, p95 —
+nearest rank. 1×10000: 33.87/35.77 мс; 100×100: 11.85/12.34 мс;
+1000×100: 24.73/26.42 мс. Для каждого workload все 16 и 64 конкурентных
+service calls завершились успешно. Existing fixture ещё не даёт полный
+требуемый набор SQL count, фактических JAM bytes/opens, mutex/lease wait и
+отдельных cold/warm распределений; задача 5.1 не закрыта. Отсутствие этих
+счётчиков — недостающая реализация измерительного fixture, а не ограничение MCP
+или доказательство отсутствия затрат.
+
+UUE: default config max_file_bytes=1048576, chunk_bytes=65536, part_body_bytes=32768,
+max_parts=128, user_quota=8 МиБ, global_quota=64 МиБ. Для 4 КиБ — один source,
+для 1 МиБ — 45 sources; chunks 16/64 КиБ, Q=1/4/16. Все потоки завершили полную
+загрузку без ошибок. 1 МиБ / 64 КиБ: Q=1 — 664.19 мс, Q=4 — 2641.98 мс,
+Q=16 — 10858.86 мс; aggregate throughput около 1.5 МиБ/с. High-water RSS процесса
+на macOS достиг 55 803 904 байт; он включает подготовку multipart и не является
+retained RSS после очистки. Не измерены фактические copied/hash/JAM bytes,
+cache-mutex hold и retained RSS; нет 1-МиБ single-source варианта и расширенной
+конфигурации верхнего допустимого размера 16 МиБ. Задача 6.7 не закрыта.
+
+Quota и held-payload tests прошли, но Assemble по исходникам декодирует до
+проверки помещения в cache. Данный прогон не выделяет память одновременно
+собираемых near-limit файлов и не доказывает достаточность общего in-flight
+бюджета для Assemble/Chunk плюс MCP JSON/protobuf. Для 6.9 ещё нужны отдельные
+замеры cached/in-flight/queued и normal/error/cancel/EOF release в одной
+ресурсной модели; показания ru_maxrss существующего fixture их не заменяют.
+Внешнего блокера для добавления этих измерений не установлено; задачи остаются
+неотмеченными, а не объявляются завершёнными по частичным данным.
+
+### Задача 6.4: Android lifecycle — реальная попытка
+
+Dart MCP первоначально видел только macOS/Chrome. Запущен отдельный
+неработавший `ffido_footer_api35` AVD, serial emulator-5554. Для сборки найден
+имеющийся JDK 17 в `build/hardening-java17/jdk-17.0.21+9/Contents/Home`,
+использован закреплённый Flutter `/Users/yurik/development/flutter-3.47.7/bin/flutter`.
+Штатный запуск:
+
+```sh
+build/update-venv/bin/python scripts/update/test_android_flow.py --flutter /Users/yurik/development/flutter-3.47.7/bin/flutter --sdk "$HOME/Library/Android/sdk" --serial emulator-5554 --directory "$PWD/build/hardening-android-20261115" --java-home "$PWD/build/hardening-java17/jdk-17.0.21+9/Contents/Home" --process-restart
+```
+
+Оба release APK A/B из текущего дерева собраны. На API 35 приложение A запустилось,
+QA sentinel preferences/secureSession/footerPreferences были true. Первый click
+Install B не состоялся за 90 с: UIAutomator показал системный диалог
+`System UI isn't responding`, а не экран приложения/installer. Native callback,
+Activity recreation, detach и сохранение файла этим прогоном не проверены.
+Выполнен reboot только этого тестового эмулятора для повторной попытки.
+Лог: `/tmp/ffido-hardening-android-20261115.log`; build-A.log/build-B.log и
+flutter-stream.log — в `build/hardening-android-20261115/`. Ключи QA эфемерные,
+production-ключи не использовались, build artifacts в Git не добавлялись.
+
+На macOS по исходникам seenMessages живёт до deinit watcher и не очищается
+вместе с удалением старых message-файлов в install. Это остаётся проверяемым
+риском накопления, а не выполненным lifecycle-тестом и не подтверждением утечки
+с измеренным retained RSS. Для закрытия 6.4 нужна работающая Android QA-сессия
+и отдельная native macOS нагрузка watcher; общий update A→B не заменяет их.
+
+### Задача 7.4: Python и согласованность
+
+Update 64/64 и release 101/101 повторены на существующем окружении, строгая
+валидация изменения и git diff --check прошли. Native release APK A/B собраны
+штатным QA helper из текущих исходников; это build-проверка, не успешная
+приёмка Android lifecycle. Исполняемые Kotlin/Swift интеграции в этом изменении
+не правились. Непроверенные runtime-сценарии явно оставлены в 6.4, неполные
+performance/resource критерии — в 5.1/6.7/6.9, TSan — в 7.3.
+
+### Android API 35: повтор после устранения системного ANR
+
+После reboot тот же отдельный эмулятор стал доступен. SHA-256 QA APK из
+текущего дерева проверены `fixture_manifest/read_fixtures`; повтор выполнен
+тем же helper с `--fixtures build/hardening-android-20261115 --process-restart`
+в новом `build/hardening-android-retry-20261115`. Получен result.json: API 35,
+release 41001→41002 через системный installer, permission denial, pending
+confirmation/cancel, отмена после SIGKILL и восстановления процесса, отказы
+foreign-key/foreign-id/downgrade, успешная замена пакета и сохранение
+preferences/secureSession/footerPreferences. Play Protect не проверялся.
+Лог — `/tmp/ffido-hardening-android-retry-20261115.log`.
+
+У нового процесса A после восстановления две одинаковые строки
+`recovered=cancelled/result=cancelled`: источниками могут быть startup recover
+и installResult callback. Это наблюдение требует привязки к одной установке
+и проверки дедупликации; число завершений прежнего MethodChannel.Result из этих
+строк не следует. Поэтому результат обычного update QA не закрывает требование
+6.4 о lifecycle/ровно одном результате, recreation/detach и сохранении файла.
+После завершения остановлен только запущенный в этой работе emulator-5554;
+посторонние устройства/службы не затронуты.
+
+После добавления нового writer-теста ASan и TSan пересобраны без смены
+инструментированных зависимостей. Focused writer: ASan 4/4, TSan 5/5 (в том
+числе повтор прежнего cancellation failure), логи
+`/tmp/ffido-hardening-{asan,tsan}-writer-20261115.log`. Дополнительно ASan
+повторил по три раза пять recovery/MCP/RequestLock cases: все прошли,
+`/tmp/ffido-hardening-asan-repeat-20261115.log`. Повтор полного TSan с HPT
+выполняется последовательно, чтобы отделить межтестовую конкуренцию от
+внутритестовой; первый провал не удалён из отчёта.
+
+### Финальное усиление flood-regressions
+
+`McpProcess::WaitForExit` позволяет ждать exit, оставляя stdin открытым.
+Оба flood-теста теперь используют именно его: EOF больше не может ложно
+подтвердить срабатывание output budget. Во всех трёх конфигурациях выполнена
+пересборка и `ctest --test-dir build/<configuration> --output-on-failure
+--repeat until-fail:3 -R 'SmallPingAndErrorFloods|OutputFloodTerminates'`: два
+сценария × три повтора прошли в Debug, ASan и TSan. Логи:
+`/tmp/ffido-hardening-final-{backend,backend-asan,backend-tsan}-writer-20261115.log`.
+Изменённые C++ test/helper прошли `clang-format --dry-run -Werror`;
+`git diff --check` прошёл. Повтор полного CTest после правки helper включён
+в текущий последовательный TSan/HPT проход; production-логика writer не менялась.
+
+### Итог последовательного TSan/HPT
+
+`FFIDO_TEST_HPT="$PWD/build/publication-deps/prefix/bin/hpt" CTEST_PARALLEL_LEVEL=1 python3 scripts/release/check_ctest.py build/backend-tsan`
+завершился успешно: 510/510 без skips, включая McpInstall и усиленные writer
+regressions. Отдельно 9 recovery/MCP/RequestLock cases прошли по три повтора:
+`/tmp/ffido-hardening-tsan-repeat-20261115.log`. Полный лог:
+`/tmp/ffido-hardening-tsan-hpt-20261115.log`.
+
+Задача 7.3 оставлена открытой: исходный parallel=4 запуск и отдельный повтор
+дали assertion failure освобождения lease после cancel. Последовательный
+успех доказывает проверку этой конфигурации, но не объясняет два прежних
+провала. Увеличивать timeout, исключать тест либо скрывать результаты не стали;
+для закрытия требуется локализовать зависимость от нагрузки и подтвердить
+исходную параллельную конфигурацию. Это ограничение приёмки, не data-race report.
+
+Итог checklist: закрыты 4.6, 7.2 и 7.4; 33/38. Открыты 5.1, 6.4, 6.7, 6.9,
+7.3. Внешних блокеров для реализации недостающих benchmark-счётчиков 5.1/6.7/6.9
+не обнаружено: это оставшаяся инженерная работа, а не объявленные недоступными
+проверки. Код production writer и native интеграций не менялся; добавлены
+регрессия/ожидание завершения в test helper и две точечные правки C++ формата.
+Архивирование, коммит и публикация не выполнялись.
+
+## Измерения hardening 5.1, 6.7 и 6.9 (2026-11-15)
+
+Повторяемый runner: `python3 scripts/hardening_measurements.py all --output
+build/hardening-measurements-complete-20261115`. Выходной каталог должен быть
+новым. Для focused-повтора доступны `catalog`, `uue`, `resources`, `mcp`,
+`registry` и `--case '<glob>'`; по умолчанию 20 повторов. `report.json`
+сохраняет конфигурацию, compiler, source SHA-256, все численные наблюдения,
+команды, outcomes и p50/p95; соседние `.log` сохраняют полный вывод CTest.
+Runner не считает неполный набор наблюдений успешным. Его parser, матрица,
+контроль полноты и сохранение неуспеха проверяются штатным `unittest`.
+
+Каталог: 1×100, 1×10000, 100×100, 1000×100; Q=1/16/64; статистика включена
+и `omit_statistics=true`; по 20 новых процессов с cold/warm проходами.
+Cold означает пустые application caches, без сброса системного page cache.
+Страница — 20 областей, сортировка по имени. Отдельно штатные fixtures
+проверяют Build 5000 областей, Statistics и обход 1000 областей при неизменном
+низком NOFILE. Счётчики показывают фактические executions подготовленных
+SQLite statements (продолжение SQLITE_ROW не новый запрос), успешные
+логические открытия JAM и прочитанные pread bytes. Wait timers измеряют
+ожидание metadata/cache mutex, JAM mutex/file lock и coordination lease;
+это сумма времени работников, а не слагаемые wall latency. Данные и ответы
+проверяются на каждом успешном запросе. Для нагрузки отдельно сохранены все
+ошибки, успешные latency и throughput: быстрый отказ не считается ускорением.
+
+UUE: F=1 МиБ с одним/несколькими источниками и F=16 МиБ с несколькими;
+Chunk=16/64 КиБ; Q=1/4/16; 20 раундов, последний — EOF. Одно тело для F=16 МиБ
+не помещается в существующий JAM read limit 10 МиБ, поэтому такой заведомо
+недопустимой комбинации нет. Искусственные входящие JAM-записи обходят только
+ограничение размера исходящего письма; production read limits сохраняются.
+Конфигурация Chunk: max_file_bytes=16 МиБ, max_parts=1024,
+part_body_bytes=256 КиБ, user/global cache quota=48/64 МиБ. Payload собирается
+один раз; повторная сборка после invalidation учитывается отдельно. SHA-256,
+содержимое slices и EOF проверяются; повторная проверка sources/ACL сохранена.
+Счётчики разделяют полное копирование payload и копирование slices, hashes,
+JAM bytes, cache mutex wait/hold. RSS снимается каждые 2 мс: baseline,
+выборочный peak, retained после освобождения; `ru_maxrss` — независимый
+process high-water mark (байты на macOS, КиБ на Linux). Эти величины не
+следует складывать с пиками отдельных буферов.
+
+До reservation параллельная Assemble F=1 МиБ/Q=16 показала
+15 347 712 байт учтённых assembly buffers при cache quota 3 145 728 байт
+(`/tmp/ffido-assembly-before-reservation.log`). Cached quotas не ограничивали
+одновременную материализацию. Добавлен отдельный transient pool с теми же
+user/global quota values: Assemble резервирует 3×max_file_bytes до чтения,
+Chunk — запрошенный размер до возврата, lease живёт вместе с результатом.
+RAII освобождает credits на normal/error/cancel/EOF. Это admission budget
+для encoded input/decoded output, а не обещание RSS cap: capacity, validation
+scratch, metadata и allocator остаются отдельными наблюдениями. Публичные
+размеры файлов/chunks и cached quotas не изменены; давление даёт явный
+RESOURCE_EXHAUSTED без усечения. Resource fixture использует F=1/16 МиБ,
+Q=1/4/16 и quotas=3F, проверяет отдельного user, cancel до отпускания owner,
+повтор после отказа, поздний cache rejection, живой payload после eviction,
+исчерпание credits удержанными Chunk и освобождение всех pools.
+
+MCP: при удержанном serializer исходное удаление active call до сериализации
+позволяло допускать следующие готовые models вне четырёх slots. Контрольное
+возвращение старого порядка воспроизвело отказ новой регрессии
+(`/tmp/ffido-model-before-test.log`); исправленный порядок удерживает slot
+до serialize/enqueue, не удерживая active_mutex во время вывода. Существующие
+лимиты 4 МиБ/32 queued responses и 512 КиБ на ответ сохранены. Probe отдельно
+считает protobuf ByteSizeLong во время Encode, JSON string/key payload,
+готовые models, сериализуемые models, capacity сериализованной строки,
+queued wire bytes и queued capacity (включая текущую запись writer).
+Это наблюдения конкретных представлений, не полный heap profiler.
+Сценарии normal/oversized/EOF/closed stdout/flood/pending models повторяются
+по 20 раз. После cleanup все текущие gauges обязаны быть нулевыми;
+одновременно сериализуется одна model, очередь остаётся в прежнем бюджете.
+
+Ранние неполные запуски сохранены: `build/hardening-measurements-20261115`
+остановился на watchdog UUE fixture с повторной сборкой на каждом раунде;
+fixture исправлен для измерения собственно Chunk.
+`build/hardening-measurements-final-20261115` выявил cold overload
+1000×100/Q=16 (DEADLINE_EXCEEDED). Новая measurement fixture учитывает
+предусмотренные overload outcomes, не повышая deadlines; Q=1 остаётся
+строго успешным, неизвестные ошибки приводят к failure. Прежние correctness
+assertions не ослаблены. Эти два запуска не являются завершённой матрицей.
+
+Дополнительный проход `build/hardening-measurements-complete-20261115`
+не завершён: macOS вошла в Idle Sleep на 454 секунды (15:06:58–15:14:32),
+что попало в steady-clock latency и watchdog; подтверждение —
+`/tmp/ffido-measure-sleep-evidence.log`. Следующие проходы запускаются через
+`caffeinate -i` (только на время команды, без смены постоянных настроек).
+Проход `build/hardening-measurements-awake-20261115` воспроизвёл уже реальную
+ошибку 16 МиБ/Q=16: истечение budget внутри JAM read возвращало kReadError,
+а Chunk удалял исправный cached payload после неуспешной проверки источника.
+Chunk теперь нормализует ошибку прерванного request в deadline/cancel и
+сохраняет payload. Регрессия
+`UueChunkInterruptedValidationPreservesPayloadAndReleasesReservation`
+проверяет оба исхода, нулевые transient credits и retry по прежнему ID.
+Остальные ошибки источника по-прежнему инвалидируют кеш.
+
+### Завершённая матрица и численные результаты
+
+`build/hardening-measurements-verified-20261115/report.json`: **50/50**,
+`complete=true`, 20 повторов/раундов. Команда:
+`caffeinate -i python3 scripts/hardening_measurements.py all --output build/hardening-measurements-verified-20261115`.
+Debug, macOS 27.2.1 arm64, Apple clang 21.0.0, Python 3.15.2;
+protobuf/gRPC/Abseil из `build/publication-deps/prefix`. Source SHA-256:
+`6b3568067d1abd34ef6c011de9273fc4aae6cdc2cd3a46083b5e7a9ff6bab3a9`. Санитайзеры не участвовали в latency-замерах.
+
+Каталог: агрегированные p50/p95, мс; throughput = успешные запросы / сумму wall time раундов.
+SQL/JAM/bytes ниже — первый cold burst (не оценка). Wait — сумма metadata/JAM mutex/coordination wait, мс того же burst. Полные cold/warm counters каждого повтора — в JSON.
+
+| Области×письма, Q, light | Cold p50/p95 | Warm p50/p95 | cold/warm req/s | Отказы | SQL / JAM opens / bytes | Wait ms |
+|---|---:|---:|---:|---:|---:|---:|
+| 1×100, 1, 0 | 3.03/3.16 | 0.72/0.75 | 200.4/384.7 | 0 | 5 / 1 / 17024 | 0.00 |
+| 1×100, 1, 1 | 2.44/2.51 | 0.25/0.30 | 229.1/383.6 | 0 | 4 / 0 / 0 | 0.00 |
+| 1×100, 16, 0 | 48.24/95.78 | 45.96/91.41 | 166.5/175.7 | 0 | 80 / 16 / 272384 | 813.42 |
+| 1×100, 16, 1 | 3.39/3.71 | 0.98/1.16 | 3184.6/6102.9 | 0 | 64 / 0 / 0 | 14.34 |
+| 1×100, 64, 0 | 82.55/182.97 | 74.89/175.39 | 316.6/324.2 | 0 | 320 / 64 / 1089536 | 5669.26 |
+| 1×100, 64, 1 | 5.97/6.92 | 3.19/4.03 | 7324.4/13623.2 | 0 | 256 / 0 / 0 | 176.53 |
+| 1×10000, 1, 0 | 29.16/29.38 | 26.68/26.99 | 33.3/36.2 | 0 | 104 / 1 / 1601024 | 0.00 |
+| 1×10000, 1, 1 | 2.45/2.62 | 0.28/0.31 | 201.4/387.2 | 0 | 4 / 0 / 0 | 0.00 |
+| 1×10000, 16, 0 | 249.57/473.83 | 254.28/474.00 | 33.0/33.0 | 0 | 1664 / 16 / 25616384 | 3549.34 |
+| 1×10000, 16, 1 | 3.64/4.17 | 1.04/1.37 | 3174.8/6321.4 | 0 | 64 / 0 / 0 | 14.69 |
+| 1×10000, 64, 0 | 919.20/1727.09 | 910.55/1724.98 | 35.1/35.3 | 0 | 6656 / 64 / 102465536 | 57801.87 |
+| 1×10000, 64, 1 | 5.91/6.76 | 3.19/4.01 | 7714.7/13078.3 | 0 | 256 / 0 / 0 | 179.76 |
+| 100×100, 1, 0 | 11.91/12.19 | 9.34/9.45 | 78.3/98.6 | 0 | 161 / 20 / 340480 | 0.02 |
+| 100×100, 1, 1 | 3.75/3.90 | 1.54/1.58 | 201.1/383.1 | 0 | 141 / 0 / 0 | 0.00 |
+| 100×100, 16, 0 | 66.62/112.34 | 109.55/134.81 | 157.1/120.1 | 0 | 2576 / 320 / 5447680 | 763.75 |
+| 100×100, 16, 1 | 23.75/25.49 | 21.69/24.66 | 580.6/620.5 | 0 | 2256 / 0 / 0 | 301.90 |
+| 100×100, 64, 0 | 494.10/598.92 | 491.56/595.11 | 105.2/106.1 | 0 | 10304 / 1280 / 21790720 | 21821.24 |
+| 100×100, 64, 1 | 89.42/100.59 | 88.25/100.08 | 626.4/627.3 | 0 | 9024 / 0 / 0 | 5157.07 |
+| 1000×100, 1, 0 | 21.55/21.90 | 18.56/18.79 | 44.1/49.6 | 0 | 1061 / 20 / 340480 | 0.04 |
+| 1000×100, 1, 1 | 13.21/13.32 | 10.68/10.79 | 65.9/79.1 | 0 | 1041 / 0 / 0 | 0.03 |
+| 1000×100, 16, 0 | 269.09/294.15 | 264.35/288.60 | 54.6/55.7 | 0 | 16976 / 320 / 5447680 | 3218.20 |
+| 1000×100, 16, 1 | 175.68/189.03 | 175.19/187.78 | 84.1/84.4 | 0 | 16656 / 0 / 0 | 2398.57 |
+| 1000×100, 64, 0 | 1081.42/1177.51 | 1076.83/1180.62 | 54.1/54.3 | 0 | 67904 / 1280 / 21790720 | 60650.47 |
+| 1000×100, 64, 1 | 702.31/758.07 | 695.35/757.71 | 84.0/84.1 | 0 | 66624 / 0 / 0 | 41618.88 |
+
+Существующий SQL batch зависит от числа batch/page, но прочие metadata/permission/profile запросы остаются видны: например, 1000 областей/Q=64 дают 67904 executions на burst. Эта работа добавляет измерения и не заявляет устранение всех N+1 или ускорение R2/R3.
+
+UUE: p50/p95 всех запросов, мс; success/offered и throughput с учётом отказов. RSS peak/retained — МиБ. Full payload copied bytes во всех строках **0**; slices/JAM — МиБ, hold — суммарные мс cache mutex за 20 раундов.
+
+| F МиБ, sources, C КиБ, Q | p50/p95 | Success/offered | req/s | slices / JAM МиБ | Hash calls / hold ms | RSS peak/retained |
+|---|---:|---:|---:|---:|---:|---:|
+| 1, 1, 16, 1 | 20.90/21.35 | 20/20 | 47.81 | 0.31 / 27.58 | 20 / 0.050 | 40.25/40.23 |
+| 1, 1, 16, 4 | 46.24/95.68 | 80/80 | 42.16 | 1.25 / 110.32 | 80 / 0.171 | 40.52/40.41 |
+| 1, 1, 16, 16 | 185.60/370.92 | 320/320 | 42.58 | 5.00 / 441.27 | 320 / 0.886 | 41.25/40.77 |
+| 1, 1, 64, 1 | 20.99/21.67 | 20/20 | 47.24 | 1.25 / 27.58 | 20 / 0.062 | 40.31/40.30 |
+| 1, 1, 64, 4 | 46.05/96.31 | 80/80 | 42.25 | 5.00 / 110.32 | 80 / 0.165 | 40.41/40.30 |
+| 1, 1, 64, 16 | 186.36/371.45 | 320/320 | 42.54 | 20.00 / 441.27 | 320 / 1.140 | 48.61/48.12 |
+| 1, 6, 16, 1 | 21.62/22.03 | 20/20 | 46.00 | 0.31 / 27.70 | 120 / 0.067 | 35.72/35.70 |
+| 1, 6, 16, 4 | 55.91/106.52 | 80/80 | 38.99 | 1.25 / 110.80 | 480 / 0.207 | 35.89/35.78 |
+| 1, 6, 16, 16 | 213.32/398.77 | 320/320 | 39.27 | 5.00 / 443.21 | 1920 / 1.299 | 36.62/36.14 |
+| 1, 6, 64, 1 | 21.55/21.77 | 20/20 | 46.28 | 1.25 / 27.70 | 120 / 0.069 | 35.66/35.64 |
+| 1, 6, 64, 4 | 63.20/108.50 | 80/80 | 37.77 | 5.00 / 110.80 | 480 / 0.200 | 35.81/35.70 |
+| 1, 6, 64, 16 | 218.69/409.81 | 320/320 | 38.12 | 20.00 / 443.21 | 1920 / 1.381 | 36.45/35.97 |
+| 16, 89, 16, 1 | 349.09/356.06 | 20/20 | 2.86 | 0.31 / 444.16 | 1780 / 0.251 | 130.38/130.36 |
+| 16, 89, 16, 4 | 1110.28/1420.40 | 80/80 | 2.83 | 1.25 / 1776.64 | 7120 / 0.795 | 130.48/105.33 |
+| 16, 89, 16, 16 | 4346.63/5003.34 | 215/320 | 2.15 | 3.36 / 6353.32 | 25402 / 3.324 | 131.28/89.25 |
+| 16, 89, 64, 1 | 351.69/356.46 | 20/20 | 2.84 | 1.25 / 444.16 | 1780 / 0.233 | 130.36/130.34 |
+| 16, 89, 64, 4 | 1155.61/1435.51 | 80/80 | 2.81 | 5.00 / 1776.64 | 7120 / 0.775 | 130.59/106.39 |
+| 16, 89, 64, 16 | 4650.84/5001.71 | 198/320 | 1.98 | 12.38 / 6268.48 | 25051 / 3.246 | 132.39/89.03 |
+
+Все UUE Q=1/4 завершили все запросы. При F=16 МиБ/Q=16 получены deadline 105/320 (C=16 КиБ) и 122/320 (C=64 КиБ); внутренних ошибок нет, reassemblies=0. Это ограничение пропускной способности текущей source validation, не выигрыш от быстрых отказов. Успешные latency отдельно сохранены в JSON. Перед prune payload 16 МиБ имеет capacity 25 165 823 байт; после cleanup live/cache bytes=0, retained RSS может оставаться высоким из-за allocator.
+
+Ресурсный бюджет: для каждого F=1/16 МиБ при Q=1/4/16 admitted=1, pressure rejections=0/3/15. Peak reserved=3F, после cleanup=0. При F=1 МиБ/Q=16 assembly buffers peak снизился с 15 347 712 до 4 590 480 байт; это ограничение параллельной материализации ценой явных отказов, не обещание ускорения. При F=16 МиБ assembly peak=73 447 053 байт, credits=50 331 648: capacity/scratch подтверждают, почему credits нельзя называть RSS cap. Held payload после eviction=3F, его capacity≈4.5F; после освобождения readers/cache оба показателя нулевые.
+
+MCP, максимум по 20 повторам каждого исхода (байты; JSON — string/key payload, serialized — capacity):
+
+| Исход | Proto peak | JSON models | JSON bytes | Serialized models/bytes | Queue wire/capacity |
+|---|---:|---:|---:|---:|---:|
+| normal | 32942 | 1 | 230775 | 1/573439 | 427727/573439 |
+| oversized | 65712 | 1 | 460150 | 1/1146879 | 322/479 |
+| eof | 32942 | 1 | 230775 | 1/573439 | 427727/573439 |
+| closed | 32942 | 1 | 230775 | 1/573439 | 427727/573439 |
+| flood | 32942 | 2 | 234881 | 1/573439 | 609542/763872 |
+| pending-models | 321 | 5 | 3960 | 1/2239 | 1180/2239 |
+
+Пять JSON models в barrier-сценарии = четыре допущенных RPC и один ответ main loop об отказе; пятый RPC до backend не доходит. Capacity строки может превышать wire limit из-за роста allocator; очередь ограничивается wire bytes, эти две метрики намеренно разделены. Все текущие gauges после process cleanup нулевые. Нулевые gauges доказывают освобождение учитываемых объектов; retained RSS не доказывает утечку или её отсутствие сам по себе.
+
+### Проверки окончательной реализации
+
+- `./build.sh build` — Debug-сборка успешна.
+- `FFIDO_TEST_HPT="$PWD/build/publication-deps/prefix/bin/hpt" CTEST_PARALLEL_LEVEL=4 python3 scripts/release/check_ctest.py build/backend` — 516/516, без skips, 90.38 с; `/tmp/ffido-measure-debug-hpt.log`.
+- `python3 scripts/check_cpp.py --build-dir build/backend` — format и clang-tidy: 120 файлов/61 TU; `/tmp/ffido-measure-final-cpp.log`.
+- `build/update-venv/bin/python -m unittest discover -s scripts/release -p 'test_*.py'` — 107 тестов; аналогично `scripts/update` — 64; `/tmp/ffido-measure-{python,update}-final.log`.
+- `cmake --build build/backend-asan --parallel 4` и полный HPT gate с тем же HPT, `CTEST_PARALLEL_LEVEL=4`, для `build/backend-asan` — 516/516, без skips, 130.44 с; `/tmp/ffido-measure-asan-hpt.log`. Использован существующий согласованно инструментированный prefix, flags и зависимости не менялись.
+
+После основной матрицы устранён compiler warning только в test probe:
+`RssSampler rss` → `RssSampler rss{}` (та же default construction).
+Debug/ASan/TSan пересобраны без этого warning. Численные результаты основной
+матрицы относятся к указанному выше SHA; повтор MCP 20×6 на окончательном
+helper — `build/hardening-measurements-probe-final-20261115/report.json`,
+`complete=true`, source SHA
+`a7973bf1b4cb54e3369b6b8a7cf633e332029ffeef20b1f4ed310ceea2497197`.
+Production-код между этими двумя матрицами не менялся.
+
+Runtime MCP/LLDB диагностика в этой работе не выполнялась: подходящий LLDB
+MCP недоступен, Codegraph index для репозитория отсутствует. Использованы
+исходники, управляемые CTest fixtures и CLI/sanitizers; индексы не создавались,
+рабочие службы и FTN-данные не затрагивались.
+
+TSan: `cmake --build build/backend-tsan --parallel 4`, затем CTest с
+`--repeat until-fail:3` для `UueAssemblyMemoryFixture`,
+`UueChunkInterruptedValidation`, `UueChunkMeasurementFixture`,
+`UueExpiredPayloadHeldByReader`, `NearLimitOutputMemory`,
+`CompletedModelsKeepAdmission`, `SmallPingAndErrorFloods`,
+`OutputFloodTerminates`: 8 сценариев × 3 повтора прошли (172.90 с),
+`/tmp/ffido-measure-tsan-focused.log`; новых sanitizer diagnostics нет.
+Это focused-проверка текущих изменений, а не повтор полного TSan gate 7.3:
+ранее описанные parallel cancellation failures этой отдельной задачи
+не считаются объяснёнными или закрытыми.
+
+Дополнительные результаты штатных fixtures:
+Assemble 16 МиБ/Q=16: RSS baseline/peak/retained=93765632/214204416/214204416 байт; live/cache и reserved после cleanup=0.
+Build 5000 областей: 20 повторов, p50=362.86 мс, p95=389.15 мс.
+Обход 1000 областей при низком NOFILE: SQL=12010, JAM opens=1000, bytes=1024000, metadata/JAM mutex/coordination wait=378989/74280/404740 нс; исходные fd assertions пройдены.
+
+Дополнительно `FFIDO_BENCH_FILE_BYTES=16777216 FFIDO_BENCH_PARALLEL=16
+ctest --test-dir build/backend-asan --output-on-failure -R
+'^ServicesTest.UueAssemblyMemoryFixture$'` — 1/1, 110.49 с,
+`/tmp/ffido-measure-asan-near-limit.log`, без sanitizer diagnostics.
+
+Итог текущего запроса: 5.1, 6.7 и 6.9 завершены, checklist **36/38**.
+Открыты 6.4 (Android lifecycle/ровно один terminal result) и 7.3
+(локализация ранее воспроизведённых parallel cancellation failures).
+Полный Debug/HPT и ASan/HPT, focused TSan, Python, C++ проверки,
+`openspec validate harden-code-quality-and-concurrency --strict` и
+`git diff --check` успешны. Чужие изменения сохранены; generated/lock-файлы
+в рамках текущего запроса не менялись. Архивирование, коммит, публикация
+и развёртывание не выполнялись.
+
+## Завершение hardening 6.4 и 7.3 (2026-11-15)
+
+### Причина задержанного освобождения JAM после отмены
+
+Исходный `GrpcKoiLargeTest.CancellationDuringLargeReadReleasesTheFileLease`
+проверял только клиентский CANCELLED и последующий захват lease за 10 секунд.
+Два исторических параллельных TSan failure сохранены выше. В новом контрольном
+проходе четыре тяжёлых fixtures с `--parallel 4 --repeat until-fail:3`
+не воспроизвели этот недетерминированный assertion
+(`/tmp/ffido-lifecycle-tsan-repro.log`, 534.58 с). Это не доказательство исправления.
+
+Причина установлена по исходникам и отдельной детерминированной регрессии:
+`JamMessageBase` проверял active request при чтении заголовка, но не передавал
+его в `ConvertText`; преобразование большого тела и побайтовая `DisplayText`
+удерживали JAM lease до окончания всей работы. Клиентский CANCELLED не означал
+остановку server worker. Тест
+`CancellationDuringBodyConversionStopsBeforeTheWholePayload` прерывает budget
+внутри конвертации, проверяет контролируемый отказ и полный retry. На исходном
+коде он вернул всё письмо вместо отказа:
+`/tmp/ffido-lifecycle-red-test.log`; исправленный прошёл вместе с codec/parser
+regressions (`/tmp/ffido-lifecycle-green-test.log`).
+
+`ConvertText` теперь проверяет переданный active predicate на каждом выходном
+блоке 4096 байт, возвращает отдельный `TextError::kInterrupted` и освобождает
+iconv через RAII. `ReadMessage` передаёт свой неизменяемый budget; service
+различает cancel/deadline вместо внутренней ошибки. `DisplayText` тоже проверяет
+budget, обрабатывает блоками по 4 КиБ и сохраняет CR/CRLF→LF, включая границу
+блоков. Новая `DisplayTextNormalizesCrLfAcrossBlockBoundaries` проверяет данные.
+Проверка освобождения lease усилена **10→1 секунда**, timeout не повышался.
+
+Промежуточный полный TSan после добавления checkpoints выявил 16 больших
+чтений, переставших укладываться в существующие 5 секунд из-за побайтовой
+нормализации под sanitizer (`/tmp/ffido-lifecycle-tsan-full.log`). Этот failure
+сохранён. Блочная нормализация устранила стоимость без ослабления assertions:
+все 16 чтений по 30 МиБ UTF-8 снова успешны. Публичные deadlines, размеры,
+протокол и granularность JAM locks не менялись. Это исправление отмены и
+выявленной стоимости, не отчёт о произвольном ускорении production.
+
+### Полные sanitizer и install gates
+
+Существующие согласованные prefixes сохранены:
+`build/asan-ubsan-dependencies/prefix` для ASan/UBSan и
+`build/tsan-dependencies/prefix` для TSan, включая protobuf/gRPC/Abseil.
+Сборки: `./build.sh build`, `cmake --build build/backend-asan --parallel 4`,
+`cmake --build build/backend-tsan --parallel 4`.
+Для каждого build-directory выполнен один и тот же HPT gate:
+
+```sh
+FFIDO_TEST_HPT="$PWD/build/publication-deps/prefix/bin/hpt" CTEST_PARALLEL_LEVEL=4 \
+  python3 scripts/release/check_ctest.py build/backend-tsan
+```
+
+| Конфигурация | Результат текущего полного прохода | Время | Лог |
+|---|---|---:|---|
+| Debug | 518/518, без skips | 105.88 с | `/tmp/ffido-lifecycle-debug-full.log` |
+| ASan/UBSan | 518/518, без skips | 222.20 с | `/tmp/ffido-lifecycle-asan-full.log` |
+| TSan, parallel=4 | 518/518, без skips | 234.43 с | `/tmp/ffido-lifecycle-tsan-final-full.log` |
+
+McpInstall прошёл во всех трёх наборах: установленный MCP реально запускался,
+а не исключался из проверки. Новых suppressions, исключений тестов и повышений
+timeout нет. Дополнительно в ASan и TSan прошли **12 cases × 3 повтора** с
+`--parallel 4`: новое прерывание конвертации, большие чтения, UUE/crosspost
+waiters, MCP flood и все ChangedFormat/MissingRecoveryOwner cases. Команда:
+
+```sh
+ctest --test-dir build/backend-tsan --output-on-failure -V --parallel 4 \
+  --repeat until-fail:3 \
+  -R 'CancellationDuringBodyConversion|CancellationDuringLargeRead|SixteenConcurrentLargeReads|CancelledUue|CancelledCrosspost|SlowOutput|Draft.*Cancel|OutputFloodTerminates|Pending.*Format|Changed.*Format|Unsupported.*Format'
+```
+
+Логи `/tmp/ffido-lifecycle-{asan,tsan}-focused.log`: ASan 14.52 с, TSan 43.09 с.
+Шесть наблюдений cancel→захват/освобождение lease: ASan 11.96–23.38 мс,
+TSan 5.27–268.74 мс, все в прежнем тестовом budget. Это наблюдения тестового
+окружения, не новый SLA. LLDB MCP недоступен, Codegraph подтвердил отсутствие
+индекса; использованы CLI/CTest и исходники, debugger-проверка не заявляется.
+
+### Android lifecycle и сохранение файла
+
+Native bridge теперь явно завершает старый MethodChannel result при detach.
+До создания сессии detach отменяет preparation; поздний worker проверяет
+operation ID и не может воскресить отменённую либо изменить новую операцию.
+После публикации сессии старое окно получает `detached`, а новый bridge
+восстанавливает её из private state. Worker использует application context,
+а APK descriptor открывается до публикации session: удаление Dart staging
+после detach не прерывает уже начатое копирование. Terminal callback атомарно
+сверяет operation/session ID, сохраняет bounded outcome и очищает staging;
+повторный или чужой broadcast игнорируется. После потери процесса недокопированная
+неотправленная session abandoned с `unknown`, без ложного успеха.
+
+`AndroidFileSaver` сохраняет прежний `org.ffido/files` contract и request code;
+MainActivity передаёт ему callbacks/detach. Поля pending/bytes очищаются при detach; буфер уже начатой записи живёт до
+завершения worker. Поздний worker обращается к bridge через weak reference и
+не может завершить старый result дважды или очистить новую операцию. Ошибка
+provider остаётся ошибкой; повтор разрешён. Старый detach удаляет только свой
+messenger handler и не снимает handler нового владельца того же engine.
+
+Постоянные native tests находятся в
+`apps/frontend/android/app/src/androidTest/kotlin/io/github/hashev/ffido/NativeLifecycleTest.kt`.
+Debug-only `LifecycleTestActivity` выполняет настоящую Activity recreation,
+при этом границы запуска picker/permission и worker контролируются тестом.
+Запись проверяется настоящим content resolver в MediaStore с exact bytes;
+PackageInstaller sessions создаются настоящим SDK, terminal broadcasts
+подаются управляемо. Это дополняет реальный системный installer A→B ниже,
+а не заменяет его. Использован встроенный SDK InstrumentationTestRunner,
+без новых Maven dependencies или test libraries в release APK.
+
+Native проверка на отдельном `ffido_footer_api35`, **emulator-5554/API 35**:
+permission denied/повтор callback, recreation при permission wait, queued worker
+после detach рядом с новой операцией, session recovery/повтор broadcast,
+недокопированная session после потери процесса, submitted session с новым окном,
+picker cancel/recreation, error/retry записи, поздняя запись exact bytes и
+смена handler owner. Новый result, старый result и installResult notification
+считаются отдельно: recover-запрос не считается вторым завершением install.
+
+```sh
+JAVA_HOME="$PWD/build/hardening-java17/jdk-17.0.21+9/Contents/Home" \
+  apps/frontend/android/gradlew -p apps/frontend/android \
+  :app:assembleDebug :app:assembleDebugAndroidTest -Ptarget-platform=android-arm64
+adb -s emulator-5554 install -r apps/frontend/build/app/outputs/apk/debug/app-debug.apk
+adb -s emulator-5554 install -r apps/frontend/build/app/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+adb -s emulator-5554 shell appops set io.github.hashev.ffido REQUEST_INSTALL_PACKAGES deny
+adb -s emulator-5554 shell am instrument -w -r \
+  -e class io.github.hashev.ffido.NativeLifecycleTest \
+  io.github.hashev.ffido.test/android.test.InstrumentationTestRunner
+```
+
+В PATH должны быть закреплённый Flutter 3.47.7 и SDK; команда `adb` относится
+только к выбранному disposable emulator. При несовпадении тестовых сертификатов
+предварительно удаляется только его искусственная установка FFIDO.
+Явное `-e class` необходимо: автоматическое discovery старого SDK runner
+сканировало весь Flutter APK и получило ANR до запуска тестов
+(`/tmp/ffido-lifecycle-android-test.log`). Первое расширенное повторение
+остановилось при appops allow→deny: Android штатно убил test process
+(`REQUEST_INSTALL_PACKAGES changed`). Начальное deny теперь задаётся **до**
+запуска instrumentation; это условие среды, не изменённое ожидание продукта.
+
+### Android release A→B
+
+Выполнен штатный helper на том же тестовом emulator с текущими lifecycle
+исправлениями и эфемерным сертификатом:
+
+```sh
+build/update-venv/bin/python scripts/update/test_android_flow.py \
+  --flutter /Users/yurik/development/flutter-3.47.7/bin/flutter \
+  --sdk "$HOME/Library/Android/sdk" --serial emulator-5554 \
+  --directory "$PWD/build/hardening-lifecycle-android-ab-20261115" \
+  --java-home "$PWD/build/hardening-java17/jdk-17.0.21+9/Contents/Home" \
+  --process-restart
+```
+
+`build/hardening-lifecycle-android-ab-20261115/result.json`: release
+41001→41002 через системный installer, permission denial, pending confirmation,
+installer cancel, отмена после SIGKILL/restart, foreign-key/foreign-id/same-version/
+downgrade rejection, успешная замена. Preferences, secureSession и footerPreferences
+сохранены. Лог `/tmp/ffido-lifecycle-android-ab.log`. Production keys не использованы,
+Play Protect не проверялся. Физический телефон из adb inventory не затрагивался.
+
+### macOS watcher lifecycle
+
+`seenMessages` теперь пересекается с именами существующих coordination-файлов;
+удалённые файлы не остаются в Set на всё время жизни updater. Имена/содержимое
+сообщений и update protocol не менялись. Native probe
+`apps/frontend/macos/RunnerTests/ManagedUpdaterLifecycleProbe.swift` компилирует
+настоящие `ManagedUpdater.swift` и `LaunchProfile.swift` с закреплённым Sparkle
+2.10.0 из существующего SwiftPM artifact. Изолированный QA bundle имеет отдельный
+hash coordination directory; рабочие профили не изменяются.
+
+Контрольная исходная версия (только доступность счётчика для probe изменена)
+упала на `forget deleted messages`; исправленная: **20 циклов, 1000 сообщений,
+peak Set=50, retained Set=0, 20 освобождённых watcher, fd 4→4, completion=20**.
+Повторная отмена не увеличивает число completions. Build/test логи и test bundle —
+`build/hardening-native-macos-lifecycle/`. Команда компиляции:
+
+```sh
+xcrun swiftc -parse-as-library -swift-version 5 \
+  -F apps/frontend/build/macos/SourcePackages/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64 \
+  -framework Sparkle -Xlinker -rpath -Xlinker "$PWD/apps/frontend/build/macos/SourcePackages/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64" \
+  apps/frontend/macos/Runner/ManagedUpdater.swift \
+  apps/frontend/macos/Runner/LaunchProfile.swift \
+  apps/frontend/macos/RunnerTests/ManagedUpdaterLifecycleProbe.swift \
+  -o build/hardening-native-macos-lifecycle/LifecycleProbe.app/Contents/MacOS/LifecycleProbe
+```
+
+Запускается этот executable; Info.plist QA bundle задаёт отдельный ID
+`io.github.hashev.ffido.lifecycle-probe`. Probe использует main RunLoop и
+настоящий DispatchSource watcher. Это проверка lifecycle/count/fd, не heap
+profiler и не новая приёмка Sparkle A→B. Обычная
+`flutter build macos --release` успешна (`/tmp/ffido-lifecycle-macos-release.log`).
+Runtime probe выполнен на arm64; Android API 24/25 и macOS x86_64 runtime в этом
+запросе повторно не проверялись. Windows/Linux lifecycle здесь не затронут.
+Результаты сопоставлены с закрытыми Android/macOS пунктами `add-managed-updates`:
+это дополнительные hardening regressions; его отдельная открытая 6.5 про systemd
+не отмечалась и не дублировалась. Dart MCP не обнаружил запущенных приложений;
+Dart `lib/` не менялся, native изменения проверены полными платформенными сборками.
+
+### Окончательные native и общие проверки
+
+Контроль Android: на время одного запуска подставлен исходный AndroidUpdater
+из начального снимка; только сигнатура конструктора приняла тестовый executor
+(исходная permission/detach логика не менялась). Тест recreation получил
+`expected:<1> but was:<0>` — потерянный MethodChannel result.
+`/tmp/ffido-lifecycle-android-before-test.log`. В finally окончательный файл
+восстановлен, обе debug APK пересобраны и установлены; **10/10** native tests
+снова прошли, 5.207 с (`/tmp/ffido-lifecycle-android-restored-test.log`).
+Дополнительные кейсы проверяют cleanup handler старого владельца при разных
+messengers и сохранение нового handler при общем messenger, для updater и saver.
+Финальная Kotlin-сборка не имеет новых warnings;
+`/tmp/ffido-lifecycle-android-restored-build.log`.
+
+После instrumentation выполнено обычное `flutter build apk --release` с
+закреплёнными Flutter/JDK и production entrypoint, без `--no-pub`:
+`/tmp/ffido-lifecycle-android-release.log`, успешна, 58.1 MB. Это локальная
+release build с тестовой подписью, не опубликованный/production-signed выпуск.
+AAPT manifest и DEX проверены: component inventory совпадает с действующим
+`android_audit.COMPONENTS`, LifecycleTestActivity/NativeLifecycleTest,
+SDK test libraries и QA markers отсутствуют. Численный результат —
+`build/hardening-lifecycle-android-release-check.json`. Последние изменения
+cleanup messenger после A→B покрыты окончательными native tests и обычной
+release APK; PackageInstaller flow после успешного A→B не менялся.
+
+`python3 scripts/check_cpp.py --build-dir build/backend` — format/clang-tidy
+**120 файлов/61 TU**, `/tmp/ffido-lifecycle-cpp.log`.
+Штатные `build/update-venv/bin/python -m unittest discover` с
+`-s scripts/update -p 'test_*.py'` и `-s scripts/release -p 'test_*.py'`:
+**64/64** и **107/107**, `/tmp/ffido-lifecycle-python-{update,release}.log`.
+`openspec validate harden-code-quality-and-concurrency --strict` и
+`git diff --check` успешны. Итоговый diff сверён с начальным снимком:
+чужие незавершённые изменения сохранены, lock/generated/toolchain не менялись,
+локальные APK/JAM/SQLite/ключи и отчёты build не добавлены в Git.
+
+Задачи **6.4 и 7.3 завершены**, итог hardening **38/38**. Открытых задач в этом
+изменении нет. Ограничения отдельных неповторённых runtime-платформ и Play
+Protect явно перечислены выше; исторические неуспехи не удалены. Изменение
+не архивировалось, коммит, публикация и развёртывание не выполнялись.
+
+## Архивирование hardening (2026-11-15)
+
+Итоговые delta согласованы с реализованными и проверенными гарантиями:
+jam-storage, mcp-server, user-identity, uue-attachments, client-updates.
+Proposal и design отражают этот окончательный охват; 14 требований из пяти
+capabilities синхронизированы с основными specs с сохранением прежних
+Purpose, требований и сценариев. Новые гарантии не вводят миграцию/API,
+численные результаты замеров и внутренние budgets остаются в design/отчёте.
+
+До переноса `openspec status` подтвердил завершение всех артефактов,
+`openspec list --json` — **38/38**. Строгая валидация change и каждой из пяти
+основных specs прошла; `openspec validate --specs` до и после переноса —
+**27/27**. Дополнительный глобальный `--strict` выявил прежние предупреждения:
+описание «Массовая отметка прочитанности эхи» в message-access — 524 символа,
+«FTN-цитирование ответа» в message-replies — 506. Оба файла побайтово совпадают
+с HEAD и в этой работе не менялись; предупреждения не скрывались и не
+исправлялись попутно. Логи — `/tmp/ffido-archive-validation-{all,specs}.log`,
+`/tmp/ffido-archive-post-validation.log`.
+
+Изменение перенесено в
+`openspec/changes/archive/2026-11-15-harden-code-quality-and-concurrency/`.
+Все 10 файлов, включая .openspec.yaml и исходный audit, сохранены; SHA-256
+содержимого дерева до и после переноса совпадает. В активном списке остались
+только add-offline-sync-reads и add-managed-updates, их задачи не менялись.
+`git diff --check` прошёл. Код и тесты в этом проходе не менялись, сборки
+повторно не запускались; результаты приёмки приведены в предыдущем разделе.
+Коммит и публикация не выполнялись.
+
+
+## Завершение add-managed-updates: systemd/launchd и HPT
+
+Проверка 2026-11-15 закрывает 6.5. Linux: временная изолированная OrbStack VM
+`ffido-systemd-qa-20261115`, Ubuntu 24.04.5 x86_64, настоящий PID 1 systemd 255
+(255.4-1ubuntu8.18), без host mounts и SSH agent. Backend и HPT работают от
+`ffido-qa`; managed root/releases принадлежат root и недоступны службе на запись,
+состояние имеет режим 0700, заранее созданный instance lock — 0600.
+macOS arm64: отдельные временные LaunchAgents текущего пользователя.
+Чужие службы и рабочие данные не использовались.
+
+Linux runtime взят из локального образа `ffido:local-rc-1.0.25`
+(image ID `7f348c22b5a3`); macOS runtime установлен командой
+`cmake --install build/backend --prefix "$PWD/build/systemd-update-qa-input/macos-bundle"`.
+Новой компиляции C++ в этом проходе не было. A и B содержат один фактический
+runtime, но отдельные полные комплекты, тестовые версии v1.0.0/41001 и
+v1.0.1/41002 и временные Ed25519-подписи. Это проверка установленного dispatcher,
+переключения bundle и supervisor, а не испытание двух разных реализаций сервера
+или production release. Production metadata и ключи не менялись.
+HPT Linux извлечён из кешированного Docker target native-dependencies;
+ревизия `c2a91d64cee0e6cd357376d30c9285ee3f9c624f` сверена с dependency lock.
+macOS использует `build/publication-deps/prefix/bin/hpt` той же ревизии.
+
+Воспроизводимые команды (Linux выполняется внутри выделенной VM от root;
+службы запускаются от непривилегированного пользователя):
+
+```sh
+/opt/ffido-qa-python/bin/python /opt/ffido-qa-input/source/scripts/update/test_service_flow.py   --bundle /opt/ffido-qa-input/linux-bundle   --directory /var/tmp/ffido-systemd-verified-20261115   --manager systemd --service-user ffido-qa --hpt /opt/ffido-qa-input/hpt
+
+build/update-venv/bin/python scripts/update/test_service_flow.py   --bundle build/systemd-update-qa-input/macos-bundle   --directory build/managed-updates-service-macos-verified-20261115   --manager launchd --hpt build/publication-deps/prefix/bin/hpt
+```
+
+Оба прогона успешны: start A → TLS gRPC readiness → остановка HPT и backend →
+единый backup → installed update apply B → start B → readiness → stop →
+совместимый rollback A → start A → readiness → stop. Linux MainPID:
+16129 → 17509 → 17560; macOS PID: 94468 → 94493 → 94507. На Linux проверен
+фактический executable новой версии через /proc/MainPID/exe, unit прошёл
+systemd-analyze verify. HPT выполнил два успешных scan под systemd и один под
+launchd; искусственное письмо отмечено Sent, создан непустой локальный outbound
+packet. Мейлер не запускался, публикации в FTN не было. Реальный systemd timer
+остановлен раньше HPT service и backup; для launchd timer не применяется.
+
+Проверены отказ apply при работающем backend, отказ readiness с неверным TLS
+именем, SQLite integrity_check и schema 11, сохранение JAM, uploads, session key,
+внешних config/TLS/HPT config и inode locks. Backup снят при остановленных
+writers и полученном coordination lock; содержимое сверено хешами и SQLite
+проверкой. Тестовые приватные TLS/auth файлы удалены после проверки. Все созданные
+unit/timer/LaunchAgents выгружены; service-result.json записывается только после
+успешной очистки и содержит qa_services_unloaded=true. Linux доказательства
+скопированы в `build/managed-updates-systemd-verified-20261115/`, macOS — в
+`build/managed-updates-service-macos-verified-20261115/`; эти локальные данные
+не добавляются в Git. Выделенная VM удаляется после сохранения доказательств.
+
+Начальные прогоны выявили ошибки QA-оснастки: кавычки в systemd WorkingDirectory,
+непроходимый releases, неполный JAM catalog/header. Они исправлены, оба полных
+сценария повторены успешно. Оснастка теперь берёт compatibility из BUILD.json
+реального bundle вместо фиксации старой schema 9, проверяет настоящий PID 1,
+ограничивает ожидания и пытается очистить все службы даже при ошибке одной.
+Логи промежуточных и итоговых запусков: `/tmp/ffido-systemd-*-service*.log`,
+`/tmp/ffido-systemd-{linux,macos}-verified.log`.
+
+Текущие Python suites: update — **72/72**, release — **107/107**;
+логи `/tmp/ffido-systemd-python-update-final.log` и
+`/tmp/ffido-systemd-python-release.log`. py_compile и git diff --check прошли.
+Обновлены README bootstrap, права, systemd unit, foreground/launchd,
+stop→backup→apply→start→readiness и возобновление HPT только после готовности.
+Полные C++/Flutter сборки и тесты повторно не запускались: прикладной код и
+контракт в этом проходе не менялись. Других препятствий к архивированию не найдено.
+
+
+### Архивирование add-managed-updates (2026-11-15)
+
+Все артефакты завершены, CLI подтвердил **30/30** задач. Все 12 требований
+трёх delta (client-updates, release-distribution, server-updates) уже поблочно
+совпадают с основными specs; повторная запись не потребовалась. Более поздние
+требования, сценарии и Purpose основных specs сохранены. Строгая валидация
+изменения прошла; `openspec validate --specs --strict` — **27/27**, без
+предупреждений. Изменение перенесено в
+`openspec/changes/archive/2026-11-15-add-managed-updates/`; SHA-256 всех файлов,
+включая .openspec.yaml, совпадает до и после переноса (локальный manifest:
+`/tmp/ffido-systemd-archive-manifest.json`). Изолированная QA VM удалена после
+копирования результатов; созданные службы выгружены. В активном списке осталось
+только add-offline-sync-reads (0/19), оно не менялось. Чужие изменения сохранены;
+локальные bundle, JAM/SQLite, ключи и build artifacts в Git не добавлялись.
+Коммит, публикация и развёртывание не выполнялись.
+
+## Завершение add-offline-sync-reads (2026-11-15)
+
+Исходный чек-лист содержал 0/19. Сверка с текущим кодом показала отсутствие
+новых wire-полей, capability, generation в ответах, NUMBER_ASCENDING и opt-in
+raw-подполей: прежние архивные чтения и JamAccess были основой, но не реализацией
+этого изменения. Все 19 задач реализованы и проверены; открытых задач и внешних
+блокеров нет. Изменение остаётся активным для последующего согласования основных
+specs и архивации; коммит, публикация и развёртывание не выполнялись.
+
+| Задачи | Реализация и доказательство |
+|---|---|
+| 1.1–1.4 | Ровно семь новых полей и enum=3; номера/типы старых полей сохранены. Комментарии raw JAM отличают Local=0x1/Private=0x4 от FTS-0001. Login/RestoreSession объявляют capability. C++ descriptor/round-trip и Dart wire-теги/defaults/bytes/uint32; тесты неизвестных enum сохранены. |
+| 2.1–2.2 | generation копируется из того же JamAccess в Conference с известной статистикой и ListMessages/GetThread/GetArchiveThread, включая пустые страницы. Лёгкий каталог не открывает JAM. Тесты заменяют файлы с прежними count/date и сверяют новый префикс ID во всех четырёх ответах. |
+| 3.1–3.6 | Отдельная ветка обхода живых JAM-номеров, total=active_msgs, offset/limit/has_more. Строгий курсор, удалённые и крайние слоты, поздняя старая дата, пустая база, UINT32_MAX/переполнение, точные wire-статусы, отказ FindMessage/SearchArchiveMessages. Отравленный старый header доказывает отсутствие чтения на курсоре и ниже; ошибка внутри читаемого диапазона не скрывается. |
+| 4.1–4.4 | include_subfields только на первой части нескрытого ответа; все LoID/high_id/повторы/пустые значения/NUL/невалидный UTF-8 и attributes2 со старшим битом сохраняются. Service и TLS RPC проверяют блок ровно 65536 и отказ 65537, collapse/reveal, прежний false и ошибку ненулевого offset. GetMessageTechnicalData не расширен. |
+| 5.1–5.3 | Сборка, полный backend/release gate, C++ анализ, генерация, Dart format/analyze/полный suite с реальными RPC и HPT; итоговый diff проверен относительно снимка рабочего дерева до правок. |
+
+Замена физических JAM-файлов сохраняет прежнюю защиту каталога: до его штатного
+переоткрытия запрос отклоняется. Сервисный тест пересоздаёт каталог/services,
+gRPC-тест перезапускает собственный тестовый сервер с новым каталогом и прежней
+metadata. После этого generation меняется при неизменных count/date. Горячая
+подмена файлов без переоткрытия не добавлялась, определение generation не менялось.
+Первые focused-прогоны обнаружили неверное ожидание оснастки об автоматическом
+переоткрытии и опечатку имени поля synthetic JAM header; оснастка исправлена,
+итоговые проверки выполнены повторно без ослабления требований нового курсора.
+
+Снимки всех столбцов read_status/history/reading_positions/personal_filters
+(включая ревизии и предварительно заполненное состояние в gRPC fixture)
+сравниваются до/после успешных, пустых и ошибочных запросов. Raw-тесты дополнительно
+сверяют исходные JAM-файлы; персональное сворачивание и previews сохранены.
+Межзапросный snapshot не обещается. README backend описывает поля и ошибки.
+
+Текущие проверки:
+
+- `(cd tools/proto && dart pub get --enforce-lockfile)`, штатная генерация и
+  повторный `tools/proto/generate.sh --check`: успешно, protoc 36.2,
+  protoc_plugin 25.1.0, lock-файлы и версии зависимостей не менялись.
+- `./build.sh build`: успешно, существующая native Debug-конфигурация macOS.
+- `FFIDO_TEST_HPT="$PWD/build/publication-deps/prefix/bin/hpt" ctest --test-dir
+  build/backend --output-on-failure --parallel 4`: **526/526**, 81.52 с.
+- `CTEST_PARALLEL_LEVEL=4 FFIDO_TEST_HPT="$PWD/build/publication-deps/prefix/bin/hpt"
+  python3 scripts/release/check_ctest.py build/backend`: **526/526**, без skips;
+  использован подготовленный pinned prefix publication-deps вместо отсутствующего
+  release-deps. HPT c2a91d64cee0e6cd357376d30c9285ee3f9c624f сверён с revisions.json
+  и dependency lock. Скрипт проверяет JUnit, обычный успешный CTest его не заменял.
+- `python3 scripts/check_cpp.py --build-dir build/backend`: format/clang-tidy
+  **121 файл / 61 translation unit**, успешно; существующие сообщения о
+  suppressed diagnostics внешнего кода не являются новыми предупреждениями.
+- Flutter 3.47.7 / Dart 3.13.5: `flutter pub get --enforce-lockfile`,
+  `flutter analyze --no-pub` — без замечаний; `flutter test --no-pub` — **727**,
+  без пропусков. Заданы FFIDO_E2E_BACKEND и FFIDO_TEST_HPT: обе реальные API E2E
+  (private areas и point mailboxes/HPT) работают с собственным изолированным
+  native сервером. `python3 scripts/check_dart.py --check` — успешно.
+- `openspec validate add-offline-sync-reads --strict`, общий strict и
+  `git diff --check`: успешно.
+
+Логи текущей работы: `/tmp/ffido-offline-{proto-pub,build-verified,full-ctest,
+release-ctest,cpp-verified,fe-pub,fe-analyze,fe-full,dart-contract,dart-format}.log`.
+До правок сохранён снимок затрагиваемых файлов в `/tmp/ffido-offline-before/`;
+собственный diff — `/tmp/ffido-offline-own.diff`. Generated Dart получен только
+генератором; C++/descriptor регенерированы CMake. Существующие чужие правки
+сохранены, новых зависимостей, миграций, UI, кеша или sync-клиента не добавлено.
+Тестовые базы/ключи и сборочные артефакты не добавлялись в Git.
+
+Codegraph MCP сообщил об отсутствии индекса; анализ выполнен по исходникам.
+Dart MCP был вызван, но использует глобальный Dart 3.11.4 и не может разрешить
+проект с SDK ^3.13.0; проверки выполнены CLI нужного установленного SDK.
+Это ограничение MCP, не блокер реализации. Hot reload не применялся: изменения
+lib/ ограничены generated. Нативная платформенная матрица Linux/Windows/iOS/Android,
+браузерный gRPC-Web, ASan/UBSan и TSan в этом проходе не запускались; результаты
+native macOS не выдаются за их проверку.
+
+
+После окончательного review исправлено освобождение SQLite handle при ошибке
+открытия в тестовом snapshot helper; повторная сборка и focused-проверки —
+**23/23**, `/tmp/ffido-offline-{build-review,reviewed-tests}.log`.
+Итоговый format/clang-tidy прошёл (121/61). Общая строгая валидация — **28/28**
+(27 основных specs и текущее изменение). CLI подтвердил **19/19**, блокеров нет.
+
+
+## Архивирование add-offline-sync-reads (2026-11-15)
+
+Итоговые спецификации согласованы с реализацией и проверенными гарантиями:
+восемь требований синхронизированы с api-transport (3), archive-research (2)
+и conference-browsing (3). Все прежние Purpose, требования и сценарии сохранены.
+В delta и основных specs явно закреплены независимые страницы без межзапросного
+снимка и сохранение прежней защиты при физической замене JAM до переоткрытия.
+Семантика архивного поискового продолжения и GetMessageTechnicalData сохранена.
+Design отражает итог реализации; приёмка и её ограничения приведены выше.
+
+До переноса CLI подтвердил завершение артефактов и **19/19** задач.
+`openspec validate add-offline-sync-reads --strict` прошёл;
+`openspec validate --all --strict` — **28/28**, без предупреждений.
+Все delta-блоки поблочно совпадают с основными specs. Изменение перенесено в
+`openspec/changes/archive/2026-11-15-add-offline-sync-reads/`; SHA-256 всех семи
+файлов, включая .openspec.yaml, совпадает до и после переноса. Manifest:
+`/tmp/ffido-offline-archive-manifest.json`, лог валидации:
+`/tmp/ffido-offline-archive-validation.log`.
+
+В этом проходе менялись только спецификации и отчётные артефакты, прикладной код
+и тесты не менялись, сборки повторно не запускались. Результаты 526 backend и
+727 Flutter относятся к предшествующему проходу реализации. Чужие изменения
+сохранены; коммит, публикация и развёртывание не выполнялись.
+
+
+После переноса `openspec list --json` подтвердил отсутствие активных изменений;
+`openspec validate --specs --strict` — **27/27**, без предупреждений;
+`git diff --check` прошёл. Лог: `/tmp/ffido-offline-archive-post-validation.log`.
+
+## Интеграция master в незакоммиченную 1.0.27 (2026-11-15)
+
+В рабочее дерево ветки `codex/adaptive-client-layouts-1.0.23` объединён master
+`d90a2774ea296ac11894d431465feb51f7e53983`; версия сохранена как `1.0.27+1064`.
+Коммит слияния, push, тег и публикация не выполнялись. Исходное дерево с untracked
+сохранено в резервном stash и `build/master-integration-1.0.27/`.
+
+Сохранены опубликованные CI/package/native lifecycle исправления, локальные
+offline-sync и измерения ресурсов. Writer MCP использует очередь JSON из master:
+oversized ответ отклоняется до большой сериализации, reader не блокируется ею.
+Локальные тесты уточнены для этой границы и для reservation готового UUE-ответа;
+проверки quota, однократной доставки terminal outcome и освобождения ресурсов
+не отключались. Параметризованные матрицы master и три дополнительные локальные
+UUE memory fixtures сохранены. Дублирующие активные OpenSpec-копии удалены только
+после побайтового сравнения с уже существующими локальными архивами.
+
+Актуальные проверки этого объединённого дерева:
+
+- `./build.sh build`, полный `scripts/release/check_ctest.py build/backend`
+  с закреплённым HPT: **544/544**, без пропусков, 193.58 с. Финальная пересборка
+  и focused-проверки контрактов/offline-sync/UUE/MCP: **27/27**.
+- `scripts/check_cpp.py --build-dir build/backend`: format/clang-tidy,
+  **123 файла / 61 translation unit**, успешно.
+- Flutter 3.47.7 / Dart 3.13.5: lockfile pub get, analyze, полный suite
+  с реальными изолированными API E2E: **727/727**, Dart format и proto check прошли.
+- Python 3.12: release tools **107**, update tools **73** — успешно.
+- Native macOS lifecycle XCTest: **1/1**; Android API35 ARM64 instrumentation:
+  **10/10**, отдельный read-only emulator остановлен после проверки.
+- Release-сборки macOS и Android прошли; обе содержат **1.0.27 / 1064**.
+  Android использует локальную debug-подпись и не подготовлен к публикации.
+- OpenSpec strict: **27/27**, активных изменений нет; diff-check прошёл.
+
+Логи и отчёт находятся в `build/master-integration-1.0.27/`. Нативная среда —
+macOS с Xcode 27.2 и существующим dependency prefix; проверка backend baseline
+macOS 15, Linux/Windows release-матрица и публичные подписи в этом проходе
+не выполнялись. Исторические результаты выше не подменяют эти ограничения.

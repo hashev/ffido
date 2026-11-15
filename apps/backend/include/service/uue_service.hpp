@@ -2,12 +2,14 @@
 #include <atomic>
 #include <chrono>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <optional>
 
 #include "AppConfig.h"
 #include "ftn/uue_metadata.hpp"
 #include "service/message_service.hpp"
+#include "storage/measurements.hpp"
 
 namespace fidoback::service {
 struct UueReference {
@@ -44,6 +46,8 @@ struct UueSendStatus {
   std::vector<std::string> messages;
 };
 struct UueChunk {
+  std::shared_ptr<measurements::Bytes> observation;
+  std::shared_ptr<void> reservation;
   std::string bytes;
   uint64_t offset = 0, size = 0;
   bool eof = false;
@@ -69,6 +73,10 @@ public:
   std::expected<UueChunk, domain::ApiError> Chunk(std::string_view id, uint64_t offset, uint32_t max_bytes,
                                                   std::string_view user);
 
+  // Map-owned and live immutable payload bytes, including readers after eviction.
+  std::pair<uint64_t, uint64_t> CacheBytes();
+  std::pair<uint64_t, uint64_t> CacheCapacityBytes();
+  uint64_t TransientBytes();
   const UueConfig& config() const {
     return config_;
   }
@@ -81,6 +89,29 @@ public:
   std::expected<UueSendStatus, domain::ApiError> SendStatus(std::string_view operation, std::string_view user);
 
 private:
+  struct TransientBudget {
+    std::mutex mutex;
+    uint64_t bytes = 0;
+    std::map<std::string, uint64_t> users;
+  };
+  struct TransientReservation {
+    std::shared_ptr<TransientBudget> budget;
+    std::string user;
+    uint64_t bytes = 0;
+    ~TransientReservation() {
+      if (!bytes)
+        return;
+      std::lock_guard lock(budget->mutex);
+      budget->bytes -= bytes;
+      auto found = budget->users.find(user);
+      found->second -= bytes;
+      if (!found->second)
+        budget->users.erase(found);
+      measurements::Gauge(measurements::reserved_bytes, measurements::reserved_peak_bytes, budget->bytes);
+    }
+  };
+  std::expected<std::shared_ptr<void>, domain::ApiError> Reserve(uint64_t bytes, std::string_view user);
+  std::shared_ptr<TransientBudget> transient_ = std::make_shared<TransientBudget>();
   ftn::uue::Limits CodecLimits() const {
     return {static_cast<size_t>(config_.max_file_bytes), static_cast<size_t>(config_.max_file_bytes * 2 + 4096),
             config_.max_parts};
@@ -102,6 +133,7 @@ private:
                                                               const domain::MessageDetail& message);
   std::expected<std::string, domain::ApiError> Fingerprint(const domain::MessageDetail& message);
   void Prune();
+  std::pair<uint64_t, uint64_t> CacheUsage(bool capacity);
   std::shared_ptr<storage::JamCatalog> catalog_;
   std::shared_ptr<storage::IMetadataStore> metadata_;
   std::shared_ptr<const EchoAccess> access_;

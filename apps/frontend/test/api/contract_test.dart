@@ -5,6 +5,79 @@ import 'package:protobuf/well_known_types/google/protobuf/empty.pb.dart';
 import 'package:protobuf/well_known_types/google/protobuf/timestamp.pb.dart';
 
 void main() {
+  test(
+    'offline read fields preserve wire tags, defaults and arbitrary bytes',
+    () {
+      final session = SessionInfo(supportsOfflineSync: true);
+      expect(session.writeToBuffer(), [0x28, 1]);
+      expect(
+        SessionInfo.fromBuffer(session.writeToBuffer()).supportsOfflineSync,
+        isTrue,
+      );
+      expect(SessionInfo().supportsOfflineSync, isFalse);
+      final conference = Conference(generation: 'g');
+      expect(conference.writeToBuffer(), [0x8a, 1, 1, 0x67]);
+      expect(Conference.fromBuffer(conference.writeToBuffer()).generation, 'g');
+      expect(Conference().generation, isEmpty);
+      final list = ListMessagesResponse(generation: 'g');
+      expect(list.writeToBuffer(), [0x2a, 1, 0x67]);
+      expect(
+        ListMessagesResponse.fromBuffer(list.writeToBuffer()).generation,
+        'g',
+      );
+      expect(ListMessagesResponse().generation, isEmpty);
+      final request = ListMessagesRequest(afterMessageId: 'g');
+      expect(request.writeToBuffer(), [0x3a, 1, 0x67]);
+      expect(
+        ListMessagesRequest.fromBuffer(request.writeToBuffer()).afterMessageId,
+        'g',
+      );
+      expect(ListMessagesRequest().afterMessageId, isEmpty);
+      final read = ReadArchiveMessageRequest(includeSubfields: true);
+      expect(read.writeToBuffer(), [0x28, 1]);
+      expect(
+        ReadArchiveMessageRequest.fromBuffer(read.writeToBuffer())
+            .includeSubfields,
+        isTrue,
+      );
+      expect(ReadArchiveMessageRequest().includeSubfields, isFalse);
+      final response = ReadArchiveMessageResponse(
+        attributes2: 0x80000001,
+        subfields: [
+          MessageTechnicalSubfield(
+            lowId: 65000,
+            highId: 65535,
+            value: [65, 0, 255],
+          ),
+        ],
+      );
+      final bytes = response.writeToBuffer();
+      expect(bytes.first, 0x32);
+      expect(bytes.sublist(bytes.length - 6), [
+        0x38,
+        0x81,
+        0x80,
+        0x80,
+        0x80,
+        8,
+      ]);
+      final restored = ReadArchiveMessageResponse.fromBuffer(bytes);
+      expect(restored.attributes2, 0x80000001);
+      expect(restored.subfields.single.value, [65, 0, 255]);
+      expect(restored.subfields.single.highId, 65535);
+      expect(ReadArchiveMessageResponse().subfields, isEmpty);
+      expect(ReadArchiveMessageResponse().attributes2, 0);
+      final sorted = ListMessagesRequest(
+        sort: MessageSort.MESSAGE_SORT_NUMBER_ASCENDING,
+      );
+      expect(sorted.writeToBuffer(), [0x20, 3]);
+      expect(
+        ListMessagesRequest.fromBuffer(sorted.writeToBuffer()).sort,
+        MessageSort.MESSAGE_SORT_NUMBER_ASCENDING,
+      );
+    },
+  );
+
   test('footer extension distinguishes legacy absence and round-trips with session capability', () {
     expect(
       CreateMessageRequest.fromBuffer(

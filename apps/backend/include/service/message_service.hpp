@@ -38,7 +38,8 @@ public:
   }
   std::expected<domain::MessageListResponse, domain::ApiError> GetMessages(
       std::string_view conference, const domain::PaginationRequest& page, std::string_view sort, std::string_view user,
-      std::string_view query = {}, std::string_view anchor_message_id = {}, bool respect_filters = false);
+      std::string_view query = {}, std::string_view anchor_message_id = {}, bool respect_filters = false,
+      std::string_view after_message_id = {});
   std::expected<domain::MessageDetail, domain::ApiError> GetMessage(std::string_view conference,
                                                                     std::string_view message, std::string_view user);
   std::expected<domain::ArchiveSearchResponse, domain::ApiError> SearchArchive(
@@ -48,11 +49,9 @@ public:
     archive_max_hits_ = max_hits;
     archive_ttl_ = std::chrono::seconds(ttl_seconds);
   }
-  std::expected<domain::ArchiveMessage, domain::ApiError> ReadArchiveMessage(std::string_view conference,
-                                                                             std::string_view message,
-                                                                             std::string_view user,
-                                                                             uint64_t body_offset, uint32_t body_limit,
-                                                                             bool reveal = false);
+  std::expected<domain::ArchiveMessage, domain::ApiError> ReadArchiveMessage(
+      std::string_view conference, std::string_view message, std::string_view user, uint64_t body_offset,
+      uint32_t body_limit, bool reveal = false, bool include_subfields = false);
   std::expected<domain::ThreadListResponse, domain::ApiError> GetArchiveThread(
       std::string_view conference, std::string_view message, std::string_view user,
       const domain::PaginationRequest& page = {});

@@ -3,6 +3,7 @@
 #include <thread>
 
 #include "mcp.hpp"
+#include "measurements.hpp"
 #include "service/grpc_runtime.hpp"
 
 int main(int argc, char** argv) {
@@ -10,14 +11,29 @@ int main(int argc, char** argv) {
     return 2;
   const auto* ready = std::getenv("FFIDO_TEST_SERIALIZE_READY");
   const auto* release = std::getenv("FFIDO_TEST_SERIALIZE_RELEASE");
-  if (!ready || !release)
+  const auto* report = std::getenv("FFIDO_TEST_MEASUREMENTS");
+  if ((!ready || !release) && !report)
     return 2;
+  struct Report {
+    const char* path;
+    fidoback::test::RssSampler rss{};
+    ~Report() {
+      if (path) {
+        auto values = fidoback::test::MeasurementValues();
+        values["rss"] = rss.Stop();
+        std::ofstream output(path);
+        output << values.dump() << '\n';
+        fidoback::measurements::Disable();
+      }
+    }
+  } observations{report};
+  if (report)
+    fidoback::measurements::Enable();
   fidoback::service::GrpcRuntime runtime;
   const auto result = [&] {
-    // Release the channel before shutting down its gRPC runtime, as in main.cpp.
     ffido_mcp::Client client(ffido_mcp::LoadConfig(argv[1]));
     return ffido_mcp::Serve(client, [&](const ffido_mcp::Json& response) {
-      if (!response.contains("id") || response.at("id") != 3)
+      if (!ready || !release || !response.contains("id") || response.at("id") != 3)
         return;
       {
         std::ofstream output(ready);

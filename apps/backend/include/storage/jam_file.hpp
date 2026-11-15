@@ -9,6 +9,7 @@
 #include <string>
 #include <utility>
 
+#include "storage/measurements.hpp"
 #include "work_metrics.hpp"
 
 namespace msgapi {
@@ -22,6 +23,8 @@ struct JamFileIo {
       if (result > 0)
         metrics->read_bytes += static_cast<uint64_t>(result);
     }
+    if (result > 0)
+      fidoback::measurements::Add(fidoback::measurements::jam_read_bytes, static_cast<uint64_t>(result));
     return result;
   }
   virtual ssize_t Write(int fd, const void* bytes, size_t count, off_t offset) {

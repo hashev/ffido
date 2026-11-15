@@ -23,6 +23,7 @@ bool Timestamp(std::string date, google::protobuf::Timestamp* result) {
   return google::protobuf::util::TimeUtil::FromString(date, result);
 }
 void Map(const domain::Conference& source, wire::Conference* result) {
+  result->set_generation(source.generation);
   result->set_id(source.id);
   result->set_can_read(source.can_read);
   result->set_can_post(source.can_post);
@@ -265,19 +266,23 @@ grpc::Status GrpcService::ListMessages(grpc::ServerContext* context, const wire:
       case wire::MESSAGE_SORT_DATE_ASCENDING:
         sort = "oldest";
         break;
+      case wire::MESSAGE_SORT_NUMBER_ASCENDING:
+        sort = "number";
+        break;
       case wire::MESSAGE_SORT_DATE_DESCENDING:
         sort = "newest";
         break;
       default:
         return std::unexpected(domain::ApiError::Validation({domain::ErrorDetail{"sort", "Unknown message sort"}}));
     }
-    auto result =
-        messages_.GetMessages(request->conference_id(), Page(request->page()), sort, user.id, request->query(),
-                              request->anchor_message_id(), request->respect_personal_filters());
+    auto result = messages_.GetMessages(request->conference_id(), Page(request->page()), sort, user.id,
+                                        request->query(), request->anchor_message_id(),
+                                        request->respect_personal_filters(), request->after_message_id());
     if (!result)
       return std::unexpected(result.error());
     for (const auto& message : result->messages)
       Map(message, request->conference_id(), response->add_messages());
+    response->set_generation(result->generation);
     response->set_total(result->total);
     response->set_has_more(result->has_more);
     response->set_actual_offset(result->actual_offset);
@@ -444,9 +449,9 @@ grpc::Status GrpcService::ReadArchiveMessage(grpc::ServerContext* context,
                                              const wire::ReadArchiveMessageRequest* request,
                                              wire::ReadArchiveMessageResponse* response) {
   return Dispatch(context, response, [&](const auto& user) -> Result {
-    auto result =
-        messages_.ReadArchiveMessage(request->message().conference_id(), request->message().message_id(), user.id,
-                                     request->body_offset(), request->body_limit(), request->reveal());
+    auto result = messages_.ReadArchiveMessage(request->message().conference_id(), request->message().message_id(),
+                                               user.id, request->body_offset(), request->body_limit(),
+                                               request->reveal(), request->include_subfields());
     if (!result)
       return std::unexpected(result.error());
     Map(result->message, request->message().conference_id(), response->mutable_message());
@@ -454,6 +459,13 @@ grpc::Status GrpcService::ReadArchiveMessage(grpc::ServerContext* context,
     response->set_next_offset(result->next_offset);
     response->set_complete(result->complete);
     response->set_collapsed(result->collapsed);
+    response->set_attributes2(result->attributes2);
+    for (const auto& field : result->subfields) {
+      auto* mapped = response->add_subfields();
+      mapped->set_low_id(field.low_id);
+      mapped->set_high_id(field.high_id);
+      mapped->set_value(field.value);
+    }
     return {};
   });
 }
@@ -469,6 +481,7 @@ grpc::Status GrpcService::GetArchiveThread(grpc::ServerContext* context, const w
       return std::unexpected(result.error());
     for (const auto& message : result->messages)
       Map(message, request->message().conference_id(), response->add_messages());
+    response->set_generation(result->generation);
     response->set_total(result->total);
     response->set_has_more(result->has_more);
     return {};
@@ -609,6 +622,7 @@ grpc::Status GrpcService::GetThread(grpc::ServerContext* context, const wire::Ge
       return std::unexpected(result.error());
     for (const auto& message : result->messages)
       Map(message, request->conference_id(), response->add_messages());
+    response->set_generation(result->generation);
     response->set_total(result->total);
     response->set_has_more(result->has_more);
     return {};
@@ -768,6 +782,7 @@ grpc::Status GrpcService::Login(grpc::ServerContext* context, const wire::LoginR
     auto* session = response->mutable_session();
     session->set_supports_message_footer(true);
     session->set_supports_lightweight_conference_catalog(true);
+    session->set_supports_offline_sync(true);
     auto* profile = session->mutable_profile();
     profile->set_user_id(login->user.id);
     profile->set_name(login->user.profile.name);
@@ -793,6 +808,7 @@ grpc::Status GrpcService::RestoreSession(grpc::ServerContext* context, const goo
     response->mutable_expires_at()->set_seconds(user.expires_at);
     response->set_supports_message_footer(true);
     response->set_supports_lightweight_conference_catalog(true);
+    response->set_supports_offline_sync(true);
     return {};
   });
 }

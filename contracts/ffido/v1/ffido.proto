@@ -62,6 +62,7 @@ enum MessageSort {
   MESSAGE_SORT_UNSPECIFIED = 0;
   MESSAGE_SORT_DATE_ASCENDING = 1;
   MESSAGE_SORT_DATE_DESCENDING = 2;
+  MESSAGE_SORT_NUMBER_ASCENDING = 3;
 }
 
 message ListConferencesRequest {
@@ -107,6 +108,7 @@ message Conference {
   bool personal_mailbox = 14;
   string last_opened_message_id = 15;
   uint64 position_revision = 16;
+  string generation = 17;
 }
 
 message ListConferencesResponse {
@@ -122,6 +124,7 @@ message ListMessagesRequest {
   MessageSort sort = 4;
   string anchor_message_id = 5;
   bool respect_personal_filters = 6;
+  string after_message_id = 7;
 }
 
 // message_id — непрозрачный локальный ID с generation, а не FTN MsgID.
@@ -152,6 +155,7 @@ message Message {
   string thread_id = 12;
   string in_reply_to = 13;
   string ftn_message_id = 14;
+  // Raw JAM mask: Local=0x1, Private=0x4, ...; not the FTS-0001 attribute word.
   uint32 attributes = 15;
   MailDirection direction = 16;
   uint64 position_revision = 17;
@@ -163,6 +167,7 @@ message ListMessagesResponse {
   int64 total = 2;
   bool has_more = 3;
   optional int64 actual_offset = 4;
+  string generation = 5;
 }
 
 message MessageFooter {
@@ -266,6 +271,7 @@ message LoginRequest {
   string password = 3;
 }
 message SessionInfo {
+  bool supports_offline_sync = 5;
   bool supports_lightweight_conference_catalog = 4;
   bool supports_message_footer = 3;
   Profile profile = 1;
@@ -445,6 +451,7 @@ enum TechnicalEncodingStatus {
 }
 message MessageTechnicalData {
   MessageReference message = 1;
+  // Raw JAM mask: Local=0x1, Private=0x4, ...; not the FTS-0001 attribute word.
   uint32 attributes = 2;
   uint32 attributes2 = 3;
   repeated MessageTechnicalSubfield subfields = 4;
@@ -535,6 +542,7 @@ message ReadArchiveMessageRequest {
   // 1–65536 UTF-8 bytes; граница блока не разрывает символ.
   uint32 body_limit = 3;
   bool reveal = 4;
+  bool include_subfields = 5;
 }
 message ReadArchiveMessageResponse {
   // body содержит только запрошенный блок, остальные поля — заголовки.
@@ -543,6 +551,8 @@ message ReadArchiveMessageResponse {
   uint64 next_offset = 3;
   bool complete = 4;
   bool collapsed = 5;
+  repeated MessageTechnicalSubfield subfields = 6;
+  uint32 attributes2 = 7;
 }
 message GetArchiveThreadRequest {
   MessageReference message = 1;

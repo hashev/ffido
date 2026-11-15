@@ -17,6 +17,7 @@ android {
     defaultConfig {
         // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
         applicationId = "io.github.hashev.ffido"
+        testInstrumentationRunner = "android.test.InstrumentationTestRunner"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = flutter.minSdkVersion
@@ -58,5 +59,15 @@ flutter {
 kotlin {
     compilerOptions {
         jvmTarget = org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17
+    }
+}
+
+// Native lifecycle tests use the SDK's runner; no additional test runtime is packaged.
+val lifecycleSdk = androidComponents.sdkComponents.sdkDirectory
+dependencies {
+    for (library in listOf("android.test.base", "android.test.runner")) {
+        androidTestCompileOnly(files(lifecycleSdk.map {
+            it.file("platforms/android-${android.compileSdk}/optional/$library.jar")
+        }))
     }
 }

@@ -9,8 +9,11 @@
 
 #include "../support/echo_access.hpp"
 #include "../support/jam_wire_record.hpp"
+#include "../support/measurements.hpp"
+#include "../support/offline_reads.hpp"
 #include "../support/resource_usage.hpp"
 #include "../support/sqlite_timing.hpp"
+#include "../support/synthetic_uue.hpp"
 #include "../support/temp_directory.hpp"
 #include "../support/tls_certificate.hpp"
 #include "ftn/uue.hpp"
@@ -276,6 +279,25 @@ TEST_F(ServicesTest, EmptyFilterAndPaginationTotals) {
   ASSERT_FALSE(missing);
   EXPECT_EQ(missing.error().code, domain::ErrorCode::kForbidden);
 }
+TEST_F(ServicesTest, DisplayTextNormalizesCrLfAcrossBlockBoundaries) {
+  for (const auto& body :
+       {std::string(4095, 'a') + "\r\nb\rc\n", std::string(4096, 'b') + "\r\n", std::string("\r\r\n")}) {
+    auto request = Request("boundary-" + std::to_string(body.size()));
+    request.body = body;
+    auto created = messages->CreateMessage("echo.one", request, "A");
+    ASSERT_TRUE(created);
+    auto read = messages->GetMessage("echo.one", created->id, "A");
+    ASSERT_TRUE(read);
+    std::string expected;
+    for (size_t i = 0; i < body.size(); ++i) {
+      expected += body[i] == '\r' ? '\n' : body[i];
+      if (body[i] == '\r' && i + 1 < body.size() && body[i + 1] == '\n')
+        ++i;
+    }
+    EXPECT_EQ(read->body.substr(0, expected.size()), expected);
+  }
+}
+
 TEST_F(ServicesTest, ReadHistoryCountersAndBookmarksArePersonal) {
   auto created = messages->CreateMessage("echo.one", Request(), "A");
   ASSERT_TRUE(created);
@@ -1233,9 +1255,14 @@ TEST_F(ServicesTest, UueExpiredPayloadHeldByReaderStillCountsAgainstQuota) {
   // The reader owns the old payload and waits on echo.one; echo.two is independent.
   auto rejected = uue.Assemble({b->parts[0].source}, false, "A");
   lease->reset();
-  auto read = reader.get();
-  ASSERT_TRUE(read);
-  EXPECT_EQ(read->bytes, "first");
+  {
+    auto read = reader.get();
+    ASSERT_TRUE(read);
+    EXPECT_EQ(read->bytes, "first");
+    // The cache snapshot is gone, but the response retains its in-flight reservation.
+    EXPECT_EQ(uue.TransientBytes(), 5u);
+  }
+  EXPECT_EQ(uue.TransientBytes(), 0u);
   ASSERT_FALSE(rejected);
   EXPECT_EQ(rejected.error().code, domain::ErrorCode::kResource);
   auto admitted = uue.Assemble({b->parts[0].source}, false, "A");
@@ -3034,4 +3061,584 @@ TEST_F(ServicesTest, LightweightCatalogGroupsAllAreaKindsBeforeAlphabeticalEchoe
   ASSERT_EQ(response->conferences.size(), 6);
   for (size_t i = 0; i < 6; ++i)
     EXPECT_EQ(response->conferences[i].kind, static_cast<AreaKind>((i + 1) % 6));
+}
+
+TEST_F(ServicesTest, OfflineNumberPagesValidateCursorsAndNeverReadOldHeaders) {
+  std::string generation;
+  {
+    auto lease = storage::JamAccess::Open(*catalog, "echo.one", true, service::RequestDeadline());
+    ASSERT_TRUE(lease);
+    generation = (*lease)->generation();
+    for (uint32_t date : {300u, 200u, 100u, 1u}) {
+      msgapi::JamMessage message;
+      message.SetText("preview");
+      message.SetDates(date, date, date);
+      ASSERT_EQ((*lease)->messages().AddMessage(message), msgapi::JamError::kSuccess);
+    }
+    ASSERT_EQ((*lease)->messages().DeleteMessage(43), msgapi::JamError::kSuccess);
+  }
+  const auto state = test::ReadingSnapshot(temp.path() / "metadata.db");
+  const auto list = [&](int64_t offset, int limit, std::string_view after = {}, std::string_view sort = "number",
+                        std::string_view query = {}, std::string_view anchor = {}) {
+    auto result = messages->GetMessages("echo.one", {offset, limit}, sort, "A", query, anchor, true, after);
+    EXPECT_EQ(test::ReadingSnapshot(temp.path() / "metadata.db"), state);
+    return result;
+  };
+  auto first = list(0, 1);
+  ASSERT_TRUE(first);
+  EXPECT_EQ(first->generation, generation);
+  EXPECT_EQ(first->total, 3);
+  ASSERT_EQ(first->messages.size(), 1);
+  EXPECT_EQ(first->messages[0].id, generation + "#42");
+  EXPECT_EQ(first->messages[0].body_preview, "preview");
+  EXPECT_TRUE(first->has_more);
+  auto offset = list(1, 2);
+  ASSERT_TRUE(offset);
+  ASSERT_EQ(offset->messages.size(), 2);
+  EXPECT_EQ(offset->messages[0].id, generation + "#44");
+  EXPECT_EQ(offset->messages[1].id, generation + "#45");
+  EXPECT_EQ(offset->actual_offset, 1);
+  EXPECT_FALSE(offset->has_more);
+  for (const auto& cursor : {generation + "#42", generation + "#43"}) {
+    auto next = list(0, 1, cursor);
+    ASSERT_TRUE(next);
+    EXPECT_EQ(next->messages[0].id, generation + "#44");
+    EXPECT_EQ(next->actual_offset, 0);
+    EXPECT_TRUE(next->has_more);
+  }
+  auto late = list(0, 2, generation + "#44");
+  ASSERT_TRUE(late);
+  ASSERT_EQ(late->messages.size(), 1);
+  EXPECT_EQ(late->messages[0].id, generation + "#45");
+  auto last = list(0, 2, generation + "#45");
+  ASSERT_TRUE(last);
+  EXPECT_TRUE(last->messages.empty());
+  EXPECT_FALSE(last->has_more);
+  EXPECT_EQ(last->total, 3);
+  auto empty = list(99, 2);
+  ASSERT_TRUE(empty);
+  EXPECT_TRUE(empty->messages.empty());
+  EXPECT_EQ(empty->generation, generation);
+  for (const auto& cursor : {"bad", "#42", "g#", "g#1#2", "g#-1", "g#+1", "g#x", "g#4294967296"}) {
+    auto error = list(0, 2, cursor);
+    ASSERT_FALSE(error);
+    EXPECT_EQ(error.error().code, domain::ErrorCode::kValidation);
+  }
+  for (const auto& cursor : std::vector<std::string>{"old#42", generation + "#41", generation + "#46"}) {
+    auto error = list(0, 2, cursor);
+    ASSERT_FALSE(error);
+    EXPECT_EQ(error.error().code, domain::ErrorCode::kPrecondition);
+  }
+  for (auto error : {list(1, 2, generation + "#42"), list(0, 2, generation + "#42", "oldest"),
+                     list(0, 2, {}, "number", "query"), list(0, 2, {}, "number", {}, generation + "#42")}) {
+    ASSERT_FALSE(error);
+    EXPECT_EQ(error.error().code, domain::ErrorCode::kValidation);
+  }
+  auto blank = messages->GetMessages("echo.two", {0, 2}, "number", "A");
+  ASSERT_TRUE(blank);
+  EXPECT_FALSE(blank->generation.empty());
+  auto invalid = messages->GetMessages("echo.two", {0, 2}, "number", "A", {}, {}, false, blank->generation + "#42");
+  ASSERT_FALSE(invalid);
+  EXPECT_EQ(invalid.error().code, domain::ErrorCode::kPrecondition);
+  // Poison a live old header. Even total/cursor validation must avoid reading it.
+  {
+    std::fstream out(temp.path() / "different-file.jhr", std::ios::in | std::ios::out | std::ios::binary);
+    out.seekp(1024);
+    out.write("BAD!", 4);
+  }
+  auto continued = list(0, 2, generation + "#43");
+  ASSERT_TRUE(continued);
+  EXPECT_EQ(continued->messages.size(), 2);
+  EXPECT_EQ(continued->total, 3);
+  EXPECT_FALSE(list(0, 2));  // corruption in the requested range is not hidden
+}
+
+TEST_F(ServicesTest, OfflineGenerationMatchesIdsAndChangesWithSameStatistics) {
+  auto created = messages->CreateMessage("echo.one", Request(), "A");
+  ASSERT_TRUE(created);
+  const auto generation = created->id.substr(0, created->id.find('#'));
+  const auto check = [&](const std::string& expected) {
+    auto conference = conferences->GetConference("echo.one", "A");
+    ASSERT_TRUE(conference);
+    EXPECT_EQ(conference->generation, expected);
+    auto list = messages->GetMessages("echo.one", {0, 5}, "oldest", "A");
+    ASSERT_TRUE(list);
+    EXPECT_EQ(list->generation, expected);
+    EXPECT_EQ(list->messages[0].id, expected + "#42");
+    auto thread = messages->GetThread("echo.one", expected + "#42", "A", {100, 5});
+    ASSERT_TRUE(thread);
+    EXPECT_EQ(thread->generation, expected);
+    EXPECT_TRUE(thread->messages.empty());
+    auto archive = messages->GetArchiveThread("echo.one", expected + "#42", "A", {100, 5});
+    ASSERT_TRUE(archive);
+    EXPECT_EQ(archive->generation, expected);
+    EXPECT_TRUE(archive->messages.empty());
+  };
+  check(generation);
+  auto before = conferences->GetConference("echo.one", "A");
+  ASSERT_TRUE(before);
+  // Copy-and-rename all files: same messages/count/date, different filesystem generation.
+  for (const auto* extension : {".jhr", ".jdx", ".jdt"}) {
+    const auto path = (temp.path() / "different-file").string() + extension;
+    std::filesystem::copy_file(path, path + ".replacement");
+    std::filesystem::rename(path + ".replacement", path);
+  }
+  // Catalog identities deliberately reject replaced files until catalog reload.
+  EXPECT_FALSE(conferences->GetConference("echo.one", "A"));
+  auto unknown = conferences->GetConferences({0, 10}, {}, "A");
+  ASSERT_TRUE(unknown);
+  for (const auto& conference : unknown->conferences)
+    if (!conference.statistics_known)
+      EXPECT_TRUE(conference.generation.empty());
+  std::vector<EchoAreaConfig> areas;
+  for (const auto& [name, area] : catalog->areas()) {
+    (void)name;
+    areas.push_back(area.config);
+  }
+  auto rebuilt = storage::JamCatalog::Build(temp.path(), areas);
+  ASSERT_TRUE(rebuilt);
+  catalog = std::shared_ptr<storage::JamCatalog>(std::move(*rebuilt));
+  messages = std::make_unique<service::MessageService>(catalog, metadata, test::EchoAccess(*catalog, temp.path()));
+  conferences =
+      std::make_unique<service::ConferenceService>(catalog, metadata, test::EchoAccess(*catalog, temp.path()));
+  auto after = conferences->GetConference("echo.one", "A");
+  ASSERT_TRUE(after);
+  EXPECT_EQ(after->total_count, before->total_count);
+  EXPECT_EQ(after->last_message_date, before->last_message_date);
+  EXPECT_NE(after->generation, generation);
+  check(after->generation);
+  measurements::Enable();
+  auto light = conferences->GetConferences({0, 10}, {}, "A", "catalog", true);
+  const auto opens = measurements::counters[measurements::jam_opens].load();
+  measurements::Disable();
+  ASSERT_TRUE(light);
+  EXPECT_EQ(opens, 0u);
+  for (const auto& conference : light->conferences) {
+    EXPECT_FALSE(conference.statistics_known);
+    EXPECT_TRUE(conference.generation.empty());
+  }
+}
+
+TEST_F(ServicesTest, OfflineArchiveRawFieldsAreOptInAndRespectCollapseWithoutWrites) {
+  std::string id;
+  {
+    auto lease = storage::JamAccess::Open(*catalog, "echo.one", true, service::RequestDeadline());
+    ASSERT_TRUE(lease);
+    ASSERT_EQ((*lease)->messages().AddMessage(test::OfflineRawMessage()), msgapi::JamError::kSuccess);
+    id = (*lease)->generation() + "#42";
+  }
+  domain::PersonalMessageFilter filter;
+  filter.id = "00000000-0000-0000-0000-000000000001";
+  filter.subject = "hidden";
+  ASSERT_TRUE(messages->ReplacePersonalFilters("A", 0, "offline-filter", {filter}));
+  const auto state = test::ReadingSnapshot(temp.path() / "metadata.db");
+  auto visible_list = messages->GetMessages("echo.one", {0, 10}, "number", "A");
+  ASSERT_TRUE(visible_list);
+  EXPECT_FALSE(visible_list->messages[0].body_preview.empty());
+  auto hidden_list = messages->GetMessages("echo.one", {0, 10}, "number", "A", {}, {}, true);
+  ASSERT_TRUE(hidden_list);
+  ASSERT_EQ(hidden_list->messages.size(), 1);
+  EXPECT_TRUE(hidden_list->messages[0].body_preview.empty());
+  ASSERT_TRUE(hidden_list->messages[0].personal_collapse);
+  EXPECT_FALSE(hidden_list->messages[0].personal_collapse->rules.empty());
+  auto technical = messages->GetMessageTechnicalData("echo.one", id, "A");
+  ASSERT_TRUE(technical);
+  auto old = messages->ReadArchiveMessage("echo.one", id, "A", 0, 65536, true);
+  ASSERT_TRUE(old);
+  EXPECT_TRUE(old->subfields.empty());
+  EXPECT_EQ(old->attributes2, 0u);
+  auto hidden = messages->ReadArchiveMessage("echo.one", id, "A", 0, 65536, false, true);
+  ASSERT_TRUE(hidden);
+  EXPECT_TRUE(hidden->collapsed);
+  EXPECT_TRUE(hidden->subfields.empty());
+  EXPECT_EQ(hidden->attributes2, 0u);
+  auto raw = messages->ReadArchiveMessage("echo.one", id, "A", 0, 65536, true, true);
+  ASSERT_TRUE(raw);
+  EXPECT_EQ(raw->attributes2, technical->attributes2);
+  EXPECT_EQ(raw->attributes2, 0x80000001u);
+  auto lease = storage::JamAccess::Open(*catalog, "echo.one", false, service::RequestDeadline());
+  ASSERT_TRUE(lease);
+  auto stored = (*lease)->messages().ReadRawMetadata(42);
+  ASSERT_TRUE(stored);
+  ASSERT_EQ(raw->subfields.size(), stored->subfields().size());
+  for (size_t i = 0; i < raw->subfields.size(); ++i) {
+    EXPECT_EQ(raw->subfields[i].low_id, static_cast<uint32_t>(stored->subfields()[i].type()));
+    EXPECT_EQ(raw->subfields[i].high_id, stored->subfields()[i].high_id());
+    EXPECT_EQ(raw->subfields[i].value, stored->subfields()[i].ToString());
+  }
+  lease->reset();
+  auto error = messages->ReadArchiveMessage("echo.one", id, "A", 1, 65536, true, true);
+  ASSERT_FALSE(error);
+  EXPECT_EQ(error.error().code, domain::ErrorCode::kValidation);
+  auto continuation = messages->ReadArchiveMessage("echo.one", id, "A", 1, 65536, true, false);
+  ASSERT_TRUE(continuation);
+  EXPECT_TRUE(continuation->subfields.empty());
+  EXPECT_EQ(continuation->attributes2, 0u);
+  EXPECT_EQ(test::ReadingSnapshot(temp.path() / "metadata.db"), state);
+}
+
+TEST_F(ServicesTest, OfflineArchiveSubfieldsAcceptExactly64KiBAndRejectOverflow) {
+  std::string id;
+  {
+    auto lease = storage::JamAccess::Open(*catalog, "echo.one", true, service::RequestDeadline());
+    ASSERT_TRUE(lease);
+    ASSERT_EQ((*lease)->messages().AddMessage(test::OfflineRawMessage()), msgapi::JamError::kSuccess);
+    id = (*lease)->generation() + "#42";
+  }
+  const auto path = temp.path() / "different-file.jhr";
+  auto bytes = test::ReadFile(path);
+  const auto index = test::ReadFile(temp.path() / "different-file.jdx");
+  const auto header = test::Wire32(index, 4), length = test::Wire32(bytes, header + 8);
+  const uint32_t padding = 65536 - length - 8;
+  std::array<uint8_t, 8> field{};
+  msgapi::jam_wire::Put16(field.data(), 60001);
+  msgapi::jam_wire::Put32(field.data() + 4, padding);
+  bytes.append(reinterpret_cast<const char*>(field.data()), field.size());
+  bytes.append(padding, 'z');
+  msgapi::jam_wire::Put32(reinterpret_cast<uint8_t*>(bytes.data()) + header + 8, 65536);
+  const auto save = [&] {
+    std::ofstream out(path, std::ios::binary);
+    out.write(bytes.data(), bytes.size());
+  };
+  const auto state = test::ReadingSnapshot(temp.path() / "metadata.db");
+  save();
+  auto result = messages->ReadArchiveMessage("echo.one", id, "A", 0, 65536, false, true);
+  ASSERT_TRUE(result);
+  EXPECT_EQ(result->subfields.back().value, std::string(padding, 'z'));
+  EXPECT_EQ(test::ReadingSnapshot(temp.path() / "metadata.db"), state);
+  msgapi::jam_wire::Put32(reinterpret_cast<uint8_t*>(bytes.data()) + header + 8, 65537);
+  bytes.push_back('z');
+  save();
+  EXPECT_FALSE(messages->ReadArchiveMessage("echo.one", id, "A", 0, 65536, false, true));
+  EXPECT_EQ(test::ReadingSnapshot(temp.path() / "metadata.db"), state);
+}
+
+TEST_F(ServicesTest, UueAssemblyMemoryFixture) {
+  const size_t size = static_cast<size_t>(test::BenchmarkOption("FFIDO_BENCH_FILE_BYTES", 1024 * 1024));
+  const int parallel = test::BenchmarkOption("FFIDO_BENCH_PARALLEL", 1);
+  ASSERT_TRUE(size == 1024 * 1024 || size == 16 * 1024 * 1024);
+  ASSERT_TRUE(parallel == 1 || parallel == 4 || parallel == 16);
+  const std::string bytes(size, 'a');
+  const auto expected_hash = UueHash(bytes);
+  const auto groups = test::SyntheticUue(temp.path() / "different-file", *catalog, "echo.one", bytes, false, 3);
+  const auto other = test::SyntheticUue(temp.path() / "second", *catalog, "echo.two", bytes, false);
+  UueConfig config;
+  config.max_file_bytes = size;
+  config.part_body_bytes = 256 * 1024;
+  config.max_parts = 1024;
+  config.user_quota_bytes = 3 * size;
+  config.global_quota_bytes = 3 * size;
+  std::atomic<int> seconds = 0;
+  const auto origin = std::chrono::steady_clock::now();
+  service::UueService uue(
+      catalog, metadata, test::EchoAccess(*catalog, temp.path()), "cp866",
+      [&] { return origin + std::chrono::seconds(seconds.load()); }, config);
+  test::RssSampler rss;
+  measurements::Enable();
+  std::vector<std::future<std::expected<service::UueAttachment, domain::ApiError>>> assembling;
+  for (int q = 0; q < parallel; ++q)
+    assembling.push_back(std::async(std::launch::async, [&] { return uue.Assemble(groups[0], false, "A"); }));
+  int admitted = 0, pressure_rejections = 0;
+  for (auto& call : assembling) {
+    const auto result = call.get();
+    if (result) {
+      ++admitted;
+      EXPECT_EQ(result->sha256, expected_hash);
+    } else {
+      ++pressure_rejections;
+      EXPECT_EQ(result.error().code, domain::ErrorCode::kResource);
+    }
+  }
+  EXPECT_GT(admitted, 0);
+  EXPECT_EQ(uue.TransientBytes(), 0u);
+  std::vector<service::UueAttachment> cached;
+  for (const auto& sources : groups) {
+    auto result = uue.Assemble(sources, false, "A");
+    ASSERT_TRUE(result);
+    cached.push_back(std::move(*result));
+  }
+  EXPECT_EQ(uue.CacheBytes(), (std::pair<uint64_t, uint64_t>{3 * size, 3 * size}));
+  auto lease = storage::JamAccess::Open(*catalog, "echo.one", false, service::RequestDeadline());
+  ASSERT_TRUE(lease);
+  const auto snapshots = measurements::counters[measurements::cache_snapshots].load();
+  std::vector<std::future<std::expected<service::UueChunk, domain::ApiError>>> readers;
+  for (const auto& file : cached)
+    readers.push_back(std::async(std::launch::async, [&, id = file.id] {
+      service::RequestBudget budget{std::chrono::steady_clock::now() + std::chrono::seconds(30), {}};
+      service::RequestScope scope(budget);
+      return uue.Chunk(id, 0, 65536, "A");
+    }));
+  const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (measurements::counters[measurements::cache_snapshots].load() < snapshots + 3 &&
+         std::chrono::steady_clock::now() < until)
+    std::this_thread::yield();
+  const bool all_held = measurements::counters[measurements::cache_snapshots].load() >= snapshots + 3;
+  seconds = 600;
+  EXPECT_FALSE(uue.Chunk("expired", 0, 1, "A"));
+  auto rejected = uue.Assemble(other[0], false, "A");
+  const auto held_usage = uue.CacheBytes();
+  const auto held_capacity = uue.CacheCapacityBytes();
+  // Always unblock the readers before assertions can unwind their futures.
+  lease->reset();
+  ASSERT_TRUE(all_held);
+  ASSERT_FALSE(rejected);
+  EXPECT_EQ(rejected.error().code, domain::ErrorCode::kResource);
+  EXPECT_EQ(held_usage, (std::pair<uint64_t, uint64_t>{0, 3 * size}));
+  std::vector<service::UueChunk> replies;
+  for (auto& call : readers) {
+    auto result = call.get();
+    ASSERT_TRUE(result);
+    EXPECT_EQ(result->bytes, bytes.substr(0, 65536));
+    replies.push_back(std::move(*result));
+  }
+  EXPECT_EQ(uue.CacheBytes(), (std::pair<uint64_t, uint64_t>{0, 0}));
+  EXPECT_GE(measurements::counters[measurements::chunk_bytes].load(), 3u * 65536);
+  replies.clear();
+  EXPECT_EQ(measurements::counters[measurements::chunk_bytes].load(), 0u);
+  auto retry = uue.Assemble(other[0], false, "A");
+  ASSERT_TRUE(retry);
+  for (int group = 0; group < 2; ++group)
+    ASSERT_TRUE(uue.Assemble(groups[group], false, "A"));
+  const auto before_rejections = test::ResidentBytes();
+  for (int repeat = 0; repeat < 20; ++repeat) {
+    auto full = uue.Assemble(groups[2], false, "A");
+    ASSERT_FALSE(full);
+    EXPECT_EQ(full.error().code, domain::ErrorCode::kResource);
+    EXPECT_EQ(measurements::counters[measurements::assembly_bytes].load(), 0u);
+  }
+  const auto after_rejections = test::ResidentBytes();
+  auto owner = storage::JamAccess::Open(*catalog, "echo.two", false, service::RequestDeadline());
+  ASSERT_TRUE(owner);
+  std::stop_source cancellation;
+  std::promise<void> entered;
+  auto cancelled = std::async(std::launch::async, [&] {
+    service::RequestBudget budget{std::chrono::steady_clock::now() + std::chrono::seconds(5), cancellation.get_token()};
+    service::RequestScope scope(budget);
+    entered.set_value();
+    return uue.Assemble(other[0], false, "A");
+  });
+  entered.get_future().wait();
+  const auto reserved_until = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+  while (uue.TransientBytes() == 0 && std::chrono::steady_clock::now() < reserved_until)
+    std::this_thread::yield();
+  const auto reserved = uue.TransientBytes();
+  auto same_user = uue.Assemble(other[0], false, "A");
+  auto other_user = uue.Assemble(other[0], false, "B");
+  cancellation.request_stop();
+  const bool released = cancelled.wait_for(std::chrono::seconds(1)) == std::future_status::ready;
+  owner->reset();
+  auto cancelled_result = cancelled.get();
+  EXPECT_TRUE(released);
+  EXPECT_EQ(reserved, 3 * size);
+  ASSERT_FALSE(same_user);
+  ASSERT_FALSE(other_user);
+  EXPECT_EQ(same_user.error().code, domain::ErrorCode::kResource);
+  EXPECT_EQ(other_user.error().code, domain::ErrorCode::kResource);
+  EXPECT_EQ(uue.TransientBytes(), 0u);
+  ASSERT_FALSE(cancelled_result);
+  EXPECT_EQ(cancelled_result.error().code, domain::ErrorCode::kCancelled);
+  EXPECT_EQ(measurements::counters[measurements::assembly_bytes].load(), 0u);
+  seconds = 1200;
+  EXPECT_FALSE(uue.Chunk("expired", 0, 1, "A"));
+  EXPECT_EQ(uue.CacheBytes(), (std::pair<uint64_t, uint64_t>{0, 0}));
+  auto final_retry = uue.Assemble(other[0], false, "A");
+  ASSERT_TRUE(final_retry);
+  {
+    const auto eof = uue.Chunk(final_retry->id, size, 65536, "A");
+    ASSERT_TRUE(eof);
+    EXPECT_TRUE(eof->eof);
+    EXPECT_TRUE(eof->bytes.empty());
+  }
+  EXPECT_EQ(uue.TransientBytes(), 0u);
+  EXPECT_FALSE(uue.Chunk(final_retry->id, 0, 65536, "B"));
+  EXPECT_EQ(uue.TransientBytes(), 0u);
+  if (size == 1024 * 1024) {
+    std::vector<service::UueChunk> held_chunks;
+    for (int i = 0; i < 48; ++i) {
+      auto result = uue.Chunk(final_retry->id, 0, 65536, "A");
+      ASSERT_TRUE(result);
+      held_chunks.push_back(std::move(*result));
+    }
+    EXPECT_EQ(uue.TransientBytes(), config.user_quota_bytes);
+    auto pressure = uue.Chunk(final_retry->id, 0, 65536, "A");
+    ASSERT_FALSE(pressure);
+    EXPECT_EQ(pressure.error().code, domain::ErrorCode::kResource);
+    held_chunks.clear();
+    EXPECT_EQ(uue.TransientBytes(), 0u);
+    EXPECT_TRUE(uue.Chunk(final_retry->id, 0, 65536, "A"));
+  }
+  seconds = 1800;
+  EXPECT_FALSE(uue.Chunk("expired", 0, 1, "A"));
+  EXPECT_EQ(uue.CacheBytes(), (std::pair<uint64_t, uint64_t>{0, 0}));
+  auto report = test::MeasurementValues();
+  measurements::Disable();
+  report["file_bytes"] = size;
+  report["parallel_assembly"] = parallel;
+  report["admitted_assembly"] = admitted;
+  report["pressure_rejections"] = pressure_rejections;
+  report["quota_bytes"] = config.global_quota_bytes;
+  report["held_payload_bytes_after_eviction"] = held_usage.second;
+  report["held_payload_capacity_after_eviction"] = held_capacity.second;
+  report["cached_payload_bytes_after_cleanup"] = uue.CacheBytes().first;
+  report["live_payload_capacity_after_cleanup"] = uue.CacheCapacityBytes().second;
+  report["before_rejections_rss_bytes"] = before_rejections;
+  report["after_rejections_rss_bytes"] = after_rejections;
+  report["rss"] = rss.Stop();
+  std::cout << "UUE_ASSEMBLY_MEMORY " << report.dump() << '\n';
+}
+
+TEST_F(ServicesTest, UueChunkInterruptedValidationPreservesPayloadAndReleasesReservation) {
+  const std::string bytes(1024, 'a');
+  const auto sources = test::SyntheticUue(temp.path() / "different-file", *catalog, "echo.one", bytes, true);
+  service::UueService uue(catalog, metadata, test::EchoAccess(*catalog, temp.path()));
+  auto file = uue.Assemble(sources[0], false, "A");
+  ASSERT_TRUE(file);
+  for (bool cancel : {false, true}) {
+    std::stop_source stop;
+    if (cancel)
+      stop.request_stop();
+    {
+      service::RequestBudget budget{
+          std::chrono::steady_clock::now() + (cancel ? std::chrono::seconds(5) : -std::chrono::seconds(1)),
+          stop.get_token()};
+      service::RequestScope scope(budget);
+      auto result = uue.Chunk(file->id, 0, 1024, "A");
+      ASSERT_FALSE(result);
+      EXPECT_EQ(result.error().code, cancel ? domain::ErrorCode::kCancelled : domain::ErrorCode::kDeadline);
+    }
+    EXPECT_EQ(uue.TransientBytes(), 0u);
+    EXPECT_EQ(uue.CacheBytes().first, bytes.size());
+    auto retry = uue.Chunk(file->id, 0, 1024, "A");
+    ASSERT_TRUE(retry);
+    EXPECT_EQ(retry->bytes, bytes);
+    EXPECT_TRUE(retry->eof);
+  }
+  EXPECT_EQ(uue.TransientBytes(), 0u);
+}
+
+TEST_F(ServicesTest, UueChunkMeasurementFixture) {
+  const size_t size = static_cast<size_t>(test::BenchmarkOption("FFIDO_BENCH_FILE_BYTES", 1024 * 1024));
+  const bool single = test::BenchmarkOption("FFIDO_BENCH_SINGLE_SOURCE", 1) != 0;
+  const auto chunk = static_cast<uint32_t>(test::BenchmarkOption("FFIDO_BENCH_CHUNK_BYTES", 65536));
+  const int parallel = test::BenchmarkOption("FFIDO_BENCH_PARALLEL", 1);
+  const int samples = test::BenchmarkOption("FFIDO_BENCH_SAMPLES", 20);
+  ASSERT_TRUE(size == 1024 * 1024 || size == 16 * 1024 * 1024);
+  ASSERT_TRUE(parallel == 1 || parallel == 4 || parallel == 16);
+  ASSERT_TRUE(chunk == 16384 || chunk == 65536);
+  ASSERT_GT(samples, 0);
+  const std::string bytes(size, 'a');
+  const auto sources = test::SyntheticUue(temp.path() / "different-file", *catalog, "echo.one", bytes, single);
+  UueConfig config;
+  config.max_file_bytes = 16 * 1024 * 1024;
+  config.part_body_bytes = 256 * 1024;
+  config.max_parts = 1024;
+  config.user_quota_bytes = 48 * 1024 * 1024;
+  config.global_quota_bytes = 64 * 1024 * 1024;
+  std::atomic<int> seconds = 0;
+  const auto origin = std::chrono::steady_clock::now();
+  auto uue = std::make_unique<service::UueService>(
+      catalog, metadata, test::EchoAccess(*catalog, temp.path()), "cp866",
+      [&] { return origin + std::chrono::seconds(seconds.load()); }, config);
+  test::RssSampler rss;
+  std::vector<double> timings;
+  uint64_t returned = 0;
+  int completed = 0;
+  const auto started = std::chrono::steady_clock::now();
+  auto file = uue->Assemble(sources[0], false, "A");
+  ASSERT_TRUE(file);
+  ASSERT_EQ(file->state, service::UueState::kReady);
+  ASSERT_EQ(file->size, size);
+  ASSERT_EQ(file->sha256, UueHash(bytes));
+  int reassemblies = 0;
+  for (int sample = 0; sample < samples; ++sample) {
+    if (!uue->CacheBytes().first) {
+      file = uue->Assemble(sources[0], false, "A");
+      ASSERT_TRUE(file);
+      ++reassemblies;
+    }
+    const size_t offset = sample + 1 == samples ? size - chunk : (sample * size_t(chunk)) % size;
+    const auto round_started = std::chrono::steady_clock::now();
+    measurements::Enable();
+    std::vector<std::future<std::pair<std::expected<service::UueChunk, domain::ApiError>, double>>> calls;
+    for (int q = 0; q < parallel; ++q)
+      calls.push_back(std::async(std::launch::async, [&] {
+        service::RequestBudget budget{std::chrono::steady_clock::now() + std::chrono::seconds(5), {}};
+        service::RequestScope scope(budget);
+        const auto begin = std::chrono::steady_clock::now();
+        auto result = uue->Chunk(file->id, offset, chunk, "A");
+        const auto ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin).count();
+        if (result) {
+          EXPECT_EQ(result->bytes, std::string_view(bytes).substr(offset, chunk));
+          EXPECT_EQ(result->eof, offset + chunk == size);
+        }
+        return std::pair{std::move(result), ms};
+      }));
+    nlohmann::json errors = nlohmann::json::object();
+    std::vector<service::UueChunk> held;
+    std::vector<double> round, successful;
+    for (auto& call : calls) {
+      auto [result, ms] = call.get();
+      round.push_back(ms);
+      timings.push_back(ms);
+      if (result) {
+        returned += result->bytes.size();
+        ++completed;
+        successful.push_back(ms);
+        held.push_back(std::move(*result));
+      } else {
+        EXPECT_TRUE(result.error().code == domain::ErrorCode::kDeadline ||
+                    result.error().code == domain::ErrorCode::kNotFound ||
+                    result.error().code == domain::ErrorCode::kResource ||
+                    result.error().code == domain::ErrorCode::kUnavailable);
+        const auto key = std::to_string(static_cast<int>(result.error().code));
+        errors[key] = errors.value(key, 0) + 1;
+      }
+    }
+    auto record = test::MeasurementValues();
+    record["errors"] = errors;
+    record["completed"] = held.size();
+    record["wall_ms"] =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - round_started).count();
+    record["file_bytes"] = size;
+    record["chunk_bytes_limit"] = chunk;
+    record["sources"] = sources[0].size();
+    record["parallel"] = parallel;
+    record["sample"] = sample;
+    record["phase"] = sample ? "warm" : "cold";
+    record["latency_ms"] = round;
+    record["successful_latency_ms"] = successful;
+    EXPECT_EQ(record.at("payload_copied_bytes"), 0);
+    EXPECT_GT(record.at("hash_calls").get<uint64_t>(), 0u);
+    EXPECT_GT(record.at("jam_read_bytes").get<uint64_t>(), 0u);
+    held.clear();
+    EXPECT_EQ(measurements::counters[measurements::chunk_bytes].load(), 0u);
+    EXPECT_EQ(measurements::counters[measurements::assembly_bytes].load(), 0u);
+    measurements::Disable();
+    std::cout << "UUE_MEASURE " << record.dump() << '\n';
+  }
+  const auto cached = uue->CacheBytes();
+  const auto capacity = uue->CacheCapacityBytes();
+  seconds = 600;
+  EXPECT_FALSE(uue->Chunk("expired", 0, 1, "A"));
+  EXPECT_EQ(uue->CacheBytes(), (std::pair<uint64_t, uint64_t>{0, 0}));
+  uue.reset();
+  auto report = rss.Stop();
+  report["file_bytes"] = size;
+  report["sources"] = sources[0].size();
+  report["parallel"] = parallel;
+  report["chunk_bytes_limit"] = chunk;
+  report["completed"] = completed;
+  report["offered"] = samples * parallel;
+  report["cached_bytes_before_prune"] = cached.first;
+  report["cached_capacity_before_prune"] = capacity.first;
+  report["live_capacity_before_prune"] = capacity.second;
+  report["live_payload_bytes_before_prune"] = cached.second;
+  report["latency"] = test::Latencies(timings);
+  report["returned_bytes"] = returned;
+  report["reassemblies_after_invalidation"] = reassemblies;
+  report["wall_ms_including_reassembly"] =
+      std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+  std::cout << "UUE_MEMORY " << report.dump() << '\n';
+  if (parallel == 1)
+    EXPECT_EQ(completed, samples);
 }

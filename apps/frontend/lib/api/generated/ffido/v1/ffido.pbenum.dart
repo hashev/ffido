@@ -49,15 +49,18 @@ class MessageSort extends $pb.ProtobufEnum {
       MessageSort._(1, _omitEnumNames ? '' : 'MESSAGE_SORT_DATE_ASCENDING');
   static const MessageSort MESSAGE_SORT_DATE_DESCENDING =
       MessageSort._(2, _omitEnumNames ? '' : 'MESSAGE_SORT_DATE_DESCENDING');
+  static const MessageSort MESSAGE_SORT_NUMBER_ASCENDING =
+      MessageSort._(3, _omitEnumNames ? '' : 'MESSAGE_SORT_NUMBER_ASCENDING');
 
   static const $core.List<MessageSort> values = <MessageSort>[
     MESSAGE_SORT_UNSPECIFIED,
     MESSAGE_SORT_DATE_ASCENDING,
     MESSAGE_SORT_DATE_DESCENDING,
+    MESSAGE_SORT_NUMBER_ASCENDING,
   ];
 
   static final $core.List<MessageSort?> _byValue =
-      $pb.ProtobufEnum.$_initByValueList(values, 2);
+      $pb.ProtobufEnum.$_initByValueList(values, 3);
   static MessageSort? valueOf($core.int value) =>
       value < 0 || value >= _byValue.length ? null : _byValue[value];
 
