@@ -27,7 +27,8 @@ class Files extends UueFiles {
   Future<SelectedUueFile?> pick(int limit) async =>
       SelectedUueFile('a.bin', Uint8List.fromList([0, 1, 2]));
   @override
-  Future<bool> save(String name, Uint8List bytes) async => false;
+  Future<UueSaveResult> save(String name, Uint8List bytes) async =>
+      UueSaveResult.cancelled;
 }
 
 Future<void> tap(WidgetTester t, String text) async {

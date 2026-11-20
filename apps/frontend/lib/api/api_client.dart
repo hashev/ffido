@@ -45,6 +45,16 @@ class ApiClient implements ApiTransport, MessageFooterSupport {
   int _loginVersion = 0;
   wire.SessionInfo? _session;
   final _identityChanges = StreamController<void>.broadcast(sync: true);
+  bool Function(Uri)? endpointPolicy;
+  void _allowEndpoint(Uri endpoint) {
+    if (endpointPolicy != null && !endpointPolicy!(endpoint)) {
+      throw const ValidationException(
+        message:
+            'Узел не разрешён каталогом или требуется подтверждение переноса',
+      );
+    }
+  }
+
   Stream<void> get identityChanges => _identityChanges.stream;
   @override
   bool get supportsMessageFooter => _session?.supportsMessageFooter ?? false;
@@ -130,6 +140,7 @@ class ApiClient implements ApiTransport, MessageFooterSupport {
   }) async {
     if (_closed) throw const CancelledException();
     final target = validateEndpoint(endpoint);
+    _allowEndpoint(target);
     final fields = <String, List<String>>{};
     if (name.trim().isEmpty) fields['name'] = ['Укажите имя'];
     if (!RegExp(r'^\d+:\d+/\d+(?:\.\d+)?$').hasMatch(address.trim())) {
@@ -210,12 +221,153 @@ class ApiClient implements ApiTransport, MessageFooterSupport {
     return result;
   }
 
+  Future<T> _publicCall<T>(
+    String endpoint,
+    String name,
+    rpc.ResponseFuture<T> Function(wire.FfidoClient, rpc.CallOptions) invoke,
+  ) async {
+    final captured = epoch;
+    final authentication = _loginVersion;
+    final target = validateEndpoint(endpoint);
+    _allowEndpoint(target);
+    final channel = _factory(target);
+    final call = invoke(
+      wire.FfidoClient(channel, interceptors: [ResponseBudget()]),
+      rpc.CallOptions(timeout: timeout),
+    );
+    final cancel = call.cancel;
+    _active.add(cancel);
+    void check() {
+      if (_closed || captured != epoch || authentication != _loginVersion) {
+        throw CancelledException(rpcName: name);
+      }
+    }
+
+    try {
+      final result = await call;
+      check();
+      return result;
+    } on grpc.GrpcError catch (error) {
+      check();
+      throw mapGrpcError(error, const {}, name);
+    } finally {
+      _active.remove(cancel);
+      await channel.terminate();
+    }
+  }
+
+  Future<bool> supportsTelegram(String endpoint) async {
+    try {
+      return (await _publicCall(
+        endpoint,
+        'GetServerCapabilities',
+        (client, options) =>
+            client.getServerCapabilities(Empty(), options: options),
+      )).supportsTelegram;
+    } on ApiException catch (error) {
+      if (error.statusCode == grpc.StatusCode.unimplemented) return false;
+      rethrow;
+    }
+  }
+
+  Future<wire.TelegramProfiles> telegramProfiles(
+    String endpoint,
+    String initData,
+  ) => _publicCall(
+    endpoint,
+    'ListTelegramProfiles',
+    (client, options) => client.listTelegramProfiles(
+      wire.TelegramProof(initData: initData),
+      options: options,
+    ),
+  );
+
+  Future<wire.LoginResponse> loginWithTelegram({
+    required String endpoint,
+    required String initData,
+    required String address,
+  }) async {
+    final authentication = ++_loginVersion;
+    final result = await _publicCall(
+      endpoint,
+      'LoginWithTelegram',
+      (client, options) => client.loginWithTelegram(
+        wire.TelegramLoginRequest(initData: initData, address: address),
+        options: options,
+      ),
+    );
+    if (!RegExp(r'^[0-9a-f]{64}$').hasMatch(result.sessionSecret) ||
+        !result.hasSession() ||
+        !result.session.hasProfile()) {
+      throw const ApiException(
+        message: 'Некорректный ответ входа',
+        statusCode: grpc.StatusCode.internal,
+        rpcName: 'LoginWithTelegram',
+      );
+    }
+    await configure(endpoint: endpoint, token: result.sessionSecret);
+    if (_closed ||
+        authentication != _loginVersion ||
+        _token != result.sessionSecret) {
+      throw const CancelledException(rpcName: 'LoginWithTelegram');
+    }
+    session = result.session;
+    return result;
+  }
+
+  Future<wire.TelegramBinding> getTelegramBinding() => _invoke(
+    'GetTelegramBinding',
+    (client, options) => client.getTelegramBinding(Empty(), options: options),
+  );
+
+  Future<wire.TelegramBinding> bindTelegram({
+    required String initData,
+    required String password,
+    bool replaceExisting = false,
+  }) => _invoke(
+    'BindTelegram',
+    (client, options) => client.bindTelegram(
+      wire.BindTelegramRequest(
+        initData: initData,
+        password: password,
+        replaceExisting: replaceExisting,
+      ),
+      options: options,
+    ),
+  );
+
+  Future<void> unbindTelegram() async {
+    await _invoke(
+      'UnbindTelegram',
+      (client, options) => client.unbindTelegram(Empty(), options: options),
+    );
+  }
+
+  Future<void> revokeSessionAt(String endpoint, String token) async {
+    _allowEndpoint(validateEndpoint(endpoint));
+    final channel = _factory(validateEndpoint(endpoint));
+    try {
+      await wire.FfidoClient(channel).logout(
+        Empty(),
+        options: rpc.CallOptions(
+          timeout: timeout,
+          metadata: {'authorization': 'Bearer $token'},
+        ),
+      );
+    } on grpc.GrpcError catch (error) {
+      throw mapGrpcError(error, const {}, 'Logout');
+    } finally {
+      await channel.terminate();
+    }
+  }
+
   Future<void> logout() async {
     final token = _token;
     // Revoke on an independent channel so local retirement cannot cancel it.
     rpc.ClientChannel? channel;
     rpc.ResponseFuture<Empty>? call;
     try {
+      if (token != null) _allowEndpoint(_endpoint);
       channel = token == null ? null : _factory(_endpoint);
       call = channel == null
           ? null
@@ -258,6 +410,7 @@ class ApiClient implements ApiTransport, MessageFooterSupport {
   Future<void> setAuthToken(String token) =>
       configure(endpoint: endpoint.toString(), token: token);
   wire.FfidoClient get _client {
+    _allowEndpoint(_endpoint);
     _channel ??= _factory(_endpoint);
     return _stub ??= wire.FfidoClient(
       _channel!,

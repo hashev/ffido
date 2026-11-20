@@ -207,7 +207,7 @@ public:
       if (!mode.get() || MeasuredStep(mode.get()) != SQLITE_ROW || ColumnText(mode.get(), 0) != "wal")
         return fail();
     }
-    if (schema_version > 11 || schema_version < 0)
+    if (schema_version > 12 || schema_version < 0)
       return fail();
     if (schema_version == 0) {
       if (sqlite3_exec(db_.get(), "BEGIN IMMEDIATE", nullptr, nullptr, nullptr) != SQLITE_OK)
@@ -426,6 +426,25 @@ public:
         CREATE TABLE personal_filter_mutations(user_id TEXT NOT NULL REFERENCES users(user_id), operation_id TEXT NOT NULL,
           expected_revision TEXT NOT NULL, payload_hash TEXT NOT NULL, revision TEXT NOT NULL, PRIMARY KEY(user_id,operation_id));
         PRAGMA user_version=11;
+        COMMIT;
+      )",
+                       nullptr, nullptr, nullptr) != SQLITE_OK) {
+        sqlite3_exec(db_.get(), "ROLLBACK", nullptr, nullptr, nullptr);
+        return fail();
+      }
+    }
+    if (schema_version < 12) {
+      if (sqlite3_exec(db_.get(), R"(
+        BEGIN IMMEDIATE;
+        CREATE TABLE telegram_bindings(user_id TEXT PRIMARY KEY REFERENCES users(user_id),
+          bot_id INTEGER NOT NULL, telegram_user_id INTEGER NOT NULL, fingerprint BLOB NOT NULL,
+          revision TEXT NOT NULL UNIQUE);
+        CREATE INDEX telegram_owner ON telegram_bindings(bot_id,telegram_user_id);
+        ALTER TABLE tokens ADD COLUMN telegram_revision TEXT;
+        CREATE TRIGGER telegram_binding_delete BEFORE DELETE ON telegram_bindings BEGIN
+          UPDATE tokens SET revoked=1 WHERE telegram_revision=OLD.revision;
+        END;
+        PRAGMA user_version=12;
         COMMIT;
       )",
                        nullptr, nullptr, nullptr) != SQLITE_OK) {
@@ -1468,7 +1487,9 @@ public:
     StatementGuard statement(
         prepare("SELECT u.user_id,u.name,u.ftn_address,u.email,u.registered_at,t.expires_at FROM tokens t JOIN "
                 "users u ON u.user_id=t.user_id "
-                "WHERE t.digest=? AND t.revoked=0 AND t.expires_at>? AND u.active=1"));
+                "WHERE t.digest=? AND t.revoked=0 AND t.expires_at>? AND u.active=1 AND "
+                "(t.telegram_revision IS NULL OR EXISTS (SELECT 1 FROM telegram_bindings b "
+                "WHERE b.user_id=u.user_id AND b.revision=t.telegram_revision))"));
     if (!statement.get() || !statement.Bind(1, digest) || !statement.Bind(2, now))
       return std::unexpected(SqliteError(db_.get(), "authenticate"));
     const auto rc = MeasuredStep(statement.get());
@@ -1503,7 +1524,12 @@ public:
     const char* revoke = "UPDATE tokens SET revoked=1 WHERE fingerprint IS NULL OR NOT EXISTS "
                          "(SELECT 1 FROM users u JOIN auth_credentials c ON c.address=u.ftn_address "
                          "WHERE u.user_id=tokens.user_id AND c.fingerprint=tokens.fingerprint)";
-    if (sqlite3_exec(db_.get(), revoke, nullptr, nullptr, nullptr) != SQLITE_OK ||
+    const char* unbind =
+        "DELETE FROM telegram_bindings WHERE NOT EXISTS "
+        "(SELECT 1 FROM users u JOIN auth_credentials c ON c.address=u.ftn_address "
+        "WHERE u.user_id=telegram_bindings.user_id AND c.fingerprint=telegram_bindings.fingerprint AND u.active=1)";
+    if (sqlite3_exec(db_.get(), unbind, nullptr, nullptr, nullptr) != SQLITE_OK ||
+        sqlite3_exec(db_.get(), revoke, nullptr, nullptr, nullptr) != SQLITE_OK ||
         sqlite3_exec(db_.get(), "COMMIT", nullptr, nullptr, nullptr) != SQLITE_OK)
       return fail();
     return {};
@@ -1555,6 +1581,128 @@ public:
       return fail();
     return result;
   }
+  std::expected<bool, domain::ApiError> TelegramBinding(std::string_view user) override {
+    std::lock_guard lock(mutex_);
+    StatementGuard query(prepare("SELECT 1 FROM telegram_bindings WHERE user_id=?"));
+    if (!query.get() || !query.Bind(1, user))
+      return std::unexpected(SqliteError(db_.get(), "telegram binding"));
+    const auto code = MeasuredStep(query.get());
+    if (code != SQLITE_ROW && code != SQLITE_DONE)
+      return std::unexpected(SqliteError(db_.get(), "telegram binding"));
+    return code == SQLITE_ROW;
+  }
+  std::expected<void, domain::ApiError> BindTelegram(std::string_view user, int64_t bot, int64_t telegram_user,
+                                                     const TokenDigest& fingerprint, bool replace) override {
+    std::lock_guard lock(mutex_);
+    if (!db_ || sqlite3_exec(db_.get(), "BEGIN IMMEDIATE", nullptr, nullptr, nullptr) != SQLITE_OK)
+      return std::unexpected(SqliteError(db_.get(), "telegram bind"));
+    struct Rollback {
+      sqlite3* db;
+      ~Rollback() {
+        sqlite3_exec(db, "ROLLBACK", nullptr, nullptr, nullptr);
+      }
+    } rollback{db_.get()};
+    StatementGuard account(prepare("SELECT 1 FROM users u JOIN auth_credentials c ON c.address=u.ftn_address "
+                                   "WHERE u.user_id=? AND u.active=1 AND c.fingerprint=?"));
+    if (!account.get() || !account.Bind(1, user) || !account.Bind(2, fingerprint))
+      return std::unexpected(SqliteError(db_.get(), "telegram account"));
+    const auto code = MeasuredStep(account.get());
+    if (code == SQLITE_DONE || bot <= 0 || telegram_user <= 0)
+      return std::unexpected(domain::ApiError::Unauthorized("Invalid credentials"));
+    if (code != SQLITE_ROW)
+      return std::unexpected(SqliteError(db_.get(), "telegram account"));
+    StatementGuard existing(prepare("SELECT bot_id,telegram_user_id FROM telegram_bindings WHERE user_id=?"));
+    if (!existing.get() || !existing.Bind(1, user))
+      return std::unexpected(SqliteError(db_.get(), "telegram bind"));
+    const auto found = MeasuredStep(existing.get());
+    if (found != SQLITE_ROW && found != SQLITE_DONE)
+      return std::unexpected(SqliteError(db_.get(), "telegram bind"));
+    if (found == SQLITE_ROW) {
+      if (sqlite3_column_int64(existing.get(), 0) == bot && sqlite3_column_int64(existing.get(), 1) == telegram_user)
+        return {};  // Idempotent confirmation preserves sessions of this binding.
+      if (!replace)
+        return std::unexpected(domain::ApiError{domain::ErrorCode::kConflict, "Confirm replacement", {}});
+      StatementGuard remove(prepare("DELETE FROM telegram_bindings WHERE user_id=?"));
+      if (!remove.get() || !remove.Bind(1, user) || MeasuredStep(remove.get()) != SQLITE_DONE)
+        return std::unexpected(SqliteError(db_.get(), "telegram replace"));
+    }
+    StatementGuard insert(prepare("INSERT INTO telegram_bindings VALUES(?,?,?,?,lower(hex(randomblob(32))))"));
+    if (!insert.get() || !insert.Bind(1, user) || !insert.Bind(2, bot) || !insert.Bind(3, telegram_user) ||
+        !insert.Bind(4, fingerprint) || MeasuredStep(insert.get()) != SQLITE_DONE ||
+        sqlite3_exec(db_.get(), "COMMIT", nullptr, nullptr, nullptr) != SQLITE_OK)
+      return std::unexpected(SqliteError(db_.get(), "telegram bind"));
+    return {};
+  }
+  std::expected<void, domain::ApiError> UnbindTelegram(std::string_view user) override {
+    std::lock_guard lock(mutex_);
+    StatementGuard remove(prepare("DELETE FROM telegram_bindings WHERE user_id=?"));
+    if (!remove.get() || !remove.Bind(1, user) || MeasuredStep(remove.get()) != SQLITE_DONE)
+      return std::unexpected(SqliteError(db_.get(), "telegram unbind"));
+    return {};
+  }
+  std::expected<std::vector<AuthenticatedUser>, domain::ApiError> TelegramProfiles(int64_t bot,
+                                                                                   int64_t telegram_user) override {
+    std::lock_guard lock(mutex_);
+    StatementGuard query(
+        prepare("SELECT u.user_id,u.name,u.ftn_address,u.email,u.registered_at FROM users u "
+                "JOIN telegram_bindings b ON b.user_id=u.user_id JOIN auth_credentials c ON c.address=u.ftn_address "
+                "WHERE u.active=1 AND b.bot_id=? AND b.telegram_user_id=? AND b.fingerprint=c.fingerprint "
+                "ORDER BY u.ftn_address LIMIT 101"));
+    if (!query.get() || !query.Bind(1, bot) || !query.Bind(2, telegram_user))
+      return std::unexpected(SqliteError(db_.get(), "telegram profiles"));
+    std::vector<AuthenticatedUser> result;
+    int code;
+    while ((code = MeasuredStep(query.get())) == SQLITE_ROW) {
+      result.push_back({ColumnText(query.get(), 0),
+                        {ColumnText(query.get(), 1), ColumnText(query.get(), 2), ColumnText(query.get(), 3),
+                         ColumnText(query.get(), 4)},
+                        0});
+      if (result.size() > 100)
+        return std::unexpected(domain::ApiError{domain::ErrorCode::kResource, "Too many profiles", {}});
+    }
+    if (code != SQLITE_DONE)
+      return std::unexpected(SqliteError(db_.get(), "telegram profiles"));
+    return result;
+  }
+  std::expected<AuthenticatedUser, domain::ApiError> CreateTelegramSession(int64_t bot, int64_t telegram_user,
+                                                                           std::string_view address,
+                                                                           const TokenDigest& digest,
+                                                                           int64_t expires_at) override {
+    std::lock_guard lock(mutex_);
+    if (!db_ || sqlite3_exec(db_.get(), "BEGIN IMMEDIATE", nullptr, nullptr, nullptr) != SQLITE_OK)
+      return std::unexpected(SqliteError(db_.get(), "telegram session"));
+    struct Rollback {
+      sqlite3* db;
+      ~Rollback() {
+        sqlite3_exec(db, "ROLLBACK", nullptr, nullptr, nullptr);
+      }
+    } rollback{db_.get()};
+    StatementGuard query(
+        prepare("SELECT u.user_id,u.name,u.ftn_address,u.email,u.registered_at,b.revision "
+                "FROM users u JOIN telegram_bindings b ON b.user_id=u.user_id "
+                "JOIN auth_credentials c ON c.address=u.ftn_address WHERE u.active=1 AND u.ftn_address=? "
+                "AND b.bot_id=? AND b.telegram_user_id=? AND b.fingerprint=c.fingerprint"));
+    if (!query.get() || !query.Bind(1, address) || !query.Bind(2, bot) || !query.Bind(3, telegram_user))
+      return std::unexpected(SqliteError(db_.get(), "telegram session"));
+    const auto code = MeasuredStep(query.get());
+    if (code == SQLITE_DONE)
+      return std::unexpected(domain::ApiError::Unauthorized("Invalid credentials"));
+    if (code != SQLITE_ROW)
+      return std::unexpected(SqliteError(db_.get(), "telegram session"));
+    AuthenticatedUser result{ColumnText(query.get(), 0),
+                             {ColumnText(query.get(), 1), ColumnText(query.get(), 2), ColumnText(query.get(), 3),
+                              ColumnText(query.get(), 4)},
+                             expires_at};
+    const auto revision = ColumnText(query.get(), 5);
+    StatementGuard token(prepare("INSERT INTO tokens(digest,user_id,expires_at,fingerprint,telegram_revision) "
+                                 "SELECT ?,user_id,?,fingerprint,revision FROM telegram_bindings WHERE revision=?"));
+    if (!token.get() || !token.Bind(1, digest) || !token.Bind(2, expires_at) || !token.Bind(3, revision) ||
+        MeasuredStep(token.get()) != SQLITE_DONE || sqlite3_changes(db_.get()) != 1 ||
+        sqlite3_exec(db_.get(), "COMMIT", nullptr, nullptr, nullptr) != SQLITE_OK)
+      return std::unexpected(SqliteError(db_.get(), "telegram session"));
+    return result;
+  }
+
   std::expected<void, domain::ApiError> RevokeUserSessions(std::string_view user) override {
     measurements::Timer metadata_wait(measurements::metadata_wait_ns);
     std::lock_guard lock(mutex_);

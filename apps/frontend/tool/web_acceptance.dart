@@ -44,6 +44,15 @@ Future<void> main() async {
         report('PASS: foreign origin denied'.toJS);
       }
     } else {
+      if (await client.supportsTelegram(endpoint.toDart)) {
+        throw StateError('Unconfigured fixture advertised Telegram');
+      }
+      try {
+        await client.telegramProfiles(endpoint.toDart, 'invalid-fixture-proof');
+        throw StateError('Unverified Telegram identity was accepted');
+      } on UnauthorizedException {
+        // Report only after completing the browser mail flow below.
+      }
       final a = await client.login(
         endpoint: endpoint.toDart,
         name: 'Алексей',

@@ -5,6 +5,40 @@ import 'package:protobuf/well_known_types/google/protobuf/empty.pb.dart';
 import 'package:protobuf/well_known_types/google/protobuf/timestamp.pb.dart';
 
 void main() {
+  test('Telegram extension preserves absence and typed wire values', () {
+    expect(ServerCapabilities.fromBuffer([]).supportsTelegram, isFalse);
+    final request = TelegramLoginRequest(
+      initData: 'user=%7B%22id%22%3A123%7D&auth_date=100',
+      address: '2:5015/1.2',
+    );
+    final restored = TelegramLoginRequest.fromBuffer(request.writeToBuffer());
+    expect(restored.initData, request.initData);
+    expect(restored.address, request.address);
+    final binding = BindTelegramRequest(
+      initData: request.initData,
+      password: 'fixture',
+      replaceExisting: true,
+    );
+    expect(
+      BindTelegramRequest.fromBuffer(binding.writeToBuffer()).replaceExisting,
+      isTrue,
+    );
+    final profiles = TelegramProfiles(
+      profiles: [Profile(address: request.address)],
+    );
+    expect(
+      TelegramProfiles.fromBuffer(profiles.writeToBuffer())
+          .profiles
+          .single
+          .address,
+      request.address,
+    );
+    expect(TelegramBinding.fromBuffer([]).bound, isFalse);
+    expect(
+      LoginRequest(name: 'A', address: 'B', password: 'C').writeToBuffer(),
+      [10, 1, 65, 18, 1, 66, 26, 1, 67],
+    );
+  });
   test(
     'offline read fields preserve wire tags, defaults and arbitrary bytes',
     () {

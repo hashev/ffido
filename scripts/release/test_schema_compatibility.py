@@ -3,8 +3,10 @@
 Set FFIDO_E2E_BACKEND when the binary is outside build/backend. This test never
 uses working FTN files or credentials.
 """
+import contextlib
 import json
 import os
+import shutil
 from pathlib import Path
 import socket
 import sqlite3
@@ -61,21 +63,32 @@ class SchemaCompatibilityTest(unittest.TestCase):
                         process.terminate(); process.wait(timeout=10)
 
             boot(True)
-            with sqlite3.connect(root/'metadata.db') as db:
+            with contextlib.closing(sqlite3.connect(root/'metadata.db')) as db, db:
                 version = db.execute('PRAGMA user_version').fetchone()[0]
                 self.assertLessEqual(COMPATIBILITY['state_schema_min'], version)
                 self.assertEqual(COMPATIBILITY['state_schema_max'], version,
                                  'Published metadata must cover the schema created by the backend')
-                # Reconstruct the supported v9 boundary from this empty fixture.
-                db.execute('DROP TABLE personal_filter_mutations')
-                db.execute('DROP TABLE personal_filters')
-                db.execute('DROP TABLE crosspost_groups')
-                db.execute('PRAGMA user_version=9')
-            boot(True)
-            with sqlite3.connect(root/'metadata.db') as db:
-                self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0], version)
-                self.assertIsNotNone(db.execute("SELECT name FROM sqlite_master WHERE name='crosspost_groups'").fetchone())
+            shutil.copyfile(root/'metadata.db', root/'latest.db')
+            for boundary in (9, 10, 11):
+                with self.subTest(boundary=boundary):
+                    shutil.copyfile(root/'latest.db', root/'metadata.db')
+                    with contextlib.closing(sqlite3.connect(root/'metadata.db')) as db, db:
+                        # Reconstruct each historical boundary in an empty, isolated fixture.
+                        db.execute('DROP TABLE telegram_bindings')
+                        db.execute('ALTER TABLE tokens DROP COLUMN telegram_revision')
+                        if boundary < 11:
+                            db.execute('DROP TABLE personal_filter_mutations')
+                            db.execute('DROP TABLE personal_filters')
+                        if boundary < 10:
+                            db.execute('DROP TABLE crosspost_groups')
+                        db.execute(f'PRAGMA user_version={boundary}')
+                    boot(True)
+                    with contextlib.closing(sqlite3.connect(root/'metadata.db')) as db, db:
+                        self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0], version)
+                        for table in ('crosspost_groups', 'personal_filters', 'telegram_bindings'):
+                            self.assertIsNotNone(db.execute('SELECT name FROM sqlite_master WHERE name=?', (table,)).fetchone())
+                        self.assertEqual(db.execute('PRAGMA integrity_check').fetchone()[0], 'ok')
             boot(True)  # Reopening the latest schema is also supported.
-            with sqlite3.connect(root/'metadata.db') as db:
+            with contextlib.closing(sqlite3.connect(root/'metadata.db')) as db, db:
                 db.execute(f'PRAGMA user_version={COMPATIBILITY["state_schema_max"]+1}')
             boot(False)

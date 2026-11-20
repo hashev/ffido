@@ -46,6 +46,30 @@ class LoginClient extends ApiClient {
 }
 
 void main() {
+  testWidgets(
+    'managed Web accounts retain appearance controls without manual endpoint',
+    (tester) async {
+      SharedPreferences.setMockInitialValues({});
+      final prefs = await SharedPreferences.getInstance();
+      final client = LoginClient();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: SettingsWidget(
+            client: client,
+            preferences: prefs,
+            accountManagedExternally: true,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('endpoint')), findsNothing);
+      expect(find.byKey(const Key('password')), findsNothing);
+      expect(find.text('Оформление исходящих сообщений'), findsOneWidget);
+      expect(find.text('Сохранить оформление'), findsOneWidget);
+      await tester.pumpWidget(const SizedBox());
+      await client.dispose();
+    },
+  );
   testWidgets('footer saves locally without login, validates and resets', (
     tester,
   ) async {

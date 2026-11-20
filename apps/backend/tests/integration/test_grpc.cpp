@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <openssl/evp.h>
 #ifdef __APPLE__
 #include <mach/mach.h>
 #endif
@@ -7,9 +8,13 @@
 #include <sys/resource.h>
 #include <sys/wait.h>
 
+#include <array>
 #include <condition_variable>
+#include <cstdlib>
 #include <future>
+#include <memory>
 #include <nlohmann/json.hpp>
+#include <stdexcept>
 #include <thread>
 
 #include "../support/echo_access.hpp"
@@ -151,6 +156,270 @@ protected:
   }
 };
 }  // namespace
+TEST_F(GrpcTest, TelegramCapabilitiesAndManagementRequireTheRightProof) {
+  google::protobuf::Empty empty;
+  wire::ServerCapabilities capability;
+  {
+    grpc::ClientContext context;
+    EXPECT_TRUE(client->GetServerCapabilities(&context, empty, &capability).ok());
+    EXPECT_FALSE(capability.supports_telegram());
+  }
+  service->ConfigureTelegram({123, false, 300, 30});
+  {
+    grpc::ClientContext context;
+    EXPECT_TRUE(client->GetServerCapabilities(&context, empty, &capability).ok());
+    EXPECT_TRUE(capability.supports_telegram());
+  }
+  wire::TelegramProof proof;
+  proof.set_init_data("user={\"id\":123}&auth_date=1000&signature=invalid");
+  wire::TelegramProfiles profiles;
+  {
+    grpc::ClientContext context;
+    EXPECT_EQ(client->ListTelegramProfiles(&context, proof, &profiles).error_code(), grpc::StatusCode::UNAUTHENTICATED);
+    EXPECT_TRUE(profiles.profiles().empty());
+  }
+  wire::TelegramBinding binding;
+  {
+    grpc::ClientContext context;
+    EXPECT_EQ(client->GetTelegramBinding(&context, empty, &binding).error_code(), grpc::StatusCode::UNAUTHENTICATED);
+  }
+  {
+    grpc::ClientContext context;
+    Auth(context, a);
+    EXPECT_TRUE(client->GetTelegramBinding(&context, empty, &binding).ok());
+    EXPECT_FALSE(binding.bound());
+  }
+  {
+    grpc::ClientContext context;
+    Auth(context, a);
+    wire::BindTelegramRequest request;
+    request.set_init_data(proof.init_data());
+    request.set_password("not-a-secret");
+    EXPECT_EQ(client->BindTelegram(&context, request, &binding).error_code(), grpc::StatusCode::UNAUTHENTICATED);
+  }
+  {
+    grpc::ClientContext context;
+    Auth(context, a);
+    EXPECT_TRUE(client->UnbindTelegram(&context, empty, &empty).ok());
+  }
+  {
+    grpc::ClientContext context;
+    Auth(context, a);
+    wire::Profile profile;
+    EXPECT_TRUE(client->GetProfile(&context, empty, &profile).ok());
+    EXPECT_EQ(profile.address(), "2:5015/1.1");
+  }
+}
+TEST_F(GrpcTest, TelegramPublicCallsAreBoundedAndNeverEchoCredentials) {
+  service->ConfigureTelegram({123, false, 300, 30});
+  ASSERT_TRUE(service->ConfigureAuth({{"2:5015/1.1", "fixture"}}, std::string(32, 'k')));
+  wire::TelegramProof proof;
+  proof.set_init_data(std::string(8193, 'x'));
+  {
+    grpc::ClientContext context;
+    wire::TelegramProfiles profiles;
+    const auto status = client->ListTelegramProfiles(&context, proof, &profiles);
+    EXPECT_EQ(status.error_code(), grpc::StatusCode::RESOURCE_EXHAUSTED);
+    EXPECT_EQ(status.error_message().find(proof.init_data()), std::string::npos);
+    EXPECT_TRUE(profiles.profiles().empty());
+  }
+  bool limited = false;
+  for (int i = 0; i < 122; ++i) {
+    grpc::ClientContext context;
+    google::protobuf::Empty request;
+    wire::ServerCapabilities response;
+    const auto status = client->GetServerCapabilities(&context, request, &response);
+    if (status.error_code() == grpc::StatusCode::RESOURCE_EXHAUSTED)
+      limited = true;
+  }
+  EXPECT_TRUE(limited);
+  grpc::ClientContext context;
+  wire::LoginRequest login;
+  login.set_name("Алексей");
+  login.set_address("2:5015/1.1");
+  login.set_password("fixture");
+  wire::LoginResponse response;
+  EXPECT_TRUE(client->Login(&context, login, &response).ok());
+}
+TEST_F(GrpcTest, TelegramBindingLifecycle) {
+  std::array<unsigned char, 32> seed{1, 2, 3};
+  std::unique_ptr<EVP_PKEY, decltype(&EVP_PKEY_free)> key(
+      EVP_PKEY_new_raw_private_key(EVP_PKEY_ED25519, nullptr, seed.data(), seed.size()), EVP_PKEY_free);
+  ASSERT_TRUE(key);
+  service::TelegramPublicKey public_key{};
+  size_t size = public_key.size();
+  ASSERT_EQ(EVP_PKEY_get_raw_public_key(key.get(), public_key.data(), &size), 1);
+  service->ConfigureTelegram({123, false, 300, 30});
+  service->SetTelegramKeyForTesting(public_key);
+  ASSERT_TRUE(service->ConfigureAuth({{"2:5015/1.1", "first"}, {"2:5015/1.2", "second"}}, std::string(32, 'k')));
+  auto encode = [](std::string_view bytes) {
+    std::string result(4 * ((bytes.size() + 2) / 3) + 1, '\0');
+    const auto length =
+        EVP_EncodeBlock(reinterpret_cast<unsigned char*>(result.data()),
+                        reinterpret_cast<const unsigned char*>(bytes.data()), static_cast<int>(bytes.size()));
+    if (length < 0)
+      throw std::runtime_error("fixture encoding failed");
+    result.resize(static_cast<size_t>(length));
+    return result;
+  };
+  const auto date = std::to_string(
+      std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count());
+  auto proof = [&](int64_t user) {
+    const auto json = "{\"id\":" + std::to_string(user) + "}";
+    const auto check = "123:WebAppData\nauth_date=" + date + "\nuser=" + json;
+    std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)> ctx(EVP_MD_CTX_new(), EVP_MD_CTX_free);
+    std::array<unsigned char, 64> signature{};
+    size_t length = signature.size();
+    if (!ctx || EVP_DigestSignInit(ctx.get(), nullptr, nullptr, nullptr, key.get()) != 1 ||
+        EVP_DigestSign(ctx.get(), signature.data(), &length, reinterpret_cast<const unsigned char*>(check.data()),
+                       check.size()) != 1)
+      throw std::runtime_error("fixture signing failed");
+    auto signed_value = encode({reinterpret_cast<const char*>(signature.data()), length});
+    signed_value.resize(86);
+    std::replace(signed_value.begin(), signed_value.end(), '+', '-');
+    std::replace(signed_value.begin(), signed_value.end(), '/', '_');
+    return "auth_date=" + date + "&signature=" + signed_value + "&user=" + json;
+  };
+  auto login = [&](std::string_view address_value, std::string_view password) {
+    grpc::ClientContext context;
+    wire::LoginRequest request;
+    request.set_name("Untrusted new name");
+    request.set_address(std::string(address_value));
+    request.set_password(std::string(password));
+    wire::LoginResponse result;
+    EXPECT_TRUE(client->Login(&context, request, &result).ok());
+    return result;
+  };
+  const auto first = login("2:5015/1.1", "first"), second = login("2:5015/1.2", "second");
+  EXPECT_EQ(first.session().profile().name(), "Алексей");
+  auto bind = [&](const std::string& token, int64_t owner, std::string password, bool replace = false) {
+    grpc::ClientContext context;
+    Auth(context, token);
+    wire::BindTelegramRequest request;
+    request.set_init_data(proof(owner));
+    request.set_password(std::move(password));
+    request.set_replace_existing(replace);
+    wire::TelegramBinding result;
+    return client->BindTelegram(&context, request, &result);
+  };
+  EXPECT_EQ(bind(first.session_secret(), 456, "wrong").error_code(), grpc::StatusCode::UNAUTHENTICATED);
+  ASSERT_TRUE(bind(first.session_secret(), 456, "first").ok());
+  ASSERT_TRUE(bind(second.session_secret(), 456, "second").ok());
+  auto telegram_login = [&](int64_t owner) {
+    grpc::ClientContext context;
+    wire::TelegramLoginRequest request;
+    request.set_address("2:5015/1.1");
+    request.set_init_data(proof(owner));
+    wire::LoginResponse result;
+    EXPECT_TRUE(client->LoginWithTelegram(&context, request, &result).ok());
+    return result;
+  };
+  auto valid_session = [&](const std::string& token, bool expected) {
+    grpc::ClientContext context;
+    Auth(context, token);
+    google::protobuf::Empty request;
+    wire::SessionInfo result;
+    EXPECT_EQ(client->RestoreSession(&context, request, &result).ok(), expected);
+    if (expected)
+      EXPECT_EQ(result.profile().address(), "2:5015/1.1");
+  };
+  auto previous = telegram_login(456);
+  EXPECT_EQ(previous.session().profile().user_id(), first.session().profile().user_id());
+  valid_session(previous.session_secret(), true);
+  EXPECT_EQ(bind(first.session_secret(), 789, "first").error_code(), grpc::StatusCode::ALREADY_EXISTS);
+  ASSERT_TRUE(bind(first.session_secret(), 789, "first", true).ok());
+  valid_session(previous.session_secret(), false);
+  valid_session(first.session_secret(), true);
+  previous = telegram_login(789);
+  {
+    grpc::ClientContext context;
+    Auth(context, first.session_secret());
+    google::protobuf::Empty request, response;
+    ASSERT_TRUE(client->UnbindTelegram(&context, request, &response).ok());
+  }
+  valid_session(previous.session_secret(), false);
+  valid_session(first.session_secret(), true);
+  const auto* envoy = std::getenv("FFIDO_TEST_ENVOY");
+  if (envoy && *envoy) {
+    nlohmann::json requests = nlohmann::json::array();
+    auto add = [&](std::string method, const google::protobuf::MessageLite& request, std::string token = "") {
+      requests.push_back({{"method", method}, {"payload", encode(request.SerializeAsString())}, {"token", token}});
+    };
+    wire::BindTelegramRequest binding;
+    binding.set_password("first");
+    binding.set_init_data(proof(456));
+    add("BindTelegram", binding, first.session_secret());
+    wire::TelegramProof list;
+    list.set_init_data(proof(456));
+    add("ListTelegramProfiles", list);
+    wire::TelegramLoginRequest telegram;
+    telegram.set_address("2:5015/1.1");
+    telegram.set_init_data(proof(456));
+    add("LoginWithTelegram", telegram);
+    binding.set_init_data(proof(789));
+    binding.set_replace_existing(true);
+    add("BindTelegram", binding, first.session_secret());
+    telegram.set_init_data(proof(789));
+    add("LoginWithTelegram", telegram);
+    google::protobuf::Empty empty;
+    add("UnbindTelegram", empty, first.session_secret());
+    add("GetTelegramBinding", empty, first.session_secret());
+    add("ListTelegramProfiles", list);
+    const auto manifest = temp.path() / "telegram-web-input.json";
+    {
+      std::ofstream file(manifest);
+      file << nlohmann::json{{"envoy", envoy},
+                             {"backend_port", std::stoi(address.substr(address.rfind(':') + 1))},
+                             {"requests", requests}};
+    }
+    const auto path = manifest.string();
+    char* argv[]{const_cast<char*>(FFIDO_PYTHON), const_cast<char*>(FFIDO_TELEGRAM_WEB_TEST),
+                 const_cast<char*>(path.c_str()), nullptr};
+    pid_t pid = -1;
+    ASSERT_EQ(posix_spawn(&pid, argv[0], nullptr, nullptr, argv, environ), 0);
+    int status = 0;
+    ASSERT_EQ(waitpid(pid, &status, 0), pid);
+    ASSERT_TRUE(WIFEXITED(status));
+    ASSERT_EQ(WEXITSTATUS(status), 0);
+    const auto results = nlohmann::json::parse(test::ReadFile(temp.path() / "telegram-web-results.json"));
+    ASSERT_EQ(results.size(), requests.size());
+    for (const auto& result : results)
+      EXPECT_EQ(result.at("status"), 0);
+    auto decode = [&](size_t index) {
+      EXPECT_EQ(results.at(index).at("status"), 0);
+      const auto value = results.at(index).at("payload").get<std::string>();
+      std::string decoded(3 * (value.size() / 4) + 1, '\0');
+      const auto length =
+          EVP_DecodeBlock(reinterpret_cast<unsigned char*>(decoded.data()),
+                          reinterpret_cast<const unsigned char*>(value.data()), static_cast<int>(value.size()));
+      if (length < 0)
+        throw std::runtime_error("fixture decoding failed");
+      const size_t padding = value.ends_with("==") ? 2 : value.ends_with("=") ? 1 : 0;
+      decoded.resize(static_cast<size_t>(length) - padding);
+      return decoded;
+    };
+    wire::TelegramProfiles profiles;
+    ASSERT_TRUE(profiles.ParseFromString(decode(1)));
+    EXPECT_EQ(profiles.profiles_size(), 2);
+    wire::LoginResponse issued;
+    ASSERT_TRUE(issued.ParseFromString(decode(2)));
+    ASSERT_EQ(issued.session_secret().size(), 64);
+    EXPECT_EQ(issued.session().profile().name(), "Алексей");
+    EXPECT_EQ(issued.session().profile().address(), "2:5015/1.1");
+    EXPECT_GT(issued.session().expires_at().seconds(), std::stoll(date));
+    valid_session(issued.session_secret(), false);
+    ASSERT_TRUE(issued.ParseFromString(decode(4)));
+    ASSERT_EQ(issued.session_secret().size(), 64);
+    valid_session(issued.session_secret(), false);
+    wire::TelegramBinding current;
+    ASSERT_TRUE(current.ParseFromString(decode(6)));
+    EXPECT_FALSE(current.bound());
+    ASSERT_TRUE(profiles.ParseFromString(decode(7)));
+    ASSERT_EQ(profiles.profiles_size(), 1);
+    EXPECT_EQ(profiles.profiles(0).address(), "2:5015/1.2");
+    valid_session(first.session_secret(), true);
+  }
+}
 namespace {
 size_t ProcessThreadCount() {
 #ifdef __APPLE__

@@ -1,4 +1,6 @@
 import '../widgets/adaptive_layout.dart';
+import '../repositories/web_draft_store.dart';
+import '../platform/telegram_host.dart';
 import '../widgets/message_actions.dart';
 
 import 'dart:math';
@@ -565,7 +567,8 @@ class _MessageScreenState extends State<MessageScreen>
       if (!mounted || current != version) return;
       setState(() {
         loading = false;
-        if (personalMailbox) {
+        if (personalMailbox &&
+            !(kIsWeb && e is ApiException && e.allowsCacheFallback)) {
           messages = [];
           selected = null;
           hasMore = false;
@@ -878,7 +881,8 @@ class _MessageScreenState extends State<MessageScreen>
           loading = false;
           error = e.toString();
           retry = () => load();
-          if (personalMailbox) {
+          if (personalMailbox &&
+              !(kIsWeb && e is ApiException && e.allowsCacheFallback)) {
             messages = [];
             selected = null;
             hasMore = false;
@@ -932,7 +936,8 @@ class _MessageScreenState extends State<MessageScreen>
       if (!mounted || current != version) return;
       setState(() {
         loading = false;
-        if (personalMailbox) {
+        if (personalMailbox &&
+            !(kIsWeb && e is ApiException && e.allowsCacheFallback)) {
           messages = [];
           selected = null;
           hasMore = false;
@@ -2096,7 +2101,39 @@ class _MessageScreenState extends State<MessageScreen>
   }
 }
 
+Future<void> openWebDraft(
+  BuildContext context,
+  Map<String, dynamic> draft,
+  MessageRepository repository,
+  ConferenceRepository conferences,
+) async {
+  await Navigator.push(
+    context,
+    MaterialPageRoute(
+      builder: (_) => _ComposeScreen(
+        repository: repository,
+        conferences: conferences,
+        onAccessDenied: () => conferences.clearCache(),
+        conferenceId: draft['conferenceId'] as String,
+        conferenceName: draft['conferenceName'] as String,
+        conferenceDescription: draft['conferenceDescription'] as String? ?? '',
+        forward: draft['forward'] as bool? ?? false,
+        crossAreaReply: draft['crossAreaReply'] as bool? ?? false,
+        kind: AreaKind.values[draft['kind'] as int],
+        original: draft['original'] == null
+            ? null
+            : Message.fromJson(draft['original'] as Map<String, dynamic>),
+        destination: draft['destination'] == null
+            ? null
+            : Conference.fromJson(draft['destination'] as Map<String, dynamic>),
+        restoredDraft: draft,
+      ),
+    ),
+  );
+}
+
 class _ComposeScreen extends StatefulWidget {
+  final Map<String, dynamic>? restoredDraft;
   final MessageRepository repository;
   final Future<void> Function() onAccessDenied;
   final String conferenceId, conferenceName, conferenceDescription;
@@ -2122,12 +2159,56 @@ class _ComposeScreen extends StatefulWidget {
     required this.forward,
     this.crossAreaReply = false,
     required this.kind,
+    this.restoredDraft,
   });
   @override
   State<_ComposeScreen> createState() => _ComposeScreenState();
 }
 
 class _ComposeScreenState extends State<_ComposeScreen> {
+  String? draftScope;
+  late String draftId;
+  bool draftCompleted = false;
+  bool lostAttachment = false;
+  Future<void> saveWebDraft() async {
+    final store = WebDraftStore.active;
+    final scope = draftScope;
+    if (!kIsWeb ||
+        draftCompleted ||
+        !templateReady ||
+        store == null ||
+        scope == null ||
+        store.scope != scope) {
+      return;
+    }
+    try {
+      await store.write(scope, draftId, {
+        'operationId': operationId,
+        'conferenceId': widget.conferenceId,
+        'conferenceName': widget.conferenceName,
+        'conferenceDescription': widget.conferenceDescription,
+        'forward': widget.forward,
+        'crossAreaReply': widget.crossAreaReply,
+        'kind': widget.kind.index,
+        'original': widget.original?.toJson(),
+        'destination': destination?.toJson(),
+        'additional': crosspostAreas.map((a) => a.toJson()).toList(),
+        'toName': toName.text,
+        'toAddress': toAddress.text,
+        'subject': subject.text,
+        'body': body.text,
+        'uncertain': uncertain || sending,
+        'hadAttachment': attachment != null || lostAttachment,
+      });
+    } catch (_) {
+      if (mounted) {
+        setState(
+          () => error = 'Не удалось сохранить черновик на устройстве. Скопируйте текст перед закрытием.',
+        );
+      }
+    }
+  }
+
   final toName = TextEditingController(),
       toAddress = TextEditingController(),
       subject = TextEditingController(),
@@ -2176,9 +2257,11 @@ class _ComposeScreenState extends State<_ComposeScreen> {
       if (mounted && widget.repository.epoch == epoch && file != null) {
         setState(() {
           attachment = file;
+          lostAttachment = false;
           error = null;
           operationId = MessageRepository.newOperationId();
         });
+        await saveWebDraft();
       }
     } catch (e) {
       if (mounted && widget.repository.epoch == epoch) {
@@ -2267,6 +2350,10 @@ class _ComposeScreenState extends State<_ComposeScreen> {
   @override
   void initState() {
     super.initState();
+    draftScope = kIsWeb ? WebDraftStore.active?.scope : null;
+    draftId =
+        widget.restoredDraft?['draftId'] as String? ?? 'compose:$operationId';
+    if (kIsWeb) telegramHost.editing(true);
     appUpdates.guardExit(
       this,
       // Не завершаем приложение, пока открыт редактор или ожидается отправка.
@@ -2315,7 +2402,26 @@ class _ComposeScreenState extends State<_ComposeScreen> {
         body.selection = TextSelection.collapsed(offset: body.text.length);
       }
     }
-    unawaited(initializeTemplate());
+    final restored = widget.restoredDraft;
+    if (restored != null) {
+      lostAttachment = restored['hadAttachment'] == true;
+      operationId = restored['operationId'] as String;
+      toName.text = restored['toName'] as String;
+      toAddress.text = restored['toAddress'] as String;
+      subject.text = restored['subject'] as String;
+      body.text = restored['body'] as String;
+      uncertain = restored['uncertain'] as bool? ?? false;
+      crosspostAreas = (restored['additional'] as List? ?? [])
+          .map((a) => Conference.fromJson(a as Map<String, dynamic>))
+          .toList();
+      templateReady = true;
+      if (restored['hadAttachment'] == true) error = 'Файл не сохраняется на устройстве. Для незавершённой отправки сначала проверьте результат в профилях.';
+    } else {
+      unawaited(initializeTemplate());
+    }
+    for (final controller in [toName, toAddress, subject, body]) {
+      controller.addListener(() => unawaited(saveWebDraft()));
+    }
   }
 
   Future<void> initializeTemplate() async {
@@ -2372,6 +2478,7 @@ class _ComposeScreenState extends State<_ComposeScreen> {
         customTemplate = true;
       }
       setState(() => templateReady = true);
+      await saveWebDraft();
     } catch (e) {
       if (mounted && widget.repository.epoch == epoch) {
         setState(() => templateError = 'Не удалось применить шаблон: $e');
@@ -2381,6 +2488,7 @@ class _ComposeScreenState extends State<_ComposeScreen> {
 
   @override
   void dispose() {
+    if (kIsWeb) telegramHost.editing(false);
     appUpdates.removeExitGuard(this);
     unawaited(cancellation.cancel());
     unawaited(subscription.cancel());
@@ -2444,10 +2552,23 @@ class _ComposeScreenState extends State<_ComposeScreen> {
 
   Future<void> send() async {
     if (!templateReady || sending || widget.repository.epoch != epoch) return;
+    if (lostAttachment) {
+      setState(
+        () => error = 'Перед отправкой выберите вложение заново. Прежний файл не сохраняется на устройстве.',
+      );
+      return;
+    }
+    if (widget.restoredDraft != null && uncertain) {
+      setState(
+        () => error = 'Результат прежней отправки неизвестен. Проверьте или повторите сохранённую операцию на экране профилей.',
+      );
+      return;
+    }
     setState(() {
       sending = true;
       error = null;
     });
+    await saveWebDraft();
     var submitted = false;
     try {
       if ((widget.forward || widget.crossAreaReply) && !uncertain) {
@@ -2583,6 +2704,11 @@ class _ComposeScreenState extends State<_ComposeScreen> {
         await WidgetsBinding.instance.endOfFrame;
         if (!mounted) return;
       }
+      draftCompleted = true;
+      if (draftScope != null) {
+        await WebDraftStore.active?.complete(draftScope!, operationId);
+      }
+      if (!mounted || widget.repository.epoch != epoch) return;
       widget.repository.forgetCompletedOperation(operationId);
       Navigator.pop(context, true);
     } catch (e) {
@@ -2620,6 +2746,8 @@ class _ComposeScreenState extends State<_ComposeScreen> {
             ? 'Подтверждение не получено. Повторите отправку с тем же текстом: дубликат не будет создан.'
             : e.toString();
       });
+      await saveWebDraft();
+      if (!mounted || widget.repository.epoch != epoch) return;
       if (widget.forward &&
           destination == null &&
           !uncertain &&
@@ -2813,6 +2941,20 @@ class _ComposeScreenState extends State<_ComposeScreen> {
             ),
             if (widget.kind == AreaKind.echo ||
                 widget.kind == AreaKind.netmail) ...[
+              if (lostAttachment && !uncertain)
+                TextButton(
+                  onPressed: sending
+                      ? null
+                      : () {
+                          setState(() {
+                            lostAttachment = false;
+                            error = null;
+                            operationId = MessageRepository.newOperationId();
+                          });
+                          unawaited(saveWebDraft());
+                        },
+                  child: const Text('Продолжить без прежнего вложения'),
+                ),
               if (crosspostAreas.isNotEmpty)
                 const Text(
                   'Чтобы прикрепить UUE-файл, сначала снимите выбор эх кросспостинга.',
@@ -2850,11 +2992,15 @@ class _ComposeScreenState extends State<_ComposeScreen> {
                       tooltip: 'Убрать файл',
                       onPressed: sending || uncertain
                           ? null
-                          : () => setState(() {
-                              attachment = null;
-                              frozenUue = null;
-                              operationId = MessageRepository.newOperationId();
-                            }),
+                          : () async {
+                              setState(() {
+                                attachment = null;
+                                frozenUue = null;
+                                operationId =
+                                    MessageRepository.newOperationId();
+                              });
+                              await saveWebDraft();
+                            },
                       icon: const Icon(Icons.close),
                     ),
                   ),

@@ -85,6 +85,23 @@ class ExportTest(unittest.TestCase):
             exporter.export(self.source, self.root/'output')
         self.assertNotIn('private-password-value', str(found.exception))
 
+    def test_workflow_oidc_permission_is_not_a_literal_token(self):
+        workflow = self.source/'.github/workflows/pages.yml'
+        workflow.parent.mkdir(parents=True)
+        workflow.write_text('permissions:\n  contents: read\n  id-token: write\n')
+        report = exporter.export(self.source, self.root/'output')
+        self.assertIn('.github/workflows/pages.yml', report['files'])
+
+    def test_oidc_permission_exception_does_not_hide_credentials(self):
+        for path, content in [
+            ('.github/workflows/pages.yml', 'id-token: accidental-literal-token'),
+            ('.github/workflows/pages.yml', 'id-token: write\ntoken: literal-secret'),
+            ('.github/workflows/pages.yml', 'id-token: write\npassword: literal-secret'),
+            ('apps/backend/credentials.yaml', 'id-token: write'),
+        ]:
+            with self.subTest(path=path, content=content):
+                self.assertTrue(exporter.scan(content.encode(), pathlib.Path(path))[0])
+
     def test_finding_does_not_expose_secret(self):
         token = 'ghp_'+'b'*40
         (self.source/'apps/backend/accidental.txt').write_text(token)
@@ -243,7 +260,7 @@ class PublicationTest(unittest.TestCase):
         self.assertEqual(manifest['update_sequence'], self.identity['build_number'])
         self.assertEqual(manifest['channel'], 'dev')
         self.assertEqual(manifest['compatibility']['state_schema_min'], 9)
-        self.assertEqual(manifest['compatibility']['state_schema_max'], 11)
+        self.assertEqual(manifest['compatibility']['state_schema_max'], 12)
 
     def test_inventory_rejects_mixed_identity_platform_size_and_compatibility(self):
         for change in ({'version': '2.0.0'}, {'build_number': 1002}, {'stable': True},

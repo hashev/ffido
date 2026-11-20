@@ -12,10 +12,10 @@ class Files extends UueFiles {
   @override
   Future<SelectedUueFile?> pick(int maxBytes) async => null;
   @override
-  Future<bool> save(String name, Uint8List bytes) async {
+  Future<UueSaveResult> save(String name, Uint8List bytes) async {
     this.name = name;
     this.bytes = bytes;
-    return answer;
+    return answer ? UueSaveResult.saved : UueSaveResult.cancelled;
   }
 }
 
@@ -79,7 +79,7 @@ void main() {
       );
       final files = Files()..answer = false;
       final save = PlatformImageActions(files: files);
-      expect(await save.save('../a.png', bytes), isFalse);
+      expect(await save.save('../a.png', bytes), UueSaveResult.cancelled);
       expect(files.name, 'a.png');
       expect(files.bytes, bytes);
     },

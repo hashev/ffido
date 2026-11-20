@@ -8,6 +8,32 @@
 
 namespace fs = std::filesystem;
 
+TEST(AppConfig, TelegramRequiresBoundedExplicitConfiguration) {
+  EXPECT_EQ(DefaultConfig().auth.telegram.bot_id, 0);
+  nlohmann::json config = {{"auth",
+                            {{"hpt_config_path", "hpt.cfg"},
+                             {"session_key_path", "session.key"},
+                             {"telegram", {{"bot_id", 123}, {"test_environment", true}}}}}};
+  auto parsed = ParseAppConfig(config);
+  ASSERT_TRUE(parsed);
+  EXPECT_EQ(parsed->auth.telegram.bot_id, 123);
+  EXPECT_TRUE(parsed->auth.telegram.test_environment);
+  for (const auto& value :
+       {nlohmann::json(-1), nlohmann::json(1.5), nlohmann::json("123"), nlohmann::json(UINT64_MAX)}) {
+    auto invalid = config;
+    invalid["auth"]["telegram"]["bot_id"] = value;
+    EXPECT_FALSE(ParseAppConfig(invalid));
+  }
+  for (const auto& [name, value] : {std::pair{"max_age_seconds", 0},
+                                    {"max_age_seconds", 3601},
+                                    {"clock_skew_seconds", -1},
+                                    {"clock_skew_seconds", 301}}) {
+    auto invalid = config;
+    invalid["auth"]["telegram"][name] = value;
+    EXPECT_FALSE(ParseAppConfig(invalid));
+  }
+}
+
 TEST(AppConfig, DefaultConfigHasReasonableValues) {
   auto cfg = DefaultConfig();
   EXPECT_EQ(cfg.server.ip, "0.0.0.0");

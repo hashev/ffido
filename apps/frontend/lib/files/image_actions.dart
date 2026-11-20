@@ -33,7 +33,7 @@ abstract class ImageActions {
     bool Function()? isActive,
   });
   Future<void> cancelPending() async {}
-  Future<bool> save(String name, Uint8List bytes);
+  Future<UueSaveResult> save(String name, Uint8List bytes);
 }
 
 class PlatformImageActions implements ImageActions {
@@ -113,6 +113,6 @@ class PlatformImageActions implements ImageActions {
   }
 
   @override
-  Future<bool> save(String name, Uint8List bytes) =>
+  Future<UueSaveResult> save(String name, Uint8List bytes) =>
       (files ?? uueFiles).save(safeUueName(name), bytes);
 }

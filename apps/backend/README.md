@@ -1,5 +1,32 @@
 # Backend FFIDO
 
+## Telegram Mini App
+
+RPC `GetServerCapabilities`, `ListTelegramProfiles`, `LoginWithTelegram`,
+`BindTelegram`, `GetTelegramBinding`, `UnbindTelegram` используют общий gRPC/gRPC-Web.
+Первые три доступны до FFIDO-сессии: capabilities не раскрывает профили,
+список и вход требуют свежую Ed25519-подпись Telegram. Bind требует сессию,
+текущий HPT-пароль и Telegram proof; просмотр и отвязка — сессию своего профиля.
+
+В `auth` можно задать `telegram: {"bot_id": 123456789, "test_environment": false,
+"max_age_seconds": 300, "clock_skew_seconds": 30}`. ID — пример. Без положительного
+bot_id capability выключена. Test environment означает отдельную среду Telegram,
+а не тестирование будущего основного бота на отдельном backend в обычном Telegram:
+для него `test_environment: false`. Токен бота backend не нужен.
+Проверяется публичный ключ Telegram соответствующей среды; часы узла должны быть точны.
+initData передаётся в protobuf, не в URL/логах. Запросы ограничены по размеру,
+конкуренции, deadline и частоте источника; ошибка сети не означает старый сервер.
+Публичные Telegram-запросы имеют отдельный бюджет 120/мин на транспортный источник,
+не расходующий бюджет HPT-входа и bind (10/мин). За gateway транспортный источник
+может быть общим для нескольких пользователей; forwarded metadata не считается доверенным IP.
+
+SQLite schema 12 хранит привязки локально и связывает Telegram-сессии с ревизией.
+Миграция сохраняет прежние профили и HPT-сессии. Перед обновлением требуется
+резервная копия; старый бинарный файл может не поддерживать новую схему.
+Смена эффективного HPT-пароля/удаление доступа после успешной загрузки конфигурации
+отзывает привязку и сессии. Отвязка/замена отзывают только её Telegram-сессии.
+Клиентская проверка initDataUnsafe не считается авторизацией.
+
 C++23 backend использует только `ffido.v1.Ffido` gRPC API из
 `contracts/ffido/v1/ffido.proto`. REST, static-file serving и JWT удалены.
 Все 13 RPC требуют `authorization: Bearer <opaque-token>` по TLS; имя,

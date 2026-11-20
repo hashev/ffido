@@ -198,6 +198,7 @@ int RunBackend(int argc, char** argv) {
     spdlog::error("Authentication initialization failed");
     return 1;
   }
+  service.ConfigureTelegram(config->auth.telegram);
   grpc::SslServerCredentialsOptions tls;
   tls.pem_key_cert_pairs.push_back({*key, *certificate});
   grpc::ServerBuilder builder;

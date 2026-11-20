@@ -55,6 +55,7 @@ set(FIDOBACK_LIB_SOURCES
   src/service/message_service.cpp
   src/service/uue_service.cpp
   src/service/auth_service.cpp
+  src/service/telegram_auth.cpp
   src/service/echo_access.cpp
   src/service/hpt_catalog.cpp
   src/service/hpt_auth.cpp
@@ -121,6 +122,7 @@ set(TEST_SOURCES
   tests/unit/test_coordination.cpp
   tests/unit/test_sqlite_store.cpp
   tests/unit/test_auth_service.cpp
+  tests/unit/test_telegram_auth.cpp
   tests/unit/test_hpt_auth.cpp
   tests/unit/test_point_mail.cpp
   tests/unit/test_app_config.cpp
@@ -233,5 +235,6 @@ target_compile_definitions(fidoback_tests PRIVATE FFIDO_MCP_FAULT_LIBRARY="$<TAR
 install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/../../docs/mcp.md DESTINATION share/ffido COMPONENT ffido)
 
 target_compile_definitions(fidoback_tests PRIVATE FFIDO_MCP_LOGIN_TEST="${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/test_mcp_login.py")
+target_compile_definitions(fidoback_tests PRIVATE FFIDO_TELEGRAM_WEB_TEST="${CMAKE_CURRENT_SOURCE_DIR}/tests/support/telegram_web_fixture.py")
 
 add_test(NAME McpInstall COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/test_mcp_install.py ${CMAKE_COMMAND} ${CMAKE_BINARY_DIR})

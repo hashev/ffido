@@ -10,9 +10,27 @@ class SelectedUueFile {
     : bytes = Uint8List.fromList(bytes).asUnmodifiableView();
 }
 
+enum UueSaveResult {
+  cancelled,
+  saved,
+  downloadRequested,
+  shared,
+  unsupported;
+
+  String? get message => switch (this) {
+    cancelled => null,
+    saved => 'Файл сохранён',
+    downloadRequested => 'Скачивание запрошено. Проверьте загрузки браузера.',
+    shared =>
+      'Файл передан системному меню. Проверьте выбранное место сохранения.',
+    unsupported => 'Сохранение файлов недоступно в этом Mini App. Откройте Web-клиент в обычном браузере и сохраните вложение там.',
+  };
+}
+
 abstract class UueFiles {
+  bool get requiresSaveGesture => false;
   Future<SelectedUueFile?> pick(int maxBytes);
-  Future<bool> save(String name, Uint8List bytes);
+  Future<UueSaveResult> save(String name, Uint8List bytes);
 }
 
 String safeUueName(String input) {

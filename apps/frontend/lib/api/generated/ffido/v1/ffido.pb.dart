@@ -2431,6 +2431,383 @@ class LoginRequest extends $pb.GeneratedMessage {
   void clearPassword() => $_clearField(3);
 }
 
+/// Публичные возможности без раскрытия пользователей или конфигурации HPT.
+class ServerCapabilities extends $pb.GeneratedMessage {
+  factory ServerCapabilities({
+    $core.bool? supportsTelegram,
+  }) {
+    final result = ServerCapabilities._();
+    if (supportsTelegram != null) result.supportsTelegram = supportsTelegram;
+    return result;
+  }
+
+  ServerCapabilities._();
+
+  factory ServerCapabilities.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      ServerCapabilities()..mergeFromBuffer(data, registry);
+  factory ServerCapabilities.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      ServerCapabilities()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'ServerCapabilities',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'ffido.v1'),
+      createEmptyInstance: ServerCapabilities.$_createMessage)
+    ..aOB(1, _omitFieldNames ? '' : 'supportsTelegram')
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  ServerCapabilities clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  ServerCapabilities copyWith(void Function(ServerCapabilities) updates) =>
+      super.copyWith((message) => updates(message as ServerCapabilities))
+          as ServerCapabilities;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  @$core.Deprecated('Use ServerCapabilities() / ServerCapabilities.new instead')
+  static ServerCapabilities create() => ServerCapabilities._();
+  static $pb.GeneratedMessage $_createMessage() => ServerCapabilities._();
+  @$core.override
+  ServerCapabilities createEmptyInstance() => ServerCapabilities._();
+  @$core.pragma('dart2js:noInline')
+  static ServerCapabilities getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<ServerCapabilities>(
+          ServerCapabilities.$_createMessage);
+  static ServerCapabilities? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $core.bool get supportsTelegram => $_getBF(0);
+  @$pb.TagNumber(1)
+  set supportsTelegram($core.bool value) => $_setBool(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasSupportsTelegram() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearSupportsTelegram() => $_clearField(1);
+}
+
+class TelegramProof extends $pb.GeneratedMessage {
+  factory TelegramProof({
+    $core.String? initData,
+  }) {
+    final result = TelegramProof._();
+    if (initData != null) result.initData = initData;
+    return result;
+  }
+
+  TelegramProof._();
+
+  factory TelegramProof.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      TelegramProof()..mergeFromBuffer(data, registry);
+  factory TelegramProof.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      TelegramProof()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'TelegramProof',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'ffido.v1'),
+      createEmptyInstance: TelegramProof.$_createMessage)
+    ..aOS(1, _omitFieldNames ? '' : 'initData')
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  TelegramProof clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  TelegramProof copyWith(void Function(TelegramProof) updates) =>
+      super.copyWith((message) => updates(message as TelegramProof))
+          as TelegramProof;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  @$core.Deprecated('Use TelegramProof() / TelegramProof.new instead')
+  static TelegramProof create() => TelegramProof._();
+  static $pb.GeneratedMessage $_createMessage() => TelegramProof._();
+  @$core.override
+  TelegramProof createEmptyInstance() => TelegramProof._();
+  @$core.pragma('dart2js:noInline')
+  static TelegramProof getDefault() =>
+      _defaultInstance ??= $pb.GeneratedMessage.$_defaultFor<TelegramProof>(
+          TelegramProof.$_createMessage);
+  static TelegramProof? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $core.String get initData => $_getSZ(0);
+  @$pb.TagNumber(1)
+  set initData($core.String value) => $_setString(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasInitData() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearInitData() => $_clearField(1);
+}
+
+class TelegramProfiles extends $pb.GeneratedMessage {
+  factory TelegramProfiles({
+    $core.Iterable<Profile>? profiles,
+  }) {
+    final result = TelegramProfiles._();
+    if (profiles != null) result.profiles.addAll(profiles);
+    return result;
+  }
+
+  TelegramProfiles._();
+
+  factory TelegramProfiles.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      TelegramProfiles()..mergeFromBuffer(data, registry);
+  factory TelegramProfiles.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      TelegramProfiles()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'TelegramProfiles',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'ffido.v1'),
+      createEmptyInstance: TelegramProfiles.$_createMessage)
+    ..pPM<Profile>(1, _omitFieldNames ? '' : 'profiles',
+        subBuilder: Profile.$_createMessage)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  TelegramProfiles clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  TelegramProfiles copyWith(void Function(TelegramProfiles) updates) =>
+      super.copyWith((message) => updates(message as TelegramProfiles))
+          as TelegramProfiles;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  @$core.Deprecated('Use TelegramProfiles() / TelegramProfiles.new instead')
+  static TelegramProfiles create() => TelegramProfiles._();
+  static $pb.GeneratedMessage $_createMessage() => TelegramProfiles._();
+  @$core.override
+  TelegramProfiles createEmptyInstance() => TelegramProfiles._();
+  @$core.pragma('dart2js:noInline')
+  static TelegramProfiles getDefault() =>
+      _defaultInstance ??= $pb.GeneratedMessage.$_defaultFor<TelegramProfiles>(
+          TelegramProfiles.$_createMessage);
+  static TelegramProfiles? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $pb.PbList<Profile> get profiles => $_getList(0);
+}
+
+class TelegramLoginRequest extends $pb.GeneratedMessage {
+  factory TelegramLoginRequest({
+    $core.String? initData,
+    $core.String? address,
+  }) {
+    final result = TelegramLoginRequest._();
+    if (initData != null) result.initData = initData;
+    if (address != null) result.address = address;
+    return result;
+  }
+
+  TelegramLoginRequest._();
+
+  factory TelegramLoginRequest.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      TelegramLoginRequest()..mergeFromBuffer(data, registry);
+  factory TelegramLoginRequest.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      TelegramLoginRequest()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'TelegramLoginRequest',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'ffido.v1'),
+      createEmptyInstance: TelegramLoginRequest.$_createMessage)
+    ..aOS(1, _omitFieldNames ? '' : 'initData')
+    ..aOS(2, _omitFieldNames ? '' : 'address')
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  TelegramLoginRequest clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  TelegramLoginRequest copyWith(void Function(TelegramLoginRequest) updates) =>
+      super.copyWith((message) => updates(message as TelegramLoginRequest))
+          as TelegramLoginRequest;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  @$core.Deprecated(
+      'Use TelegramLoginRequest() / TelegramLoginRequest.new instead')
+  static TelegramLoginRequest create() => TelegramLoginRequest._();
+  static $pb.GeneratedMessage $_createMessage() => TelegramLoginRequest._();
+  @$core.override
+  TelegramLoginRequest createEmptyInstance() => TelegramLoginRequest._();
+  @$core.pragma('dart2js:noInline')
+  static TelegramLoginRequest getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<TelegramLoginRequest>(
+          TelegramLoginRequest.$_createMessage);
+  static TelegramLoginRequest? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $core.String get initData => $_getSZ(0);
+  @$pb.TagNumber(1)
+  set initData($core.String value) => $_setString(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasInitData() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearInitData() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  $core.String get address => $_getSZ(1);
+  @$pb.TagNumber(2)
+  set address($core.String value) => $_setString(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasAddress() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearAddress() => $_clearField(2);
+}
+
+class BindTelegramRequest extends $pb.GeneratedMessage {
+  factory BindTelegramRequest({
+    $core.String? initData,
+    $core.String? password,
+    $core.bool? replaceExisting,
+  }) {
+    final result = BindTelegramRequest._();
+    if (initData != null) result.initData = initData;
+    if (password != null) result.password = password;
+    if (replaceExisting != null) result.replaceExisting = replaceExisting;
+    return result;
+  }
+
+  BindTelegramRequest._();
+
+  factory BindTelegramRequest.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      BindTelegramRequest()..mergeFromBuffer(data, registry);
+  factory BindTelegramRequest.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      BindTelegramRequest()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'BindTelegramRequest',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'ffido.v1'),
+      createEmptyInstance: BindTelegramRequest.$_createMessage)
+    ..aOS(1, _omitFieldNames ? '' : 'initData')
+    ..aOS(2, _omitFieldNames ? '' : 'password')
+    ..aOB(3, _omitFieldNames ? '' : 'replaceExisting')
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  BindTelegramRequest clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  BindTelegramRequest copyWith(void Function(BindTelegramRequest) updates) =>
+      super.copyWith((message) => updates(message as BindTelegramRequest))
+          as BindTelegramRequest;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  @$core
+      .Deprecated('Use BindTelegramRequest() / BindTelegramRequest.new instead')
+  static BindTelegramRequest create() => BindTelegramRequest._();
+  static $pb.GeneratedMessage $_createMessage() => BindTelegramRequest._();
+  @$core.override
+  BindTelegramRequest createEmptyInstance() => BindTelegramRequest._();
+  @$core.pragma('dart2js:noInline')
+  static BindTelegramRequest getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<BindTelegramRequest>(
+          BindTelegramRequest.$_createMessage);
+  static BindTelegramRequest? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $core.String get initData => $_getSZ(0);
+  @$pb.TagNumber(1)
+  set initData($core.String value) => $_setString(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasInitData() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearInitData() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  $core.String get password => $_getSZ(1);
+  @$pb.TagNumber(2)
+  set password($core.String value) => $_setString(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasPassword() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearPassword() => $_clearField(2);
+
+  @$pb.TagNumber(3)
+  $core.bool get replaceExisting => $_getBF(2);
+  @$pb.TagNumber(3)
+  set replaceExisting($core.bool value) => $_setBool(2, value);
+  @$pb.TagNumber(3)
+  $core.bool hasReplaceExisting() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearReplaceExisting() => $_clearField(3);
+}
+
+/// Состояние только профиля текущей сессии; чужой Telegram ID не раскрывается.
+class TelegramBinding extends $pb.GeneratedMessage {
+  factory TelegramBinding({
+    $core.bool? bound,
+  }) {
+    final result = TelegramBinding._();
+    if (bound != null) result.bound = bound;
+    return result;
+  }
+
+  TelegramBinding._();
+
+  factory TelegramBinding.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      TelegramBinding()..mergeFromBuffer(data, registry);
+  factory TelegramBinding.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      TelegramBinding()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'TelegramBinding',
+      package: const $pb.PackageName(_omitMessageNames ? '' : 'ffido.v1'),
+      createEmptyInstance: TelegramBinding.$_createMessage)
+    ..aOB(1, _omitFieldNames ? '' : 'bound')
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  TelegramBinding clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  TelegramBinding copyWith(void Function(TelegramBinding) updates) =>
+      super.copyWith((message) => updates(message as TelegramBinding))
+          as TelegramBinding;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  @$core.Deprecated('Use TelegramBinding() / TelegramBinding.new instead')
+  static TelegramBinding create() => TelegramBinding._();
+  static $pb.GeneratedMessage $_createMessage() => TelegramBinding._();
+  @$core.override
+  TelegramBinding createEmptyInstance() => TelegramBinding._();
+  @$core.pragma('dart2js:noInline')
+  static TelegramBinding getDefault() =>
+      _defaultInstance ??= $pb.GeneratedMessage.$_defaultFor<TelegramBinding>(
+          TelegramBinding.$_createMessage);
+  static TelegramBinding? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $core.bool get bound => $_getBF(0);
+  @$pb.TagNumber(1)
+  set bound($core.bool value) => $_setBool(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasBound() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearBound() => $_clearField(1);
+}
+
 class SessionInfo extends $pb.GeneratedMessage {
   factory SessionInfo({
     Profile? profile,

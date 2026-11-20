@@ -524,16 +524,41 @@ class _UueAttachmentCardState extends State<UueAttachmentCard> {
         file,
         cancellation: cancellation,
       );
-      if (!active) return;
-      final saved = await (widget.files ?? uueFiles).save(
-        safeUueName(file.name),
-        bytes,
-      );
-      if (!mounted) return;
-      if (active && saved) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Файл передан для сохранения')),
+      if (!mounted || !active) return;
+      final files = widget.files ?? uueFiles;
+      final name = safeUueName(file.name);
+      Future<UueSaveResult>? export;
+      if (files.requiresSaveGesture) {
+        // Network reads can consume transient browser activation. Start the
+        // system export directly from a fresh user gesture after fetching bytes.
+        await showDialog<void>(
+          context: context,
+          builder: (dialogContext) => AlertDialog(
+            title: const Text('Вложение готово'),
+            content: Text('$name\nВыберите место сохранения в системном меню.'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext),
+                child: const Text('Отмена'),
+              ),
+              FilledButton(
+                onPressed: () {
+                  if (active) export = files.save(name, bytes);
+                  Navigator.pop(dialogContext);
+                },
+                child: const Text('Сохранить или передать файл'),
+              ),
+            ],
+          ),
         );
+      } else {
+        export = files.save(name, bytes);
+      }
+      final saved = await (export ?? Future.value(UueSaveResult.cancelled));
+      if (!mounted) return;
+      if (active && saved.message != null) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(saved.message!)));
       }
     } catch (_) {
       if (active) {

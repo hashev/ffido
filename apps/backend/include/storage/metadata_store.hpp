@@ -141,6 +141,17 @@ public:
       const TokenDigest& fingerprint, int64_t expires_at) = 0;
   virtual std::expected<void, domain::ApiError> RevokeUserSessions(std::string_view user) = 0;
 
+  virtual std::expected<bool, domain::ApiError> TelegramBinding(std::string_view user) = 0;
+  virtual std::expected<void, domain::ApiError> BindTelegram(std::string_view user, int64_t bot, int64_t telegram_user,
+                                                             const TokenDigest& fingerprint, bool replace) = 0;
+  virtual std::expected<void, domain::ApiError> UnbindTelegram(std::string_view user) = 0;
+  virtual std::expected<std::vector<AuthenticatedUser>, domain::ApiError> TelegramProfiles(int64_t bot,
+                                                                                           int64_t telegram_user) = 0;
+  virtual std::expected<AuthenticatedUser, domain::ApiError> CreateTelegramSession(int64_t bot, int64_t telegram_user,
+                                                                                   std::string_view address,
+                                                                                   const TokenDigest& digest,
+                                                                                   int64_t expires_at) = 0;
+
   virtual std::expected<std::optional<Operation>, domain::ApiError> FindOperation(std::string_view user,
                                                                                   std::string_view id) = 0;
   // Only a committed send with the exact current JAM identity can supply a missing DADDRESS.
