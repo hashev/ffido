@@ -1,5 +1,6 @@
 import json
 import base64
+import gzip
 import os
 from pathlib import Path
 import sys
@@ -22,6 +23,39 @@ class PairHostTest(unittest.TestCase):
         self.host = pair_host.Host.__new__(pair_host.Host)
         self.host.state = self.root
         self.host.image_bytes = 20
+
+    def test_compressed_image_export_roundtrips_with_private_deterministic_bytes(self):
+        archive = self.root/'images.tar'
+        payload = b'complete Docker save stream\0' * 4096
+        def save(args, **kwargs):
+            self.assertEqual(args[:3], ['docker', 'save', '--output'])
+            self.assertEqual(args[4:], ['source', 'target'])
+            Path(args[3]).write_bytes(payload)
+        with patch.object(pair_host.subprocess, 'run', side_effect=save):
+            pair_host.export_images(archive, ['source', 'target'])
+            first = archive.read_bytes()
+            pair_host.export_images(archive, ['source', 'target'])
+        with gzip.open(archive, 'rb') as source:
+            self.assertEqual(source.read(), payload)
+        self.assertEqual(archive.read_bytes(), first)
+        self.assertLess(archive.stat().st_size, len(payload))
+        self.assertEqual(archive.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(list(self.root.iterdir()), [archive])
+
+    def test_failed_save_or_compression_keeps_previous_export_and_cleans_temporaries(self):
+        archive = self.root/'images.tar'
+        archive.write_bytes(b'previous verified export')
+        def save(args, **kwargs):
+            Path(args[3]).write_bytes(b'complete Docker stream')
+        for failure in ('save', 'compression'):
+            with self.subTest(failure=failure):
+                with patch.object(pair_host.subprocess, 'run', side_effect=
+                                  subprocess.CalledProcessError(1, ['docker']) if failure == 'save' else save), \
+                     patch.object(pair_host.shutil, 'copyfileobj', side_effect=OSError('disk full')):
+                    with self.assertRaises((OSError, subprocess.CalledProcessError)):
+                        pair_host.export_images(archive, ['source', 'target'])
+                self.assertEqual(archive.read_bytes(), b'previous verified export')
+                self.assertEqual(list(self.root.iterdir()), [archive])
 
     def test_switch_and_rollback_preserve_worker_identity_owner_and_permissions(self):
         identity = self.root/'identity.json'

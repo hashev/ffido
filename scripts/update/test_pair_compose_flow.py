@@ -356,6 +356,14 @@ raise SystemExit(updater.main(sys.argv[1:]))
         pending = json.loads((state/'pair-operation.json').read_text())
         if pending['phase'] != 'switching' or pending['admitted']:
             raise ValueError('Unsafe crash journal')
+        archive = state/'rollback-images/images.tar'
+        with archive.open('rb') as saved:
+            if saved.read(2) != b'\x1f\x8b':
+                raise ValueError('Fresh image backup is not compressed')
+        command('docker', 'load', '--input', archive)
+        for image in {source_backend, source_worker, *pending['prepared']['images'].values()}:
+            if json.loads(command('docker', 'image', 'inspect', image))[0]['Id'] != image:
+                raise ValueError('Compressed image restore changed identity')
         current = command(*compose, 'ps', '-a', '-q', 'backend')
         status = json.loads(command('docker', 'inspect', current))[0]['State']
         if status['Running']:
@@ -402,6 +410,7 @@ raise SystemExit(updater.main(sys.argv[1:]))
                   'unrelated_service_unchanged': True, 'gateway_pid_unchanged': True,
                   'invalid_signature_and_worker_change_rejected': True,
                   'controller_crash_full_restore_rollback': True,
+                  'compressed_docker_archive_load': True,
                   'snapshot_rollback_after_admission_blocked': True,
                   'ftn_network': False, 'production_published': False}
         private(work/'result.json', result)

@@ -2,6 +2,7 @@
 import base64
 import contextlib
 import copy
+import gzip
 import hashlib
 import json
 import os
@@ -11,6 +12,7 @@ import shutil
 import subprocess
 import sqlite3
 import time
+import tempfile
 import uuid
 
 import common
@@ -45,6 +47,21 @@ while not stop:
  connection.close()
 ready.close()
 '''
+
+
+def export_images(archive, images):
+    """Atomically export Docker's lossless gzip load format inside the budget."""
+    with tempfile.TemporaryDirectory(prefix='.image-export-', dir=archive.parent) as temporary:
+        raw, compressed = Path(temporary)/'images.tar', Path(temporary)/'images.gz'
+        subprocess.run(['docker', 'save', '--output', str(raw), *images],
+                       check=True, capture_output=True, timeout=600)
+        with raw.open('rb') as source, compressed.open('xb') as destination:
+            os.fchmod(destination.fileno(), 0o600)
+            with gzip.GzipFile(filename='', fileobj=destination, mode='wb', compresslevel=1, mtime=0) as output:
+                shutil.copyfileobj(source, output, 1024*1024)
+            destination.flush()
+            os.fsync(destination.fileno())
+        compressed.replace(archive)
 
 
 class Host:
@@ -170,10 +187,8 @@ class Host:
                     and cached.get('target') == result
                     and node.file_hash(exports, 'images.tar')[0] == cached.get('archive_sha256'))
         if not reusable:
-            subprocess.run(['docker', 'save', '--output', str(archive), *source_ids,
-                            *result['images'].values(), *(info['Id'] for info in extra.values())],
-                            check=True, capture_output=True, timeout=600)
-            archive.chmod(0o600)
+            export_images(archive, [*source_ids, *result['images'].values(),
+                                   *(info['Id'] for info in extra.values())])
             atomic_json(metadata, {'source': self.plan['source'], 'target': result,
                                   'archive_sha256': node.file_hash(exports, 'images.tar')[0]})
         node.require(Path(self.plan['components']['images']['root']).resolve() == exports.resolve(),
