@@ -10,6 +10,7 @@
 #include "service/point_mail.hpp"
 #include "storage/coordination_lock.hpp"
 #include "storage/jam_lock.hpp"
+#include "storage/mailbox_restore.hpp"
 #include "storage/point_mailbox.hpp"
 
 namespace fidoback::service {
@@ -97,6 +98,10 @@ int RunMailStage(const std::filesystem::path& configuration, const std::filesyst
   if (!opened) {
     std::cerr << "Mail cycle catalog failed: stage=" << stage << " area=" << diagnostic.area
               << " category=" << static_cast<int>(opened.error()) << " errno=" << diagnostic.system_error << '\n';
+    return 1;
+  }
+  if (!storage::BindRestoredGenerations(**opened, config->database.metadata_path)) {
+    std::cerr << "Restored JAM identity verification failed\n";
     return 1;
   }
   auto catalog = std::shared_ptr<storage::JamCatalog>(std::move(*opened));

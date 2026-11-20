@@ -48,6 +48,7 @@ set(FIDOBACK_LIB_SOURCES
   src/storage/jam_encoding_corrections.cpp
   src/storage/jam_writer.cpp
   src/storage/jam_audit.cpp
+  src/storage/mailbox_restore.cpp
   src/storage/point_mailbox.cpp
   src/storage/text_codec.cpp
   src/service/conference_service.cpp
@@ -89,6 +90,10 @@ add_test(NAME UueFixtureOracle COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOU
 add_test(NAME JamEncodingCorrections COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/test_jam_encoding_check.py $<TARGET_FILE:ffido-jam-encoding-check>)
 add_test(NAME JamUtf8Repair COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/test_repair_jam_utf8.py)
 add_test(NAME HptWrapper COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/test_hpt_wrapper.py ${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/run_hpt.py)
+add_test(NAME NodeBackup COMMAND ${Python3_EXECUTABLE} -m unittest discover -s ${CMAKE_CURRENT_SOURCE_DIR}/../../scripts -p test_node_backup.py)
+add_library(ffido-restore-sync-fault SHARED tests/support/restore_sync_fault.cpp)
+target_link_libraries(ffido-restore-sync-fault PRIVATE ffido_backend_checks ${CMAKE_DL_LIBS})
+add_test(NAME MailboxRestore COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/test_mailbox_restore.py $<TARGET_FILE:ffido-admin> $<TARGET_FILE:ffido-restore-sync-fault>)
 add_test(NAME AdminCommands COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/test_admin.py $<TARGET_FILE:ffido-admin>)
 add_test(NAME HptRoutingFixtures COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/support/hpt_routing_fixture.py ${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/run_hpt.py)
 set_tests_properties(HptRoutingFixtures PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
@@ -193,6 +198,7 @@ endif()
 
 install(TARGETS fidoback ffido-admin ffido-hpt-auth ffido-jam-encoding-check RUNTIME DESTINATION bin COMPONENT ffido)
 install(PROGRAMS ${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/run_hpt.py DESTINATION bin RENAME ffido-run-hpt COMPONENT ffido)
+install(PROGRAMS ${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/node_backup.py DESTINATION bin RENAME ffido-node-backup COMPONENT ffido)
 install(FILES config.example.json DESTINATION share/ffido COMPONENT ffido)
 
 install(PROGRAMS ${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/update/ffido-update DESTINATION bin COMPONENT ffido)

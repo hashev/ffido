@@ -145,8 +145,13 @@ std::expected<void, domain::ApiError> JamWriter::Recover(const JamCatalog& catal
     return std::unexpected(Failure());
   const auto& identity = owner.identities[0];
   const auto before = msgapi::jam_wire::Decode(plan.original_base);
-  const auto generation = std::to_string(identity.st_dev) + ":" + std::to_string(identity.st_ino) + ":" +
-                          std::to_string(before.date_created) + ":" + std::to_string(before.base_msg_num);
+  auto generation = std::to_string(identity.st_dev) + ":" + std::to_string(identity.st_ino) + ":" +
+                    std::to_string(before.date_created) + ":" + std::to_string(before.base_msg_num);
+  if (!owner.restored_physical_generation.empty()) {
+    if (generation != owner.restored_physical_generation)
+      return Quarantine(owner, operation);
+    generation = owner.restored_logical_generation;
+  }
   if (generation != operation.generation || !KnownBase(base, plan))
     return Quarantine(owner, operation);
   const std::array<std::span<const uint8_t>, 3> tails{plan.header, Text(plan.text), plan.index};

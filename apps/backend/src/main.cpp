@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "ffido/v1/ffido.grpc.pb.h"
+#include "storage/mailbox_restore.hpp"
 #ifdef __APPLE__
 #include <mach-o/dyld.h>
 #endif
@@ -171,6 +172,10 @@ int RunBackend(int argc, char** argv) {
                                                      config->ftn.jam_encoding_overrides);
   if (!opened) {
     spdlog::error("JAM catalog unavailable");
+    return 1;
+  }
+  if (!fidoback::storage::BindRestoredGenerations(**opened, config->database.metadata_path)) {
+    spdlog::error("Restored JAM identity verification failed");
     return 1;
   }
   if (corrections) {

@@ -24,6 +24,7 @@ namespace {
 std::vector<fidoback::ftn::PathMapping> mappings;
 std::vector<std::pair<uint64_t, uint64_t>> include_stack;
 nlohmann::json included_files = nlohmann::json::array();
+nlohmann::json backup_files = nlohmann::json::array();
 uint64_t config_bytes = 0;
 bool open_failed = false;
 #endif
@@ -79,6 +80,7 @@ extern "C" FILE* ffido_config_open(const char* name, unsigned depth) {
     }
     include_stack.push_back(identity);
     config_bytes += static_cast<uint64_t>(info.st_size);
+    backup_files.push_back(path.lexically_normal().string());
     if (depth != 0)
       included_files.push_back({{"device", info.st_dev}, {"inode", info.st_ino}});
     return file;
@@ -290,9 +292,19 @@ int main(int argc, char** argv) try {
                                    {"nopack", route.routeVia == nopack},
                                    {"mail", route.id == id_route || route.id == id_routeMail}});
   }
+  nlohmann::json dependencies = nlohmann::json::array();
+#ifdef FFIDO_CONFIG_OPEN_ADAPTER
+  dependencies = backup_files;
+#endif
+  for (const auto* path : {config->intab, config->outtab})
+    if (path && *path)
+      dependencies.push_back(std::filesystem::absolute(path).lexically_normal().string());
   disposeConfig(config);
-  auto document = nlohmann::json{
-      {"credentials", rows}, {"echoes", echoes}, {"private_areas", private_areas}, {"mail_transport", transport}};
+  auto document = nlohmann::json{{"credentials", rows},
+                                 {"echoes", echoes},
+                                 {"private_areas", private_areas},
+                                 {"mail_transport", transport},
+                                 {"backup_files", dependencies}};
 #ifdef FFIDO_CONFIG_OPEN_ADAPTER
   if (!mappings.empty())
     document["included_files"] = included_files;

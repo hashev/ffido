@@ -1,6 +1,7 @@
 #include <fcntl.h>
 #include <gtest/gtest.h>
 #include <spawn.h>
+#include <sqlite3.h>
 #include <sys/wait.h>
 extern char** environ;
 
@@ -18,6 +19,7 @@ extern char** environ;
 #include "service/mail_bridge.hpp"
 #include "service/message_service.hpp"
 #include "service/uue_service.hpp"
+#include "storage/mailbox_restore.hpp"
 #include "storage/point_mailbox.hpp"
 using namespace fidoback;
 namespace {
@@ -1603,4 +1605,60 @@ TEST_F(PrivateAreasTest, PreviewOfNetmailAndLocalNeverCreatesAnIntentOrWritesJam
   for (const auto& area : list->conferences)
     if (area.kind == AreaKind::kBad || area.kind == AreaKind::kDupe || area.kind == AreaKind::kRobots)
       EXPECT_FALSE(messages->CreateMessage(area.id, Request("denied"), "owner", nullptr, true));
+}
+
+TEST_F(PrivateAreasTest, RestoredIngressRetainsFtnSourceKeyAndDoesNotCreateTransfer) {
+  auto config = Mailboxes();
+  Incoming("2:1/2.2");
+  {
+    service::MailBridge bridge(config, hpt, catalog, metadata);
+    ASSERT_TRUE(bridge.Dispatch());
+  }
+  auto before = metadata->MailTransfers();
+  ASSERT_TRUE(before);
+  ASSERT_EQ(before->size(), 1u);
+  const auto original = before->front();
+  std::vector<EchoAreaConfig> areas;
+  for (const auto& [id, area] : catalog->areas())
+    areas.push_back(area.config);
+  messages.reset();
+  conferences.reset();
+  access.reset();
+  catalog.reset();
+  for (const auto* suffix : {".jhr", ".jdt", ".jdx"}) {
+    const auto path = (temp.path() / "MAIL").string() + suffix;
+    std::filesystem::copy_file(path, path + ".relocated");
+    std::filesystem::rename(path + ".relocated", path);
+  }
+  auto opened = storage::JamCatalog::Build(temp.path(), areas);
+  ASSERT_TRUE(opened);
+  catalog = std::shared_ptr<storage::JamCatalog>(std::move(*opened));
+  auto source =
+      storage::JamAccess::Open(*catalog, net, false, std::chrono::steady_clock::now() + std::chrono::seconds(5));
+  ASSERT_TRUE(source);
+  const auto physical = (*source)->generation();
+  source->reset();
+  ASSERT_NE(physical, original.source_generation);
+  sqlite3* db = nullptr;
+  ASSERT_EQ(sqlite3_open((temp.path() / "metadata.db").c_str(), &db), SQLITE_OK);
+  const auto sql =
+      "CREATE TABLE restored_generations(base TEXT PRIMARY KEY,physical_generation TEXT,logical_generation TEXT);"
+      "INSERT INTO restored_generations VALUES('MAIL','" +
+      physical + "','" + original.source_generation + "');";
+  const int result = sqlite3_exec(db, sql.c_str(), nullptr, nullptr, nullptr);
+  sqlite3_close(db);
+  ASSERT_EQ(result, SQLITE_OK);
+  ASSERT_TRUE(storage::BindRestoredGenerations(*catalog, temp.path() / "metadata.db"));
+  service::MailBridge bridge(config, hpt, catalog, metadata);
+  ASSERT_TRUE(bridge.Dispatch());
+  auto after = metadata->MailTransfers();
+  ASSERT_TRUE(after);
+  ASSERT_EQ(after->size(), 1u);
+  EXPECT_EQ(after->front().source_key, original.source_key);
+  EXPECT_EQ(after->front().target_operation, original.target_operation);
+  EXPECT_EQ(after->front().source_generation, original.source_generation);
+  auto policy = service::EchoAccess::Build(hpt, *catalog, {"2:1/2.1"});
+  ASSERT_TRUE(policy);
+  service::MessageService mail(catalog, metadata, *policy);
+  EXPECT_EQ(mail.GetMessages(storage::MailboxId("2:1/2.2"), {}, "oldest", "point1")->total, 1);
 }

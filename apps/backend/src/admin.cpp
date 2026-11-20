@@ -7,6 +7,7 @@
 
 #include "service/point_mail_admin.hpp"
 #include "storage/jam_audit.hpp"
+#include "storage/mailbox_restore.hpp"
 #include "storage/metadata_store.hpp"
 
 namespace {
@@ -27,9 +28,45 @@ std::filesystem::path Helper() {
 }  // namespace
 int main(int argc, char** argv) {
   if (argc == 2 && std::string_view(argv[1]) == "--help") {
-    std::cout << "ffido-admin revoke-user DB USER_ID\nffido-admin audit-jam DB BASE COORDINATION_LOCK\nffido-admin "
+    std::cout << "ffido-admin metadata-schema-check DB\nffido-admin mailbox-restore ROOT MANIFEST SHA256 check|apply "
+                 "[PLAN_SHA256] [--maintenance-lock-fd FD]\nffido-admin revoke-user "
+                 "DB USER_ID\nffido-admin audit-jam DB BASE COORDINATION_LOCK\nffido-admin "
                  "provision-mailboxes CONFIG\nffido-admin mail-cycle CONFIG STAGE INHERITED_LEASE_FD\n";
     return 0;
+  }
+  if (argc == 3 && std::string_view(argv[1]) == "metadata-schema-check") {
+    try {
+      std::cout << fidoback::storage::CheckMetadataSchema(argv[2]).dump() << "\n";
+      return 0;
+    } catch (const std::exception&) {
+      std::cerr << "Metadata schema verification failed; database was not migrated\n";
+      return 1;
+    }
+  }
+  if (argc >= 6 && std::string_view(argv[1]) == "mailbox-restore") {
+    const bool apply = std::string_view(argv[5]) == "apply";
+    const int base_argc = apply ? 7 : 6;
+    if ((!apply && std::string_view(argv[5]) != "check") || (argc != base_argc && argc != base_argc + 2))
+      return 2;
+    int maintenance_lock_fd = -1;
+    if (argc == base_argc + 2) {
+      if (std::string_view(argv[base_argc]) != "--maintenance-lock-fd")
+        return 2;
+      const std::string_view input = argv[base_argc + 1];
+      const auto [end, error] = std::from_chars(input.data(), input.data() + input.size(), maintenance_lock_fd);
+      if (error != std::errc{} || end != input.data() + input.size() || maintenance_lock_fd < 3)
+        return 2;
+    }
+    try {
+      std::cout << fidoback::storage::RestoreMailboxes(argv[2], argv[3], argv[4], apply ? argv[6] : "",
+                                                       maintenance_lock_fd)
+                       .dump()
+                << "\n";
+      return 0;
+    } catch (const std::exception&) {
+      std::cerr << "Mailbox restore verification failed; inspect the private snapshot and plan\n";
+      return 1;
+    }
   }
   if (argc == 3 && std::string_view(argv[1]) == "provision-mailboxes") {
     try {
