@@ -43,6 +43,11 @@ amster2. Публикация релиза, установка инструме�
 | `extra_images` | Immutable image ID/digest gateway и restore toolkit, если они не входят в пару; экспортируются вместе с четырьмя образами пары |
 | `automatic_guards` | Для будущего --automatic: pause_files с automatic_apply_paused и block_if_exists для самостоятельных legacy guards |
 
+Если действующие ops/renewal читают канонический override внутри каталога узла,
+передавать `--image-override /absolute/canonical/image-override.json` отдельно от
+`--state-dir /private/outside-node/state`. При записи и откате сохраняются UID/GID
+и mode существующего override; другие операторы должны продолжать читать те же pins.
+
 План не содержит HPT-паролей, Telegram initData или session tokens. Если probes
 используют тестовые credentials, они читают их из отдельного приватного файла,
 а не из argv. Внешний digest плана закрепляется до применения, вне восстанавливаемого
@@ -87,6 +92,16 @@ HPT/TLS/corrections. `deployment.json` связывает этот snapshot и �
 `4 × source_bytes + 2 × image_bytes + reserve`, по умолчанию reserve = 2 GiB.
 Реальные свободные байты проверяются до остановки и перед копированием. Старые
 14 GiB — ориентир прежней репетиции, а не обещание достаточности. Автоочистки нет.
+
+Размер source считается по той же выборке файлов, что и snapshot: конфигурация,
+обнаруженные HPT/JAM зависимости, обязательный layout и явные includes. Исторические
+каталоги вне этой выборки в бюджет не входят; текущие SQLite sidecars учитываются
+консервативно. После остановки размер и свободное место проверяются заново.
+
+Linux-проверка writable FD требует root-доступа к /proc. Для CI CMake-флаг
+`FFIDO_TEST_PRIVILEGED_PROC_AUDIT=ON` запускает только NodeBackup/MailboxRestore
+через `sudo -n -E`; остальные тесты непривилегированные. Отказ доступа к FD
+не игнорируется. Обычный production coordinator должен иметь полный audit-доступ.
 
 ## Команды и фазы
 

@@ -20,6 +20,7 @@ with contextlib.closing(sqlite3.connect(d.resolve().as_uri()+'?mode=ro',uri=True
 
 def write_images(path, images):
     """Change only managed image fields in the JSON override, in one rename."""
+    changed = not path.exists()
     value = common.strict_json(path.read_bytes()) if path.exists() else {}
     services = value.setdefault('services', {})
     if not isinstance(services, dict):
@@ -28,8 +29,10 @@ def write_images(path, images):
         service = services.setdefault(name, {})
         if not isinstance(service, dict):
             raise ValueError('Invalid Compose override service')
+        changed |= service.get('image') != image
         service['image'] = image
-    atomic_json(path, value)
+    if changed:
+        atomic_json(path, value, metadata=path.stat(follow_symlinks=False) if path.exists() else None)
 
 
 class Compose:
@@ -142,6 +145,7 @@ def main(argv=None):
     parser.add_argument('--compose-file', type=pathlib.Path, required=True)
     parser.add_argument('--service', required=True)
     parser.add_argument('--state-dir', type=pathlib.Path)
+    parser.add_argument('--image-override', type=pathlib.Path)
     parser.add_argument('--container-config', default='/etc/ffido/config.json')
     parser.add_argument('--channel', choices=['stable', 'dev'])
     parser.add_argument('--pair-plan', type=pathlib.Path)
@@ -155,6 +159,8 @@ def main(argv=None):
     state = (args.state_dir or args.compose_file.resolve().parent/'.ffido-update').resolve()
     state.mkdir(mode=0o700, parents=True, exist_ok=True)
     compose = Compose(args.compose_file, args.service, state)
+    if args.image_override:
+        compose.override = args.image_override.resolve()
     keys = common.strict_json(pathlib.Path(__file__).with_name('public_keys.json').read_bytes())
     if args.pair_plan:
         import pair_update

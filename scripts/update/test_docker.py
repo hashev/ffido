@@ -3,6 +3,7 @@ import json
 import pathlib
 import tempfile
 import unittest
+from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location('docker_update', pathlib.Path(__file__).with_name('ffido-docker-update.py'))
 updater = importlib.util.module_from_spec(spec); spec.loader.exec_module(updater)
@@ -25,6 +26,38 @@ class FakeCompose:
 
 
 class DockerUpdateTest(unittest.TestCase):
+    def test_explicit_override_is_independent_of_transaction_state(self):
+        import pair_update
+        source = self.root/'compose.yaml'; source.write_text('services: {}\n')
+        override = self.root/'canonical.json'; override.write_text('{"services":{}}')
+        state = self.root/'transaction'
+        def route(args, compose, keys, write_images):
+            self.assertEqual(compose.state, state.resolve())
+            self.assertEqual(compose.override, override.resolve())
+            return 0
+        with patch.object(pair_update, 'main', side_effect=route):
+            self.assertEqual(updater.main(['status', '--compose-file', str(source), '--service', 'ffido',
+                '--state-dir', str(state), '--image-override', str(override),
+                '--pair-plan', str(self.root/'plan.json')]), 0)
+        self.assertEqual(override.read_text(), '{"services":{}}')
+
+    def test_pin_write_preserves_existing_access_for_operator(self):
+        self.compose.override.write_text('{"services":{}}')
+        self.compose.override.chmod(0o640)
+        before = self.compose.override.stat()
+        updater.write_images(self.compose.override, {'ffido': 'sha256:'+'a'*64})
+        after = self.compose.override.stat()
+        self.assertEqual((after.st_uid, after.st_gid, after.st_mode & 0o777),
+                         (before.st_uid, before.st_gid, 0o640))
+
+    def test_unchanged_pins_preserve_original_bytes_for_registration_digest(self):
+        original = b'{"services":{"ffido":{"image":"source-id"}},"x-note":"unchanged"}'
+        self.compose.override.write_bytes(original)
+        before = self.compose.override.stat().st_ino
+        updater.write_images(self.compose.override, {'ffido': 'source-id'})
+        self.assertEqual(self.compose.override.read_bytes(), original)
+        self.assertEqual(self.compose.override.stat().st_ino, before)
+
     def test_inspect_requires_exact_registration_for_nonrelease_build(self):
         local = {'tag': 'safe-mailbox-restore', 'version': '1.0.27',
                  'stable': False, 'build_number': 2026111804, 'sha': 'a'*40}

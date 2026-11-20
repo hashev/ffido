@@ -277,6 +277,10 @@ while not stop: time.sleep(.1)
         worker_context = work/'worker-context'; worker_context.mkdir()
         (worker_context/'Dockerfile').write_text('ARG FFIDO_IMAGE=scratch\nARG HPT_IMAGE=scratch\nFROM ${FFIDO_IMAGE} AS release\nFROM ${HPT_IMAGE}\nUSER root\nRUN rm -rf /opt/ffido\nCOPY --from=release /opt/ffido/ /opt/ffido/\n')
         state = work/'state'; state.mkdir(mode=0o700)
+        override = root/'ffido/updates/image-override.json'
+        private(override, {'services': {'backend': {'image': source_backend},
+                                       'tosser': {'image': source_worker}}, 'x-operator-note': 'preserve'})
+        override.chmod(0o640)
         private(state/'sequence.json', {'value': 1065})
         def digest(path):
             with Path(path).open('rb') as source: return hashlib.file_digest(source, 'sha256').hexdigest()
@@ -296,7 +300,7 @@ while not stop: time.sleep(.1)
         probes = [str(sys.executable), str(ROOT/'scripts/update/pair_acceptance.py')]
         plan = {'version': 1, 'source': {role: {'image_id': image, 'build': source_build, 'platform': 'linux/amd64'}
                 for role, image in [('backend', source_backend), ('tosser', source_worker)]},
-            'files': {str(path): digest(path) for path in (compose_file, root/'config.json', root/'ffido/deployed-identity.json')},
+            'files': {str(path): digest(path) for path in (compose_file, root/'config.json', root/'ffido/deployed-identity.json', override)},
             'services': {'backend': 'backend', 'tosser': 'tosser'}, 'writers': ['backend', 'tosser', 'mailer'],
             'identity_file': str(root/'ffido/deployed-identity.json'),
             'container_config': str(root/'config.json'),
@@ -316,6 +320,7 @@ while not stop: time.sleep(.1)
         private(work/'plan.json', plan)
         cli = [str(sys.executable), str(shadow/'ffido-docker-update.py')]
         options = ['--compose-file', str(compose_file), '--service', 'backend', '--state-dir', str(state),
+                   '--image-override', str(override),
                    '--pair-plan', str(work/'plan.json'), '--pair-plan-sha256', digest(work/'plan.json'),
                    '--target-manifest', str(work/'target.json'), '--target-signature', str(work/'target.sig'), '--target-tag', 'v1.0.28']
         original_backend = command(*compose, 'ps', '-q', 'backend')
@@ -368,6 +373,8 @@ raise SystemExit(updater.main(sys.argv[1:]))
             raise ValueError('Failed target WAL was not quarantined')
         command(*cli, 'apply', *options)
         acceptance('verify-state'); acceptance('verify-target')
+        if override.stat().st_mode & 0o777 != 0o640 or json.loads(override.read_text())['x-operator-note'] != 'preserve':
+            raise ValueError('Canonical override metadata or unmanaged fields changed')
         admitted_state = pair_acceptance.state_hashes(root/'metadata.db')
         saved_baseline = json.loads(Path(fixture_config['state']).read_text())['baseline']
         if len(admitted_state['tokens']) <= len(saved_baseline['tokens']):

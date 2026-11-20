@@ -128,6 +128,35 @@ class SnapshotValidationTest(unittest.TestCase):
                     fcntl.flock(other, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
 
+class SourceBudgetTest(unittest.TestCase):
+    def test_budget_uses_snapshot_selection_and_live_sidecars_not_unrelated_history(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            values = {'cfg': b'config', 'meta.db': b'db', 'meta.db-wal': b'pending',
+                      'data/a': b'payload', 'extra': b'include', 'maintenance.lock': b'',
+                      'meta.db.lock': b'', 'hpt.lock': b''}
+            for name, value in values.items():
+                path = root/name; path.parent.mkdir(parents=True, exist_ok=True); path.write_bytes(value)
+            (root/'unselected-history').write_bytes(b'x'*1000000)
+            config = {'ftn': {'coordination_lock': str(root/'hpt.lock')}}
+            inputs = (config, {'cfg', 'meta.db', 'data', 'data/a'}, 'meta.db', 'data', {})
+            with patch.object(backup, 'configuration_inventory', return_value=inputs), \
+                 patch.object(backup, 'REQUIRED_LAYOUT', ()):
+                size = backup.estimated_input_bytes(root, 'cfg', 'helper', [], ['extra'], 'maintenance.lock')
+            self.assertEqual(size, sum(map(len, values.values())))
+            self.assertTrue((root/'unselected-history').is_file())
+
+    def test_size_estimate_still_requires_explicit_dependencies(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = {'ftn': {'coordination_lock': str(root/'hpt.lock')}}
+            inputs = (config, set(), 'meta.db', 'data', {})
+            with patch.object(backup, 'configuration_inventory', return_value=inputs), \
+                 patch.object(backup, 'REQUIRED_LAYOUT', ()):
+                with self.assertRaises(backup.SnapshotError):
+                    backup.estimated_input_bytes(root, 'cfg', 'helper', [], ['missing'], 'maintenance.lock')
+
+
 class DeploymentTest(unittest.TestCase):
     def setUp(self):
         SnapshotValidationTest.setUp(self)

@@ -209,7 +209,7 @@ def stopped(root, locks, held_locks=None):
         require(not running_writers(root), 'Writer state changed during snapshot')
 
 
-def inventory(root, config_name, helper, mappings, legacy_files=None):
+def configuration_inventory(root, config_name, helper, mappings):
     with open_file(root, config_name) as source:
         config = json.load(source)
     convert = lambda p: relative_input(root, p, mappings)
@@ -242,6 +242,11 @@ def inventory(root, config_name, helper, mappings, legacy_files=None):
             name = convert(area['filename'])
             key = '@ffido/' + str(kinds[area['kind']]) + '/' + area['name'].lower().encode().hex()
             areas.setdefault(name, []).append(key)
+    return config, dependencies, database, jam_root, areas
+
+
+def inventory(root, config_name, helper, mappings, legacy_files=None):
+    config, dependencies, database, jam_root, areas = configuration_inventory(root, config_name, helper, mappings)
     with contextlib.closing(offline_database(root, database)) as db:
         # Reuse the restore schema contract; this read-only command never calls Init.
         schema_check = subprocess.run([str(Path(shutil.which(helper) or helper).resolve().parent / 'ffido-admin'), 'metadata-schema-check',
@@ -302,6 +307,68 @@ def inventory(root, config_name, helper, mappings, legacy_files=None):
     return config, dependencies, database, jam_root, jam, rows, schema
 
 
+def select_snapshot_files(root, dependencies, database):
+    files = set()
+    sources = {}
+    directories = set()
+    for name in dependencies:
+        path = root / name
+        require(path.exists() and not path.is_symlink(), 'Required snapshot dependency unavailable')
+        if path.is_dir():
+            directories.add(name)
+            for child in path.rglob('*'):
+                rel = str(child.relative_to(root))
+                if child.is_symlink():
+                    # Certbot's live links are the sole supported aliases. Materialize only
+                    # verified archive files, so restore never traverses a live dependency.
+                    require(child.is_relative_to(root / 'ffido/acme/config/live'),
+                            'Snapshot input contains an unsupported symbolic link')
+                    resolved = child.resolve(strict=True)
+                    require(resolved.is_relative_to((root / 'ffido/acme/config/archive').resolve()),
+                            'ACME certificate link escapes its archive')
+                    require(resolved.is_relative_to(root.resolve()))
+                    sources[rel] = str(resolved.relative_to(root.resolve()))
+                    with open_file(root, sources[rel]):
+                        pass
+                if child.is_dir():
+                    directories.add(rel)
+                else:
+                    files.add(rel)
+        else:
+            files.add(name)
+    files.difference_update(database + suffix for suffix in ('-wal', '-shm', '-journal'))
+    for name in files:
+        for parent in Path(name).parents:
+            if str(parent) != '.':
+                directories.add(str(parent))
+    require(not any('backups' in Path(x).parts for x in files), 'Recursive backup input is forbidden')
+    return files, sources, directories
+
+
+def estimated_input_bytes(root, config_name, helper, mappings, includes, maintenance_lock):
+    """Size the snapshot selection without requiring a stopped/checkpointed database."""
+    config, dependencies, database, _, areas = configuration_inventory(root, config_name, helper, mappings)
+    dependencies.update(str(relative(x)) for x in (*REQUIRED_LAYOUT, *includes))
+    dependencies.update((maintenance_lock, database + '.lock',
+                         relative_input(root, config['ftn']['coordination_lock'], mappings)))
+    for base in areas:
+        dependencies.update(base + suffix for suffix in ('.jhr', '.jdt', '.jdx'))
+    files, sources, _ = select_snapshot_files(root, dependencies, database)
+    size = 0
+    for name in files:
+        with open_file(root, sources.get(name, name)) as source:
+            size += os.fstat(source.fileno()).st_size
+    # Live WAL can become database pages by shutdown. Count it conservatively too.
+    for suffix in ('-wal', '-shm', '-journal'):
+        name = database + suffix
+        try:
+            with open_file(root, name) as source:
+                size += os.fstat(source.fileno()).st_size
+        except FileNotFoundError:
+            pass
+    return size
+
+
 def snapshot(root, destination, config_name, helper, mappings, includes, maintenance_lock,
              legacy_manifest=None, legacy_digest=None, held_locks=None):
     root = Path(root).absolute()
@@ -326,40 +393,7 @@ def snapshot(root, destination, config_name, helper, mappings, includes, mainten
             _, dependencies, database, jam_root, jam, mailboxes, schema = inventory(root, config_name, helper, mappings, legacy_files)
             dependencies.update(locks)
             dependencies.update(str(relative(x)) for x in (*REQUIRED_LAYOUT, *includes))
-            files = set()
-            sources = {}
-            directories = set()
-            for name in dependencies:
-                path = root / name
-                require(path.exists() and not path.is_symlink(), 'Required snapshot dependency unavailable')
-                if path.is_dir():
-                    directories.add(name)
-                    for child in path.rglob('*'):
-                        rel = str(child.relative_to(root))
-                        if child.is_symlink():
-                            # Certbot's live links are the sole supported aliases. Materialize only
-                            # verified archive files, so restore never traverses a live dependency.
-                            require(child.is_relative_to(root / 'ffido/acme/config/live'),
-                                    'Snapshot input contains an unsupported symbolic link')
-                            resolved = child.resolve(strict=True)
-                            require(resolved.is_relative_to((root / 'ffido/acme/config/archive').resolve()),
-                                    'ACME certificate link escapes its archive')
-                            require(resolved.is_relative_to(root.resolve()))
-                            sources[rel] = str(resolved.relative_to(root.resolve()))
-                            with open_file(root, sources[rel]):
-                                pass
-                        if child.is_dir():
-                            directories.add(rel)
-                        else:
-                            files.add(rel)
-                else:
-                    files.add(name)
-            files.difference_update(database + suffix for suffix in ('-wal', '-shm', '-journal'))
-            for name in files:
-                for parent in Path(name).parents:
-                    if str(parent) != '.':
-                        directories.add(str(parent))
-            require(not any('backups' in Path(x).parts for x in files), 'Recursive backup input is forbidden')
+            files, sources, directories = select_snapshot_files(root, dependencies, database)
             destination.mkdir(mode=0o700)
             try:
                 for directory in sorted(directories):

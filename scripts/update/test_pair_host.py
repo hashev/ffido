@@ -28,37 +28,43 @@ class PairHostTest(unittest.TestCase):
         original = b'{"tag":"original"}\n'
         identity.write_bytes(original)
         identity.chmod(0o640)
+        pins = self.root/'pins.json'
+        pins.write_bytes(b'{"services":{}}')
+        pins.chmod(0o640)
         self.root.chmod(0o755)
         different_user = os.geteuid() == 0 and sys.platform == 'linux'
         if different_user:
             os.chown(identity, 1000, 1000)
+            os.chown(pins, 1000, 1000)
         before = identity.stat()
         self.host.plan = {'identity_file': str(identity)}
         self.host.services = {'backend': 'backend', 'tosser': 'tosser'}
         self.host.gated = self.root/'gated.json'
         self.host.compose = Mock()
-        self.host.compose.override = self.root/'pins.json'
+        self.host.compose.override = pins
         self.host.compose.command.return_value = json.dumps({'name': 'qa',
             'services': {'backend': {}, 'tosser': {}}})
         self.host.write_images = Mock()
         self.host.switch({'images': {'backend': 'new-backend', 'tosser': 'new-worker'},
                           'build': {'tag': 'new'}})
         def assert_readable():
-            after = identity.stat()
-            self.assertEqual((after.st_uid, after.st_gid, after.st_mode & 0o777),
-                             (before.st_uid, before.st_gid, 0o640))
-            if different_user:
-                subprocess.run([sys.executable, '-c',
-                                'import json,sys;json.load(open(sys.argv[1]))', str(identity)],
-                               user=1000, group=1000, check=True, capture_output=True)
+            for path in (identity, pins):
+                after = path.stat()
+                self.assertEqual((after.st_uid, after.st_gid, after.st_mode & 0o777),
+                                 (before.st_uid, before.st_gid, 0o640))
+                if different_user:
+                    subprocess.run([sys.executable, '-c',
+                                    'import json,sys;json.load(open(sys.argv[1]))', str(path)],
+                                   user=1000, group=1000, check=True, capture_output=True)
         assert_readable()
         source_build = {'tag': 'original'}
         baseline = {'source': {role: {'image_id': role, 'build': source_build}
-                               for role in self.host.services}, 'override': None,
+                               for role in self.host.services}, 'override': base64.b64encode(pins.read_bytes()).decode(),
                     'identity': base64.b64encode(original).decode(), 'provenance': None}
         self.host.image_build = lambda image: ({'Id': image}, source_build)
         self.host.restore_pair(baseline)
         self.assertEqual(identity.read_bytes(), original)
+        self.assertEqual(pins.read_bytes(), b'{"services":{}}')
         assert_readable()
 
     def test_invalid_build_mutable_base_and_failed_worker_never_stop_source(self):

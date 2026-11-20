@@ -311,7 +311,7 @@ jobs:
           IDENTITY_JSON: ${{ inputs.identity }}
       - name: Configure and build
         run: |
-          cmake -S . -B build/backend -C build/release-deps/prefix/ffido-cache.cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DPython3_EXECUTABLE="$(command -v python3)" -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          cmake -S . -B build/backend -C build/release-deps/prefix/ffido-cache.cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DPython3_EXECUTABLE="$(command -v python3)" -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DFFIDO_TEST_PRIVILEGED_PROC_AUDIT=${{ runner.os == 'Linux' }}
           cmake --build build/backend --parallel 3
       - run: ccache --show-stats
       - name: Test including HPT

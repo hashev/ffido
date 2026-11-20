@@ -187,7 +187,10 @@ class Host:
                                    capture_output=True, timeout=15).stdout
         node.require(b'--maintenance-lock-fd' in help_text, 'Restore toolkit lacks maintenance lease support')
         components = deployment.component_inventory(self.component_profile())
-        source_bytes = sum(x.stat().st_size for x in self.root.rglob('*') if x.is_file() and not x.is_symlink())
+        source_bytes = node.estimated_input_bytes(self.root, self.backup_options['config'],
+                                                  self.backup_options['helper'], self.backup_options['mappings'],
+                                                  self.backup_options.get('includes', []),
+                                                  self.backup_options['maintenance_lock'])
         source_bytes += sum(row['size'] for x in components for row in x['files'])
         self.budget = self.budget_report(source_bytes)
 
@@ -243,7 +246,10 @@ class Host:
     def backup(self, name='backup'):
         profile = self.component_profile()
         components = deployment.component_inventory(profile)
-        source_bytes = sum(x.stat().st_size for x in self.root.rglob('*') if x.is_file() and not x.is_symlink())
+        source_bytes = node.estimated_input_bytes(self.root, self.backup_options['config'],
+                                                  self.backup_options['helper'], self.backup_options['mappings'],
+                                                  self.backup_options.get('includes', []),
+                                                  self.backup_options['maintenance_lock'])
         source_bytes += sum(row['size'] for x in components for row in x['files'])
         self.budget_report(source_bytes)
         components = deployment.component_inventory(self.component_profile())
@@ -398,7 +404,10 @@ class Host:
             self.compose.override.unlink(missing_ok=True)
         else:
             # Parse authenticated original bytes before making a durable restore.
-            atomic_json(self.compose.override, common.strict_json(base64.b64decode(baseline['override'], validate=True)))
+            original_override = base64.b64decode(baseline['override'], validate=True)
+            common.strict_json(original_override)
+            atomic_bytes(self.compose.override, original_override,
+                         metadata=self.compose.override.stat(follow_symlinks=False) if self.compose.override.exists() else None)
         self.write_images(self.compose.override, images)
         identity = base64.b64decode(baseline['identity'], validate=True)
         common.strict_json(identity)
