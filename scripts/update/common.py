@@ -69,6 +69,48 @@ def version_key(identity):
     return (*map(int, version.split('.')), int(stable), 0 if stable else number)
 
 
+def local_pair(raw, expected_digest):
+    """Authenticate operator registration without treating local BUILD as a release."""
+    if (not isinstance(expected_digest, str)
+            or not re.fullmatch(r'[0-9a-f]{64}', expected_digest)
+            or hashlib.sha256(raw).hexdigest() != expected_digest):
+        raise ValueError('Untrusted local pair registration')
+    plan = strict_json(raw)
+    if (type(plan.get('version')) is not int or plan['version'] != 1
+            or not isinstance(plan.get('source'), dict)
+            or set(plan['source']) != {'backend', 'tosser'}):
+        raise ValueError('Invalid local pair registration')
+    for image in plan['source'].values():
+        if (not isinstance(image, dict)
+                or not re.fullmatch(r'sha256:[0-9a-f]{64}', image.get('image_id', ''))
+                or not isinstance(image.get('build'), dict)
+                or image.get('platform') != 'linux/amd64'):
+            raise ValueError('Invalid registered local image')
+    if plan['source']['backend']['build'] != plan['source']['tosser']['build']:
+        raise ValueError('Registered pair distributions differ')
+    files = plan.get('files')
+    if not isinstance(files, dict) or not files:
+        raise ValueError('Missing registered configuration')
+    for name, digest in files.items():
+        if (not pathlib.Path(name).is_absolute()
+                or not isinstance(digest, str) or not re.fullmatch(r'[0-9a-f]{64}', digest)):
+            raise ValueError('Invalid registered configuration')
+    return plan
+
+
+def verify_local_pair(plan, actual):
+    """Recheck both image IDs/BUILD and configuration immediately before stopping."""
+    if actual != plan['source']:
+        raise ValueError('Local pair identity differs from trusted registration')
+    for name, digest in plan['files'].items():
+        path = pathlib.Path(name)
+        if path.is_symlink() or not path.is_file():
+            raise ValueError('Registered configuration unavailable')
+        with path.open('rb') as source:
+            if hashlib.file_digest(source, 'sha256').hexdigest() != digest:
+                raise ValueError('Registered configuration changed')
+
+
 def newer(candidate, installed, channel, android=False):
     if channel not in {'stable', 'dev'}:
         raise ValueError('Invalid update channel')

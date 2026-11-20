@@ -2,6 +2,7 @@
 """Update one Compose service using the authenticated FFIDO image digest."""
 import argparse
 import json
+import os
 import pathlib
 import re
 import subprocess
@@ -17,14 +18,32 @@ with contextlib.closing(sqlite3.connect(d.resolve().as_uri()+'?mode=ro',uri=True
 '''
 
 
+def write_images(path, images):
+    """Change only managed image fields in the JSON override, in one rename."""
+    value = common.strict_json(path.read_bytes()) if path.exists() else {}
+    services = value.setdefault('services', {})
+    if not isinstance(services, dict):
+        raise ValueError('Invalid Compose override services')
+    for name, image in images.items():
+        service = services.setdefault(name, {})
+        if not isinstance(service, dict):
+            raise ValueError('Invalid Compose override service')
+        service['image'] = image
+    atomic_json(path, value)
+
+
 class Compose:
     def __init__(self, file, service, state):
         self.file, self.service, self.state = file.resolve(strict=True), service, state
         self.override = state/'image-override.json'
 
     def run(self, *args):
-        result = subprocess.run(list(args), cwd=self.file.parent, capture_output=True, text=True)
-        if result.returncode: raise RuntimeError('Docker command failed; inspect the service logs locally')
+        result = subprocess.run(list(args), cwd=self.file.parent, capture_output=True, text=True, timeout=300)
+        if result.returncode:
+            with (self.state/'docker-command.private.log').open('w') as log:
+                os.fchmod(log.fileno(), 0o600)
+                log.write(result.stdout[-common.MAX_METADATA:]+result.stderr[-common.MAX_METADATA:])
+            raise RuntimeError('Docker command failed; inspect private command diagnostics')
         if len(result.stdout) > common.MAX_METADATA: raise ValueError('Docker response exceeds size limit')
         return result.stdout.strip()
 
@@ -33,17 +52,30 @@ class Compose:
         if override and self.override.exists(): base += ['-f', str(self.override)]
         return self.run(*base, *args)
 
-    def inspect(self):
-        container = self.command('ps', '-a', '-q', self.service)
+    def inspect(self, registration=None, role='backend'):
+        build, digests, info = self.inspect_image(self.service)
+        if registration is None:
+            common.version_key(build)
+        elif self.local_identity(build, info) != registration['source'][role]:
+            raise ValueError('Local pair identity differs from trusted registration')
+        return build, digests[0] if digests else None, info
+
+    @staticmethod
+    def local_identity(build, info):
+        return {'image_id': info['Image'], 'build': build,
+                'platform': info['ImagePlatform']}
+
+    def inspect_image(self, service):
+        container = self.command('ps', '-a', '-q', service)
         if not re.fullmatch('[0-9a-f]{12,64}', container): raise ValueError('Expected exactly one existing FFIDO container')
         info = json.loads(self.run('docker', 'inspect', container))[0]
         version_probe = "from pathlib import Path;print(Path('/opt/ffido/BUILD.json').read_text())"
         version = self.run('docker', 'exec', container, 'python3', '-c', version_probe) if info.get('State', {}).get('Running') else self.run('docker', 'run', '--rm', '--entrypoint', 'python3', info['Image'], '-c', version_probe)
         build = common.strict_json(version.encode())
-        common.version_key(build)
         image = json.loads(self.run('docker', 'image', 'inspect', info['Image']))[0]
+        info['ImagePlatform'] = image['Os']+'/'+image['Architecture']
         digests = [value for value in image.get('RepoDigests', []) if re.fullmatch(r'(?:docker.io/)?hashev/ffido@sha256:[0-9a-f]{64}', value)]
-        return build, digests[0] if digests else None, info
+        return build, digests, info
 
     def schema(self, config):
         output = self.command('run', '--rm', '--no-deps', '--entrypoint', 'python3', self.service, '-c', SCHEMA_PROBE, config)
@@ -95,7 +127,7 @@ def apply(compose, manifest, raw, signature, config, old_digest):
     try:
         record = {'phase': 'prepared', 'previous_digest': old_digest, 'selected': reference}
         atomic_json(compose.state/'operation.json', record)
-        atomic_json(compose.override, {'services': {compose.service: {'image': reference}}})
+        write_images(compose.override, {compose.service: reference})
     except Exception:
         compose.command('start', compose.service)
         raise
@@ -106,19 +138,39 @@ def apply(compose, manifest, raw, signature, config, old_digest):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=['check', 'apply', 'rollback'])
+    parser.add_argument('action', choices=['check', 'apply', 'rollback', 'status', 'resume'])
     parser.add_argument('--compose-file', type=pathlib.Path, required=True)
     parser.add_argument('--service', required=True)
     parser.add_argument('--state-dir', type=pathlib.Path)
     parser.add_argument('--container-config', default='/etc/ffido/config.json')
     parser.add_argument('--channel', choices=['stable', 'dev'])
+    parser.add_argument('--pair-plan', type=pathlib.Path)
+    parser.add_argument('--pair-plan-sha256')
+    parser.add_argument('--target-manifest', type=pathlib.Path)
+    parser.add_argument('--target-signature', type=pathlib.Path)
+    parser.add_argument('--target-tag')
+    parser.add_argument('--automatic', action='store_true')
     args = parser.parse_args(argv)
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,62}', args.service): parser.error('Invalid service name')
     state = (args.state_dir or args.compose_file.resolve().parent/'.ffido-update').resolve()
     state.mkdir(mode=0o700, parents=True, exist_ok=True)
     compose = Compose(args.compose_file, args.service, state)
     keys = common.strict_json(pathlib.Path(__file__).with_name('public_keys.json').read_bytes())
+    if args.pair_plan:
+        import pair_update
+        sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+        import node_backup
+        try:
+            return pair_update.main(args, compose, keys, write_images)
+        except node_backup.SnapshotError as error:
+            raise ValueError(str(error)) from None
+        except subprocess.SubprocessError:
+            raise ValueError('Pair command failed; inspect private local diagnostics') from None
+    if args.action in {'status', 'resume'}:
+        parser.error('status/resume require --pair-plan')
     with locked(state/'operation.lock'):
+        if (state/'pair-provenance.json').exists():
+            raise ValueError('This installation is pair-managed; use its trusted --pair-plan')
         installed, old_digest, info = compose.inspect()
         configuration = json.loads(compose.command('config', '--format', 'json'))['services'][args.service]
         health = configuration.get('healthcheck', {})
@@ -143,7 +195,7 @@ def main(argv=None):
                 schema = compose.schema(args.container_config)
                 if not compatibility.get('state_schema_min', 999999) <= schema <= compatibility.get('state_schema_max', -1): raise ValueError('Rollback requires a compatible backup')
             except Exception: compose.command('start', args.service); raise
-            atomic_json(compose.override, {'services': {args.service: {'image': previous}}})
+            write_images(compose.override, {args.service: previous})
             compose.command('up', '-d', '--no-deps', args.service)
             compose.ready(previous.split('@')[1])
             atomic_json(state/'operation.json', {'phase': 'complete', 'previous_digest': old_digest, 'selected': previous})
