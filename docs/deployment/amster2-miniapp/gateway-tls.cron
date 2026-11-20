@@ -1,0 +1,5 @@
+# Server timezone: Europe/Moscow. Retry ten minutes later if maintenance is busy.
+SHELL=/bin/sh
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+MAILTO=""
+43,53 3,15 * * * root /usr/bin/python3 /srv/ffido-miniapp-main/ops/renew_gateway.py renew >/dev/null 2>&1

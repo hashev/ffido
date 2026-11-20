@@ -1,0 +1,15 @@
+{
+  "services": {
+    "ffido": {
+      "image": "${FFIDO_MINIAPP_IMAGE:?Set verified backend image digest}"
+    },
+    "ffido-tosser": {
+      "image": "${FFIDO_MINIAPP_TOSSER_IMAGE:?Set separately built worker image}",
+      "build": {
+        "args": {
+          "FFIDO_IMAGE": "${FFIDO_MINIAPP_IMAGE:?Set verified backend image digest}"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,46 @@
+{
+  "name": "ffido-miniapp-main",
+  "services": {
+    "gateway": {
+      "image": "${FFIDO_MAIN_GATEWAY_IMAGE:?Set verified local Envoy image ID or registry digest}",
+      "container_name": "ffido-miniapp-main-gateway",
+      "network_mode": "host",
+      "user": "10001:10001",
+      "restart": "unless-stopped",
+      "read_only": true,
+      "cap_drop": [
+        "ALL"
+      ],
+      "security_opt": [
+        "no-new-privileges:true"
+      ],
+      "extra_hosts": [
+        "v1002682.hosted-by-vdsina.com=127.0.0.1"
+      ],
+      "volumes": [
+        "/srv/ffido-miniapp-main/config/envoy.json:/etc/envoy/envoy.json:ro",
+        "/srv/ffido-miniapp-main/certs/public:/certs/public:ro",
+        "/home/yurik/fido/ffido/tls/ca.pem:/certs/backend/ca.pem:ro"
+      ],
+      "entrypoint": [
+        "/usr/local/bin/envoy"
+      ],
+      "command": [
+        "-c",
+        "/etc/envoy/envoy.json",
+        "--concurrency",
+        "2",
+        "--log-level",
+        "warning",
+        "--disable-hot-restart"
+      ],
+      "logging": {
+        "driver": "json-file",
+        "options": {
+          "max-size": "10m",
+          "max-file": "3"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "auth": {
+    "telegram": {
+      "bot_id": 9052986615,
+      "test_environment": false,
+      "max_age_seconds": 300,
+      "clock_skew_seconds": 30
+    }
+  }
+}

@@ -1,0 +1,12 @@
+--- a/ffido/ops/manage.py
++++ b/ffido/ops/manage.py
+@@ -76,6 +76,9 @@
+   log.info('BinkD poll process finished; delivery result is in logs/binkd.log')
+  elif ACTION=='check':log.info(updater('check').strip())
+  elif ACTION=='update':
++  manual_pause=BASE/'updates/manual-deployment.json'
++  if manual_pause.exists() and json.loads(manual_pause.read_text()).get('automatic_apply_paused',True):
++   log.info('Manual pinned deployment: automatic apply paused; select a compatible official release explicitly.');return
+   local_marker=BASE/'local-jam-encoding-20261023/active.json'
+   if local_marker.exists() and json.loads(local_marker.read_text()).get('automatic_apply_paused',True):
+    log.info('Local JAM encoding build active: signed release check only; automatic apply is paused until an official compatible release is selected.')

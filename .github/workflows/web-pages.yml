@@ -27,7 +27,20 @@ jobs:
       - working-directory: apps/frontend
         run: |
           flutter pub get --enforce-lockfile
-          flutter test --no-pub test/repositories/backend_directory_test.dart test/api/contract_test.dart
+          flutter analyze --no-pub
+          flutter test --no-pub \
+            test/repositories/backend_directory_test.dart \
+            test/repositories/web_workspace_test.dart \
+            test/repositories/web_draft_store_test.dart \
+            test/repositories/web_pending_operations_test.dart \
+            test/api/contract_test.dart
+          CHROME_EXECUTABLE="$(command -v google-chrome)"
+          export CHROME_EXECUTABLE
+          flutter test --no-pub --platform chrome \
+            test/api/uue_files_browser_test.dart \
+            test/widgets/web_draft_browser_test.dart \
+            test/widgets/web_mailbox_network_browser_test.dart \
+            test/platform/telegram_host_browser_test.dart
           flutter build web --release --no-pub --base-href /ffido/
       - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa
         with:
