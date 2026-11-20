@@ -5,8 +5,14 @@ package ffido.v1;
 import "google/protobuf/empty.proto";
 import "google/protobuf/timestamp.proto";
 
-// Login проверяет данные HPT; остальные RPC требуют внутреннюю Bearer-сессию.
+// HPT/Telegram вход и capabilities доступны до сессии; бизнес-RPC требуют Bearer.
 service Ffido {
+  rpc GetServerCapabilities(google.protobuf.Empty) returns (ServerCapabilities);
+  rpc ListTelegramProfiles(TelegramProof) returns (TelegramProfiles);
+  rpc LoginWithTelegram(TelegramLoginRequest) returns (LoginResponse);
+  rpc BindTelegram(BindTelegramRequest) returns (TelegramBinding);
+  rpc GetTelegramBinding(google.protobuf.Empty) returns (TelegramBinding);
+  rpc UnbindTelegram(google.protobuf.Empty) returns (google.protobuf.Empty);
   rpc Login(LoginRequest) returns (LoginResponse);
   rpc RestoreSession(google.protobuf.Empty) returns (SessionInfo);
   rpc Logout(google.protobuf.Empty) returns (google.protobuf.Empty);
@@ -269,6 +275,29 @@ message LoginRequest {
   string name = 1;
   string address = 2;
   string password = 3;
+}
+// Публичные возможности без раскрытия пользователей или конфигурации HPT.
+message ServerCapabilities {
+  bool supports_telegram = 1;
+}
+message TelegramProof {
+  string init_data = 1;
+}
+message TelegramProfiles {
+  repeated Profile profiles = 1;
+}
+message TelegramLoginRequest {
+  string init_data = 1;
+  string address = 2;
+}
+message BindTelegramRequest {
+  string init_data = 1;
+  string password = 2;
+  bool replace_existing = 3;
+}
+// Состояние только профиля текущей сессии; чужой Telegram ID не раскрывается.
+message TelegramBinding {
+  bool bound = 1;
 }
 message SessionInfo {
   bool supports_offline_sync = 5;

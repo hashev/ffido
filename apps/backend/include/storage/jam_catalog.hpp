@@ -29,6 +29,8 @@ struct JamFiles {
   struct stat root_identity{};
   std::expected<void, CatalogError> Open();  // Requires mutex.
   void Close();                              // Requires mutex; unlock byte lock first.
+  // Immutable after catalog publication; physical identity remains checked on each open.
+  std::string restored_physical_generation, restored_logical_generation;
   bool private_area = false;
   bool personal_mailbox = false;
   bool local_area = false;

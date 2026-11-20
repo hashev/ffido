@@ -19,13 +19,25 @@ def read(path):
     return common.strict_json(pathlib.Path(path).read_bytes())
 
 
-def atomic_json(path, value):
+def atomic_json(path, value, *, metadata=None):
+    atomic_bytes(path, (json.dumps(value, indent=2)+'\n').encode(), metadata=metadata)
+
+
+def atomic_bytes(path, value, *, metadata=None):
     path = pathlib.Path(path)
     fd, temporary = tempfile.mkstemp(prefix='.update-', dir=path.parent)
     try:
-        with os.fdopen(fd, 'w') as out:
-            json.dump(value, out, indent=2); out.write('\n'); out.flush(); os.fsync(out.fileno())
+        with os.fdopen(fd, 'wb') as out:
+            if metadata is not None:
+                os.fchown(out.fileno(), metadata.st_uid, metadata.st_gid)
+                os.fchmod(out.fileno(), stat.S_IMODE(metadata.st_mode))
+            out.write(value); out.flush(); os.fsync(out.fileno())
         os.replace(temporary, path)
+        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
     finally:
         pathlib.Path(temporary).unlink(missing_ok=True)
 
@@ -40,7 +52,7 @@ def locked(path, create=True):
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as error:
             raise ValueError('Server or another update operation is still running; stop it first') from error
-        yield
+        yield fd
     finally:
         os.close(fd)
 

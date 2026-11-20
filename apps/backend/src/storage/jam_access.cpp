@@ -39,6 +39,11 @@ std::expected<std::unique_ptr<JamAccess>, JamAccessError> JamAccess::Open(const 
   const auto& header = access->messages_.base_header();
   access->generation_ = std::to_string(identity.st_dev) + ":" + std::to_string(identity.st_ino) + ":" +
                         std::to_string(header.date_created) + ":" + std::to_string(header.base_msg_num);
+  if (!access->files().restored_physical_generation.empty()) {
+    if (access->generation_ != access->files().restored_physical_generation)
+      return std::unexpected(JamAccessError(CatalogError::kChangedBase));
+    access->generation_ = access->files().restored_logical_generation;
+  }
   measurements::Add(measurements::jam_opens, 1);
   return access;
 }

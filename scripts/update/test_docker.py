@@ -3,6 +3,7 @@ import json
 import pathlib
 import tempfile
 import unittest
+from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location('docker_update', pathlib.Path(__file__).with_name('ffido-docker-update.py'))
 updater = importlib.util.module_from_spec(spec); spec.loader.exec_module(updater)
@@ -25,6 +26,53 @@ class FakeCompose:
 
 
 class DockerUpdateTest(unittest.TestCase):
+    def test_explicit_override_is_independent_of_transaction_state(self):
+        import pair_update
+        source = self.root/'compose.yaml'; source.write_text('services: {}\n')
+        override = self.root/'canonical.json'; override.write_text('{"services":{}}')
+        state = self.root/'transaction'
+        def route(args, compose, keys, write_images):
+            self.assertEqual(compose.state, state.resolve())
+            self.assertEqual(compose.override, override.resolve())
+            return 0
+        with patch.object(pair_update, 'main', side_effect=route):
+            self.assertEqual(updater.main(['status', '--compose-file', str(source), '--service', 'ffido',
+                '--state-dir', str(state), '--image-override', str(override),
+                '--pair-plan', str(self.root/'plan.json')]), 0)
+        self.assertEqual(override.read_text(), '{"services":{}}')
+
+    def test_pin_write_preserves_existing_access_for_operator(self):
+        self.compose.override.write_text('{"services":{}}')
+        self.compose.override.chmod(0o640)
+        before = self.compose.override.stat()
+        updater.write_images(self.compose.override, {'ffido': 'sha256:'+'a'*64})
+        after = self.compose.override.stat()
+        self.assertEqual((after.st_uid, after.st_gid, after.st_mode & 0o777),
+                         (before.st_uid, before.st_gid, 0o640))
+
+    def test_unchanged_pins_preserve_original_bytes_for_registration_digest(self):
+        original = b'{"services":{"ffido":{"image":"source-id"}},"x-note":"unchanged"}'
+        self.compose.override.write_bytes(original)
+        before = self.compose.override.stat().st_ino
+        updater.write_images(self.compose.override, {'ffido': 'source-id'})
+        self.assertEqual(self.compose.override.read_bytes(), original)
+        self.assertEqual(self.compose.override.stat().st_ino, before)
+
+    def test_inspect_requires_exact_registration_for_nonrelease_build(self):
+        local = {'tag': 'safe-mailbox-restore', 'version': '1.0.27',
+                 'stable': False, 'build_number': 2026111804, 'sha': 'a'*40}
+        compose = updater.Compose.__new__(updater.Compose)
+        compose.service = 'ffido'
+        info = {'Image': 'sha256:'+'a'*64, 'ImagePlatform': 'linux/amd64'}
+        compose.inspect_image = lambda service: (local, [], info)
+        with self.assertRaises(ValueError):
+            compose.inspect()
+        plan = {'source': {'backend': compose.local_identity(local, info)}}
+        self.assertEqual(compose.inspect(plan)[:2], (local, None))
+        plan['source']['backend']['image_id'] = 'sha256:'+'b'*64
+        with self.assertRaises(ValueError):
+            compose.inspect(plan)
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
         self.root = pathlib.Path(self.tmp.name); self.compose = FakeCompose(self.root)
@@ -37,6 +85,20 @@ class DockerUpdateTest(unittest.TestCase):
         self.assertEqual(json.loads(self.compose.override.read_text()), {'services': {'ffido': {'image': 'docker.io/hashev/ffido@sha256:'+'a'*64}}})
         self.assertIn(('up', '-d', '--no-deps', 'ffido'), self.compose.calls)
         self.assertEqual(json.loads((self.root/'operation.json').read_text())['phase'], 'complete')
+
+    def test_pair_pins_preserve_other_services_and_override_fields(self):
+        original = {'name': 'operator-project', 'services': {
+            'ffido': {'image': 'local', 'pull_policy': 'never', 'user': '123:456',
+                      'volumes': ['/private:/data'], 'environment': {'TLS': 'strict'}},
+            'tosser': {'image': 'old-worker', 'restart': 'unless-stopped'},
+            'other': {'image': 'unrelated'}}}
+        self.compose.override.write_text(json.dumps(original))
+        updater.write_images(self.compose.override, {'ffido': 'sha256:'+'a'*64,
+                                                     'tosser': 'sha256:'+'b'*64})
+        expected = json.loads(json.dumps(original))
+        expected['services']['ffido']['image'] = 'sha256:'+'a'*64
+        expected['services']['tosser']['image'] = 'sha256:'+'b'*64
+        self.assertEqual(json.loads(self.compose.override.read_text()), expected)
     def test_local_image_can_move_to_published_digest_with_existing_config(self):
         config = self.root/'config.json'
         config.write_text(json.dumps({'ftn': {'jam_message_encoding_corrections_path': 'corrections.jsonl'}}))
@@ -61,6 +123,17 @@ class DockerUpdateTest(unittest.TestCase):
         self.assertIn(('start', 'ffido'), self.compose.calls)
         self.assertFalse(self.compose.override.exists())
         self.assertNotIn(('up', '-d', '--no-deps', 'ffido'), self.compose.calls)
+
+    def test_schema12_rejects_manifest_max11_before_override(self):
+        self.compose.schema_value = 12
+        self.manifest['compatibility']['state_schema_max'] = 11
+        with self.assertRaisesRegex(ValueError, 'incompatible'):
+            self.apply()
+        self.assertFalse(self.compose.override.exists())
+        self.assertNotIn(('up', '-d', '--no-deps', 'ffido'), self.compose.calls)
+        self.manifest['compatibility']['state_schema_max'] = 12
+        self.apply()
+        self.assertIn(('up', '-d', '--no-deps', 'ffido'), self.compose.calls)
     def test_readiness_failure_preserves_digest_and_pending_manifest(self):
         self.compose.healthy = False
         with self.assertRaisesRegex(ValueError, 'not ready'): self.apply()

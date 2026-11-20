@@ -733,7 +733,7 @@ grpc::Status GrpcService::ClearHistory(grpc::ServerContext* context, const googl
                                        google::protobuf::Empty* response) {
   return Dispatch(context, response, [&](const auto& user) -> Result { return metadata_->ClearHistory(user.id); });
 }
-bool GrpcService::AllowLogin(std::string_view address, std::string peer) {
+bool GrpcService::AllowLogin(std::string_view address, std::string peer, unsigned max_attempts) {
   // gRPC's peer is authenticated by the transport; forwarded metadata is ignored.
   if (const auto colon = peer.rfind(':'); colon != std::string::npos)
     peer.resize(colon);
@@ -746,7 +746,7 @@ bool GrpcService::AllowLogin(std::string_view address, std::string peer) {
     const auto it = login_attempts_.find(key);
     if (it == login_attempts_.end() && login_attempts_.size() >= 2048)
       return false;
-    if (it != login_attempts_.end() && it->second.count >= 10)
+    if (it != login_attempts_.end() && it->second.count >= max_attempts)
       return false;
   }
   for (const auto& key : keys) {
@@ -794,6 +794,114 @@ grpc::Status GrpcService::Login(grpc::ServerContext* context, const wire::LoginR
   } catch (const std::exception&) {
     return {grpc::StatusCode::INTERNAL, "Login failed"};
   }
+}
+grpc::Status GrpcService::PublicDispatch(grpc::ServerContext* context, const google::protobuf::MessageLite& request,
+                                         google::protobuf::MessageLite* response,
+                                         const std::function<Result()>& operation) {
+  if (context->deadline() <= std::chrono::system_clock::now())
+    return {grpc::StatusCode::DEADLINE_EXCEEDED, "Request deadline exceeded"};
+  if (context->IsCancelled())
+    return {grpc::StatusCode::CANCELLED, "Request cancelled"};
+  if (request.ByteSizeLong() > 16384)
+    return {grpc::StatusCode::RESOURCE_EXHAUSTED, "Request too large"};
+  if (!AllowLogin("public:" + context->peer(), "telegram:" + context->peer(), 120))
+    return {grpc::StatusCode::RESOURCE_EXHAUSTED, "Too many login attempts; retry later"};
+  if (!slots_.try_acquire())
+    return {grpc::StatusCode::RESOURCE_EXHAUSTED, "Server busy"};
+  struct Release {
+    std::counting_semaphore<256>& slots;
+    ~Release() {
+      slots.release();
+    }
+  } release{slots_};
+  try {
+    CancelMonitor cancellation(context);
+    const auto remaining =
+        std::min(context->deadline() - std::chrono::system_clock::now(), std::chrono::system_clock::duration(timeout_));
+    RequestBudget budget{std::chrono::steady_clock::now() + remaining, cancellation.token()};
+    RequestScope scope(budget);
+    auto result = operation();
+    if (response->ByteSizeLong() > 1024 * 1024) {
+      response->Clear();
+      return {grpc::StatusCode::RESOURCE_EXHAUSTED, "Response too large"};
+    }
+    return result ? grpc::Status::OK : Error(context, result.error());
+  } catch (const std::exception&) {
+    response->Clear();
+    return {grpc::StatusCode::INTERNAL, "Request processing failed"};
+  }
+}
+grpc::Status GrpcService::GetServerCapabilities(grpc::ServerContext* context, const google::protobuf::Empty* request,
+                                                wire::ServerCapabilities* response) {
+  return PublicDispatch(context, *request, response, [&]() -> Result {
+    response->set_supports_telegram(auth_.SupportsTelegram());
+    return {};
+  });
+}
+grpc::Status GrpcService::ListTelegramProfiles(grpc::ServerContext* context, const wire::TelegramProof* request,
+                                               wire::TelegramProfiles* response) {
+  return PublicDispatch(context, *request, response, [&]() -> Result {
+    auto profiles = auth_.TelegramProfiles(request->init_data());
+    if (!profiles)
+      return std::unexpected(profiles.error());
+    for (const auto& user : *profiles) {
+      auto* profile = response->add_profiles();
+      profile->set_user_id(user.id);
+      profile->set_name(user.profile.name);
+      profile->set_address(user.profile.address);
+      profile->set_email(user.profile.email);
+      Timestamp(user.profile.registered_at, profile->mutable_registered_at());
+    }
+    return {};
+  });
+}
+grpc::Status GrpcService::LoginWithTelegram(grpc::ServerContext* context, const wire::TelegramLoginRequest* request,
+                                            wire::LoginResponse* response) {
+  return PublicDispatch(context, *request, response, [&]() -> Result {
+    auto login = auth_.TelegramLogin(request->init_data(), request->address());
+    if (!login)
+      return std::unexpected(login.error());
+    response->set_session_secret(login->token);
+    auto* session = response->mutable_session();
+    auto* profile = session->mutable_profile();
+    profile->set_user_id(login->user.id);
+    profile->set_name(login->user.profile.name);
+    profile->set_address(login->user.profile.address);
+    profile->set_email(login->user.profile.email);
+    Timestamp(login->user.profile.registered_at, profile->mutable_registered_at());
+    session->mutable_expires_at()->set_seconds(login->user.expires_at);
+    session->set_supports_message_footer(true);
+    session->set_supports_lightweight_conference_catalog(true);
+    session->set_supports_offline_sync(true);
+    return {};
+  });
+}
+grpc::Status GrpcService::BindTelegram(grpc::ServerContext* context, const wire::BindTelegramRequest* request,
+                                       wire::TelegramBinding* response) {
+  return Dispatch(context, response, [&](const auto& user) -> Result {
+    if (request->ByteSizeLong() > 16384 || !AllowLogin(user.profile.address, context->peer()))
+      return std::unexpected(
+          domain::ApiError{domain::ErrorCode::kResource, "Too many attempts or request too large", {}});
+    auto bound = auth_.BindTelegram(user, request->init_data(), request->password(), request->replace_existing());
+    if (!bound)
+      return bound;
+    response->set_bound(true);
+    return {};
+  });
+}
+grpc::Status GrpcService::GetTelegramBinding(grpc::ServerContext* context, const google::protobuf::Empty*,
+                                             wire::TelegramBinding* response) {
+  return Dispatch(context, response, [&](const auto& user) -> Result {
+    auto binding = metadata_->TelegramBinding(user.id);
+    if (!binding)
+      return std::unexpected(binding.error());
+    response->set_bound(*binding);
+    return {};
+  });
+}
+grpc::Status GrpcService::UnbindTelegram(grpc::ServerContext* context, const google::protobuf::Empty*,
+                                         google::protobuf::Empty* response) {
+  return Dispatch(context, response, [&](const auto& user) { return metadata_->UnbindTelegram(user.id); });
 }
 grpc::Status GrpcService::RestoreSession(grpc::ServerContext* context, const google::protobuf::Empty*,
                                          wire::SessionInfo* response) {

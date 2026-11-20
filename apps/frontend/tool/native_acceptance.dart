@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:grpc/grpc.dart' as grpc;
 import 'package:fido/api/api_client.dart';
+import 'package:fido/api/api_exceptions.dart';
 import 'package:fido/api/generated/ffido/v1/ffido.pbgrpc.dart' as wire;
 
 import 'acceptance_flow.dart';
@@ -43,6 +44,20 @@ Future<void> main() async {
     channelFactory: createChannel,
   );
   try {
+    if (await client.supportsTelegram(client.endpoint.toString())) {
+      throw StateError('Unconfigured fixture advertised Telegram');
+    }
+    try {
+      await client.telegramProfiles(
+        client.endpoint.toString(),
+        'invalid-fixture-proof',
+      );
+      throw StateError('Unverified Telegram identity was accepted');
+    } on UnauthorizedException {
+      stdout.writeln(
+        'PASS: native Telegram capabilities and invalid proof rejection',
+      );
+    }
     final a = await client.login(
       endpoint: client.endpoint.toString(),
       name: 'Алексей',

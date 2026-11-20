@@ -166,8 +166,8 @@ class _ExternalImageViewerState extends State<ExternalImageViewer> {
         );
       } else {
         final saved = await widget.actions.save(source.name, source.bytes);
-        if (mounted && widget.owner.active && saved) {
-          setState(() => note = 'Файл передан для сохранения');
+        if (mounted && widget.owner.active && saved.message != null) {
+          setState(() => note = saved.message);
         }
       }
     } catch (_) {

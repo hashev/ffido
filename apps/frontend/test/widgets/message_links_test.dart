@@ -1,3 +1,4 @@
+import 'package:fido/files/uue_file_types.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -17,7 +18,8 @@ class ActionsFake extends ImageActions {
   }
 
   @override
-  Future<bool> save(String name, Uint8List bytes) async => false;
+  Future<UueSaveResult> save(String name, Uint8List bytes) async =>
+      UueSaveResult.cancelled;
   @override
   Future<ImageActionResult> share(
     String name,

@@ -20,12 +20,14 @@ class SettingsWidget extends StatefulWidget {
     this.store,
     this.initialMessage = '',
     this.footerSettings,
+    this.accountManagedExternally = false,
   });
   final ApiClient? client;
   final SharedPreferences? preferences;
   final SessionStore? store;
   final String initialMessage;
   final MessageFooterSettings? footerSettings;
+  final bool accountManagedExternally;
   @override
   State<SettingsWidget> createState() => _SettingsWidgetState();
 }
@@ -264,39 +266,45 @@ class _SettingsWidgetState extends State<SettingsWidget> {
   @override
   Widget build(BuildContext context) => Scaffold(
     appBar: AppBar(
-      title: const Text('Подключение к FFIDO'),
-      actions: const [UpdateButton()],
+      title: Text(
+        widget.accountManagedExternally
+            ? 'Оформление и шаблоны'
+            : 'Подключение к FFIDO',
+      ),
+      actions: [if (!widget.accountManagedExternally) const UpdateButton()],
     ),
     body: AdaptiveContent(
       maxWidth: AdaptiveContent.formWidth,
       child: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          _field('name', 'Имя', _name),
-          _field('address', 'FTN-адрес', _address),
-          _field('password', 'Пароль', _password, secret: true),
-          _field('endpoint', 'Адрес сервера', _endpoint),
-          const Text(
-            'Используйте FTN-адрес и пароль, настроенные у вашего сисопа. Адрес сервера: https://fido.example.org',
-          ),
-          const SizedBox(height: 16),
-          FilledButton(
-            onPressed: _busy ? null : () => _save(),
-            child: const Text('Подключиться'),
-          ),
-          if (_client.hasToken) ...[
-            OutlinedButton(
-              onPressed: _busy ? null : () => _save(logout: true),
-              child: const Text('Выйти'),
+          if (!widget.accountManagedExternally) ...[
+            _field('name', 'Имя', _name),
+            _field('address', 'FTN-адрес', _address),
+            _field('password', 'Пароль', _password, secret: true),
+            _field('endpoint', 'Адрес сервера', _endpoint),
+            const Text(
+              'Используйте FTN-адрес и пароль, настроенные у вашего сисопа. Адрес сервера: https://fido.example.org',
             ),
-            TextButton(
-              onPressed: _busy
-                  ? null
-                  : () =>
-                        Navigator.of(context)
-                            .pushNamedAndRemoveUntil('/', (_) => false),
-              child: const Text('Открыть конференции'),
+            const SizedBox(height: 16),
+            FilledButton(
+              onPressed: _busy ? null : () => _save(),
+              child: const Text('Подключиться'),
             ),
+            if (_client.hasToken) ...[
+              OutlinedButton(
+                onPressed: _busy ? null : () => _save(logout: true),
+                child: const Text('Выйти'),
+              ),
+              TextButton(
+                onPressed: _busy
+                    ? null
+                    : () =>
+                          Navigator.of(context)
+                              .pushNamedAndRemoveUntil('/', (_) => false),
+                child: const Text('Открыть конференции'),
+              ),
+            ],
           ],
           const Divider(),
           const Text('Оформление исходящих сообщений'),

@@ -1,4 +1,5 @@
 import '../models/message_technical_data.dart';
+import 'web_draft_store.dart';
 import 'personal_message_filters_repository.dart';
 import '../api/message_footer_snapshot.dart';
 
@@ -402,25 +403,56 @@ class MessageRepository {
     final operation = operationId ?? newOperationId();
     final footer = await _footers.capture(operation, enabled: useFooter);
     _check(captured, cancellation);
-    final response = await _apiClient.createMessage(
-      wire.CreateMessageRequest(
-        conferenceId: conferenceId,
-        operationId: operation,
-        footer: footer,
-        toName: toName,
-        toAddress: toAddress,
-        subject: subject,
-        body: body,
-        inReplyTo: inReplyTo,
-      ),
-      cancellation: cancellation,
+    var request = wire.CreateMessageRequest(
+      conferenceId: conferenceId,
+      operationId: operation,
+      footer: footer,
+      toName: toName,
+      toAddress: toAddress,
+      subject: subject,
+      body: body,
+      inReplyTo: inReplyTo,
     );
+    final store = WebDraftStore.active;
+    final scope = store?.scope;
+    if (store != null && scope != null) {
+      request = wire.CreateMessageRequest.fromBuffer(
+        await store.freeze(
+          scope,
+          operation,
+          'CreateMessage',
+          request.writeToBuffer(),
+          jsonEncode([
+            conferenceId,
+            toName,
+            toAddress,
+            subject,
+            body,
+            inReplyTo,
+          ]),
+        ),
+      );
+    }
+    _check(captured, cancellation);
+    final wire.CreateMessageResponse response;
+    try {
+      response = await _apiClient.createMessage(
+        request,
+        cancellation: cancellation,
+      );
+    } on ApiException catch (error) {
+      if (!error.hasUncertainCommit && store != null && scope != null) {
+        await store.remove(scope, 'send:$operation');
+      }
+      rethrow;
+    }
     _check(captured, cancellation);
     if (response.status != wire.SaveStatus.SAVE_STATUS_SAVED_LOCALLY) {
       throw const ServerException(
         message: 'Сервер не подтвердил локальное сохранение',
       );
     }
+    if (store != null && scope != null) await store.complete(scope, operation);
     onChanged?.call(conferenceId);
     return SendMessageResponse(
       id: response.message.messageId,
@@ -442,22 +474,55 @@ class MessageRepository {
     final captured = epoch;
     final footer = await _footers.capture(operationId);
     _check(captured, cancellation);
-    final response = await _apiClient.createCrosspost(
-      wire.CreateCrosspostRequest(
-        message: wire.CreateMessageRequest(
-          conferenceId: conferenceId,
-          operationId: operationId,
-          footer: footer,
-          toName: toName,
-          toAddress: toAddress,
-          subject: subject,
-          body: body,
-          inReplyTo: inReplyTo,
-        ),
-        additionalConferenceIds: additionalConferenceIds,
+    var request = wire.CreateCrosspostRequest(
+      message: wire.CreateMessageRequest(
+        conferenceId: conferenceId,
+        operationId: operationId,
+        footer: footer,
+        toName: toName,
+        toAddress: toAddress,
+        subject: subject,
+        body: body,
+        inReplyTo: inReplyTo,
       ),
-      cancellation: cancellation,
+      additionalConferenceIds: additionalConferenceIds,
     );
+    final store = WebDraftStore.active;
+    final scope = store?.scope;
+    if (store != null && scope != null) {
+      request = wire.CreateCrosspostRequest.fromBuffer(
+        await store.freeze(
+          scope,
+          operationId,
+          'CreateCrosspost',
+          request.writeToBuffer(),
+          jsonEncode([
+            conferenceId,
+            additionalConferenceIds,
+            toName,
+            toAddress,
+            subject,
+            body,
+            inReplyTo,
+          ]),
+        ),
+      );
+    }
+    _check(captured, cancellation);
+    final wire.CreateCrosspostResponse response;
+    try {
+      response = await _apiClient.createCrosspost(
+        request,
+        cancellation: cancellation,
+      );
+    } on ApiException catch (error) {
+      if (const {3, 5, 6, 12, 16}.contains(error.statusCode) &&
+          store != null &&
+          scope != null) {
+        await store.remove(scope, 'send:$operationId');
+      }
+      rethrow;
+    }
     _check(captured, cancellation);
     final expected = {conferenceId, ...additionalConferenceIds};
     final confirmed = response.saved
@@ -473,6 +538,9 @@ class MessageRepository {
       throw const ServerException(
         message: 'Сервер не подтвердил все копии кросспостинга',
       );
+    }
+    if (response.complete && store != null && scope != null) {
+      await store.complete(scope, operationId);
     }
     for (final saved in response.saved) {
       onChanged?.call(saved.message.conferenceId);

@@ -4,6 +4,15 @@ import re
 import common
 
 
+def selected(raw, signature, keys, tag, channel, minimum_sequence):
+    """Explicit authenticated target for a registered non-release installation."""
+    manifest = common.verify_manifest(raw, signature, keys, minimum_sequence)
+    if (channel not in {'stable', 'dev'} or manifest['channel'] != channel
+            or manifest['identity']['tag'] != tag or not manifest.get('container')):
+        raise ValueError('Selected release identity/channel differs from transition plan')
+    return manifest
+
+
 def releases(installed, keys, channel, minimum_sequence=0, fetch=common.fetch):
     if channel not in {'stable', 'dev'}:
         raise ValueError('Unknown update channel')

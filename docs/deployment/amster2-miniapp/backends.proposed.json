@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "servers": [
+    {
+      "id": "amster2-miniapp-test",
+      "name": "FFIDO Mini App — тестовый backend",
+      "ftn_address": "2:1/2",
+      "endpoint": "https://f120n5015z2.ddns.net:8443"
+    },
+    {
+      "id": "amster2-main",
+      "name": "FFIDO — 2:5015/120",
+      "ftn_address": "2:5015/120",
+      "endpoint": "https://f120n5015z2.ddns.net:9443"
+    }
+  ]
+}

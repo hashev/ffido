@@ -1,0 +1,219 @@
+{
+  "overload_manager": {
+    "resource_monitors": [
+      {
+        "name": "envoy.resource_monitors.global_downstream_max_connections",
+        "typed_config": {
+          "@type": "type.googleapis.com/envoy.extensions.resource_monitors.downstream_connections.v3.DownstreamConnectionsConfig",
+          "max_active_downstream_connections": 256
+        }
+      }
+    ]
+  },
+  "static_resources": {
+    "listeners": [
+      {
+        "name": "ffido_web",
+        "enable_reuse_port": false,
+        "address": {
+          "socket_address": {
+            "address": "0.0.0.0",
+            "port_value": 9443
+          }
+        },
+        "filter_chains": [
+          {
+            "transport_socket": {
+              "name": "envoy.transport_sockets.tls",
+              "typed_config": {
+                "@type": "type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.DownstreamTlsContext",
+                "common_tls_context": {
+                  "tls_params": {
+                    "tls_minimum_protocol_version": "TLSv1_2"
+                  },
+                  "tls_certificates": [
+                    {
+                      "certificate_chain": {
+                        "filename": "/certs/public/fullchain.pem"
+                      },
+                      "private_key": {
+                        "filename": "/certs/public/privkey.pem"
+                      }
+                    }
+                  ]
+                }
+              }
+            },
+            "filters": [
+              {
+                "name": "envoy.filters.network.http_connection_manager",
+                "typed_config": {
+                  "@type": "type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager",
+                  "stat_prefix": "ffido_web",
+                  "codec_type": "AUTO",
+                  "max_request_headers_kb": 8,
+                  "stream_idle_timeout": "15s",
+                  "request_timeout": "15s",
+                  "route_config": {
+                    "name": "ffido",
+                    "virtual_hosts": [
+                      {
+                        "name": "ffido",
+                        "domains": [
+                          "*"
+                        ],
+                        "typed_per_filter_config": {
+                          "envoy.filters.http.cors": {
+                            "@type": "type.googleapis.com/envoy.extensions.filters.http.cors.v3.CorsPolicy",
+                            "allow_origin_string_match": [
+                              {
+                                "exact": "https://hashev.github.io"
+                              }
+                            ],
+                            "allow_methods": "POST, OPTIONS",
+                            "allow_headers": "authorization,content-type,x-grpc-web,x-user-agent,grpc-timeout",
+                            "expose_headers": "grpc-status,grpc-message,ffido-error-details-bin",
+                            "max_age": "600"
+                          }
+                        },
+                        "routes": [
+                          {
+                            "match": {
+                              "prefix": "/ffido.v1.Ffido/"
+                            },
+                            "route": {
+                              "cluster": "ffido_backend",
+                              "timeout": "15s",
+                              "max_stream_duration": {
+                                "max_stream_duration": "15s"
+                              }
+                            }
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  "http_filters": [
+                    {
+                      "name": "envoy.filters.http.rbac",
+                      "typed_config": {
+                        "@type": "type.googleapis.com/envoy.extensions.filters.http.rbac.v3.RBAC",
+                        "rules": {
+                          "action": "ALLOW",
+                          "policies": {
+                            "web_origin": {
+                              "permissions": [
+                                {
+                                  "header": {
+                                    "name": "origin",
+                                    "string_match": {
+                                      "exact": "https://hashev.github.io"
+                                    }
+                                  }
+                                }
+                              ],
+                              "principals": [
+                                {
+                                  "any": true
+                                }
+                              ]
+                            }
+                          }
+                        }
+                      }
+                    },
+                    {
+                      "name": "envoy.filters.http.grpc_web",
+                      "typed_config": {
+                        "@type": "type.googleapis.com/envoy.extensions.filters.http.grpc_web.v3.GrpcWeb"
+                      }
+                    },
+                    {
+                      "name": "envoy.filters.http.cors",
+                      "typed_config": {
+                        "@type": "type.googleapis.com/envoy.extensions.filters.http.cors.v3.Cors"
+                      }
+                    },
+                    {
+                      "name": "envoy.filters.http.buffer",
+                      "typed_config": {
+                        "@type": "type.googleapis.com/envoy.extensions.filters.http.buffer.v3.Buffer",
+                        "max_request_bytes": 2097152
+                      }
+                    },
+                    {
+                      "name": "envoy.filters.http.router",
+                      "typed_config": {
+                        "@type": "type.googleapis.com/envoy.extensions.filters.http.router.v3.Router"
+                      }
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "clusters": [
+      {
+        "name": "ffido_backend",
+        "type": "STRICT_DNS",
+        "dns_lookup_family": "V4_ONLY",
+        "connect_timeout": "2s",
+        "load_assignment": {
+          "cluster_name": "ffido_backend",
+          "endpoints": [
+            {
+              "lb_endpoints": [
+                {
+                  "endpoint": {
+                    "address": {
+                      "socket_address": {
+                        "address": "v1002682.hosted-by-vdsina.com",
+                        "port_value": 8080
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        "typed_extension_protocol_options": {
+          "envoy.extensions.upstreams.http.v3.HttpProtocolOptions": {
+            "@type": "type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions",
+            "explicit_http_config": {
+              "http2_protocol_options": {}
+            }
+          }
+        },
+        "transport_socket": {
+          "name": "envoy.transport_sockets.tls",
+          "typed_config": {
+            "@type": "type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext",
+            "sni": "v1002682.hosted-by-vdsina.com",
+            "common_tls_context": {
+              "tls_params": {
+                "tls_minimum_protocol_version": "TLSv1_2"
+              },
+              "validation_context": {
+                "trusted_ca": {
+                  "filename": "/certs/backend/ca.pem"
+                },
+                "match_typed_subject_alt_names": [
+                  {
+                    "san_type": "DNS",
+                    "matcher": {
+                      "exact": "v1002682.hosted-by-vdsina.com"
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    ]
+  }
+}

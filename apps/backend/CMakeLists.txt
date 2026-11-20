@@ -48,6 +48,7 @@ set(FIDOBACK_LIB_SOURCES
   src/storage/jam_encoding_corrections.cpp
   src/storage/jam_writer.cpp
   src/storage/jam_audit.cpp
+  src/storage/mailbox_restore.cpp
   src/storage/point_mailbox.cpp
   src/storage/text_codec.cpp
   src/service/conference_service.cpp
@@ -55,6 +56,7 @@ set(FIDOBACK_LIB_SOURCES
   src/service/message_service.cpp
   src/service/uue_service.cpp
   src/service/auth_service.cpp
+  src/service/telegram_auth.cpp
   src/service/echo_access.cpp
   src/service/hpt_catalog.cpp
   src/service/hpt_auth.cpp
@@ -88,6 +90,22 @@ add_test(NAME UueFixtureOracle COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOU
 add_test(NAME JamEncodingCorrections COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/test_jam_encoding_check.py $<TARGET_FILE:ffido-jam-encoding-check>)
 add_test(NAME JamUtf8Repair COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/test_repair_jam_utf8.py)
 add_test(NAME HptWrapper COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/test_hpt_wrapper.py ${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/run_hpt.py)
+option(FFIDO_TEST_PRIVILEGED_PROC_AUDIT "Run Linux backup/restore tests with a complete root /proc audit" OFF)
+set(FFIDO_BACKUP_TEST_PYTHON ${Python3_EXECUTABLE})
+if(FFIDO_TEST_PRIVILEGED_PROC_AUDIT)
+  if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    message(FATAL_ERROR "Privileged /proc test audit is supported only on Linux")
+  endif()
+  find_program(FFIDO_TEST_SUDO_EXECUTABLE NAMES sudo)
+  if(NOT FFIDO_TEST_SUDO_EXECUTABLE)
+    message(FATAL_ERROR "Privileged /proc test audit requires sudo")
+  endif()
+  set(FFIDO_BACKUP_TEST_PYTHON ${FFIDO_TEST_SUDO_EXECUTABLE} -n -E ${Python3_EXECUTABLE})
+endif()
+add_test(NAME NodeBackup COMMAND ${FFIDO_BACKUP_TEST_PYTHON} -m unittest discover -s ${CMAKE_CURRENT_SOURCE_DIR}/../../scripts -p test_node_backup.py)
+add_library(ffido-restore-sync-fault SHARED tests/support/restore_sync_fault.cpp)
+target_link_libraries(ffido-restore-sync-fault PRIVATE ffido_backend_checks ${CMAKE_DL_LIBS})
+add_test(NAME MailboxRestore COMMAND ${FFIDO_BACKUP_TEST_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/test_mailbox_restore.py $<TARGET_FILE:ffido-admin> $<TARGET_FILE:ffido-restore-sync-fault>)
 add_test(NAME AdminCommands COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/test_admin.py $<TARGET_FILE:ffido-admin>)
 add_test(NAME HptRoutingFixtures COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/support/hpt_routing_fixture.py ${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/run_hpt.py)
 set_tests_properties(HptRoutingFixtures PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
@@ -121,6 +139,7 @@ set(TEST_SOURCES
   tests/unit/test_coordination.cpp
   tests/unit/test_sqlite_store.cpp
   tests/unit/test_auth_service.cpp
+  tests/unit/test_telegram_auth.cpp
   tests/unit/test_hpt_auth.cpp
   tests/unit/test_point_mail.cpp
   tests/unit/test_app_config.cpp
@@ -191,6 +210,7 @@ endif()
 
 install(TARGETS fidoback ffido-admin ffido-hpt-auth ffido-jam-encoding-check RUNTIME DESTINATION bin COMPONENT ffido)
 install(PROGRAMS ${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/run_hpt.py DESTINATION bin RENAME ffido-run-hpt COMPONENT ffido)
+install(PROGRAMS ${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/node_backup.py DESTINATION bin RENAME ffido-node-backup COMPONENT ffido)
 install(FILES config.example.json DESTINATION share/ffido COMPONENT ffido)
 
 install(PROGRAMS ${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/update/ffido-update DESTINATION bin COMPONENT ffido)
@@ -233,5 +253,6 @@ target_compile_definitions(fidoback_tests PRIVATE FFIDO_MCP_FAULT_LIBRARY="$<TAR
 install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/../../docs/mcp.md DESTINATION share/ffido COMPONENT ffido)
 
 target_compile_definitions(fidoback_tests PRIVATE FFIDO_MCP_LOGIN_TEST="${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/test_mcp_login.py")
+target_compile_definitions(fidoback_tests PRIVATE FFIDO_TELEGRAM_WEB_TEST="${CMAKE_CURRENT_SOURCE_DIR}/tests/support/telegram_web_fixture.py")
 
 add_test(NAME McpInstall COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/test_mcp_install.py ${CMAKE_COMMAND} ${CMAKE_BINARY_DIR})

@@ -1,11 +1,37 @@
 # Backend FFIDO
 
+## Telegram Mini App
+
+RPC `GetServerCapabilities`, `ListTelegramProfiles`, `LoginWithTelegram`,
+`BindTelegram`, `GetTelegramBinding`, `UnbindTelegram` используют общий gRPC/gRPC-Web.
+Первые три доступны до FFIDO-сессии: capabilities не раскрывает профили,
+список и вход требуют свежую Ed25519-подпись Telegram. Bind требует сессию,
+текущий HPT-пароль и Telegram proof; просмотр и отвязка — сессию своего профиля.
+
+В `auth` можно задать `telegram: {"bot_id": 123456789, "test_environment": false,
+"max_age_seconds": 300, "clock_skew_seconds": 30}`. ID — пример. Без положительного
+bot_id capability выключена. Test environment означает отдельную среду Telegram,
+а не тестирование будущего основного бота на отдельном backend в обычном Telegram:
+для него `test_environment: false`. Токен бота backend не нужен.
+Проверяется публичный ключ Telegram соответствующей среды; часы узла должны быть точны.
+initData передаётся в protobuf, не в URL/логах. Запросы ограничены по размеру,
+конкуренции, deadline и частоте источника; ошибка сети не означает старый сервер.
+Публичные Telegram-запросы имеют отдельный бюджет 120/мин на транспортный источник,
+не расходующий бюджет HPT-входа и bind (10/мин). За gateway транспортный источник
+может быть общим для нескольких пользователей; forwarded metadata не считается доверенным IP.
+
+SQLite schema 12 хранит привязки локально и связывает Telegram-сессии с ревизией.
+Миграция сохраняет прежние профили и HPT-сессии. Перед обновлением требуется
+резервная копия; старый бинарный файл может не поддерживать новую схему.
+Смена эффективного HPT-пароля/удаление доступа после успешной загрузки конфигурации
+отзывает привязку и сессии. Отвязка/замена отзывают только её Telegram-сессии.
+Клиентская проверка initDataUnsafe не считается авторизацией.
+
 C++23 backend использует только `ffido.v1.Ffido` gRPC API из
 `contracts/ffido/v1/ffido.proto`. REST, static-file serving и JWT удалены.
-Все 13 RPC требуют `authorization: Bearer <opaque-token>` по TLS; имя,
-профиль и FTN-адрес назначаются локальным администратором. Все активные
-пользователи имеют одинаковый доступ к разрешённым JAM-конференциям и
-отдельные закладки, историю и прочитанность.
+Бизнес-RPC требуют `authorization: Bearer <opaque-token>` по TLS; имя,
+профиль и FTN-адрес назначаются локальным администратором. Права на конференции
+проверяются для каждого профиля; закладки, история и прочитанность персональны.
 
 ## Сборка и проверки
 
@@ -993,3 +1019,46 @@ high_id, повторы, пустые значения и произвольны
 дополнительного raw-чтения нет. Ненулевой offset с opt-in даёт INVALID_ARGUMENT.
 Архивное чтение не меняет JAM, фильтры, read_status, history или reading_positions.
 `GetMessageTechnicalData` сохраняет прежнюю выборку LoID 4, 5, 2000.
+
+### Остановленный backup и перенос JAM
+
+`ffido-node-backup` (исходник `scripts/node_backup.py`) не останавливает и не запускает службы. Supervisor обязан заранее остановить всех писателей, включая HPT/mailer. Инструмент захватывает существующие maintenance, instance (`metadata.db.lock`) и HPT locks, проверяет writable FD на Linux и требует checkpointed SQLite схемы 11/12. На других ОС supervisor отвечает за проверку сторонних писателей. Каталог назначения должен быть новым, вне исходного дерева; права корня — 0700.
+
+```sh
+ffido-node-backup snapshot --root /private/stopped-node \
+  --destination /private/snapshots/new-snapshot --config ffido/config.json \
+  --helper /opt/ffido/bin/ffido-hpt-auth \
+  --map /home/fido=/private/stopped-node \
+  --map /var/lib/ffido=/private/stopped-node/ffido/state \
+  --map /etc/ffido/tls=/private/stopped-node/ffido/tls
+```
+
+Профиль состава включает HPT/config/includes, intab/outtab, corrections manifest, JAM всех активных областей и персональных ящиков, SQLite, TLS/session key, `f`, `spool`, `dupebase`, `flags`, fileboxes, Compose/`.env`/binkd/`t.sh`, ops/updater/updates, ACME и deployment state. Отсутствующий обязательный путь блокирует завершение; дополнительные зависимости задаются `--include` внутри root. `backups` нельзя включать рекурсивно: существующие специальные, недельные и referenced backups инструмент не удаляет и не меняет. Допустимые ссылки Certbot `ffido/acme/config/live` материализуются только из проверенных файлов `archive` внутри того же root; другие symlink/hardlink запрещены. Архив сохраняет uid/gid файлов; при распаковке нужно сохранить права/владельцев для выбранного runtime UID.
+
+Завершённый `snapshot.json` содержит версию, хеши, схему, назначения address/base, поколения и provenance материализованных файлов; `snapshot.tar.gz` проверяется чтением. Выданный `manifest_sha256` необходимо сохранить отдельно от восстанавливаемого каталога как доверенную запись. Содержимое snapshot приватное; не помещать его в Git и не публиковать вывод HPT helper.
+
+Восстановление выполняется в новый закрытый root без работающих писателей и production mounts:
+
+```sh
+ffido-node-backup verify --root /private/restored \
+  --manifest /private/restored/snapshot.json --expected-digest "$TRUSTED_SNAPSHOT_SHA256"
+ffido-admin mailbox-restore /private/restored /private/restored/snapshot.json \
+  "$TRUSTED_SNAPSHOT_SHA256" check
+# PLAN_SHA256 берётся из результата check для этого конкретного назначения.
+ffido-admin mailbox-restore /private/restored /private/restored/snapshot.json \
+  "$TRUSTED_SNAPSHOT_SHA256" apply "$PLAN_SHA256"
+```
+
+`check` не мигрирует и не изменяет БД/JAM. `apply` повторяет проверки, сохраняет приватную `.ffido-restore-<plan>.db`, затем одной SQLite-транзакцией обновляет физические mailbox bindings, `restored_generations` и receipt применения. Логические generation, operation_id/payload_hash, UUE/crosspost receipts и FTN source_key сохраняются. Runtime проверяет физическое поколение при привязке каталога и каждом открытии, прежде чем использовать логическое. Обычный startup/provisioning не исправляет несовпадения автоматически.
+
+Pending/rolled-back/quarantined append operations, незавершённые transfers/outbox, неопределённый export, неоднозначные или исторические несопоставимые generation блокируют восстановление; инструмент не запускает recovery/отправку и не очищает журналы. Подтверждённый повтор того же плана до запуска runtime идемпотентен. После начала работы runtime receipt восстановления больше не подтверждает неизменность всего snapshot: для нового переноса нужен новый снимок. При аварии с WAL сначала остановить писателей и повторить явный `apply` с прежним планом; readonly `check` требует checkpointed DB.
+
+Схема 11 остаётся 11, схема 12 остаётся 12. Для полного rollback используется отдельный образ **v1.0.27 с restore-support**: исходный v1.0.27 не знает логического сопоставления и не является совместимым rollback для перенесённых generation. БД схемы 12 нельзя передавать backend схемы 11. Старые архивы без полного manifest нельзя объявлять проверенными задним числом; дополнения старой копии оформляются отдельным provenance и новым sandbox snapshot.
+
+Для подготовки sandbox из уже распакованного legacy-архива с изменёнными inode дополнительно нужны `--legacy-manifest /private/source-hashes.json --legacy-digest SHA256`. Это отдельно доверенный JSON `relative_path → SHA256`, проверенный по исходному архиву и явным дополнениям. Он должен покрывать config, SQLite и каждый компонент затронутой JAM; без него snapshot helper не выводит логическую идентичность из старых generation произвольной копии. Новый manifest сохраняет digest этого provenance.
+
+Offline restore удерживает дескрипторы всех файлов manifest до commit. Soft limit `nofile` должен превышать число файлов с запасом для locks/SQLite (не менее 32); для репетиции с 2044 файлами использован `docker run --ulimit nofile=8192:8192`. Лимит меняется только у административного процесса; shortage приводит к отказу без применения. Рабочий runtime по-прежнему использует существующий ограниченный JAM open budget.
+
+Для старых абсолютных HPT-путей `--map` не заменяет файловое пространство процесса: libfidoconfig проверяет существование ресурсов, например intab/outtab, ещё при parsing. Запускайте snapshot helper в изолированном контейнере с **копией** также под исходными `/home/fido`, `/srv/fido`, `/var/lib/ffido` и `/etc/ffido/tls` как read-only aliases. Рабочий узел туда не монтируется. Подробная схема — в `docs/deployment/amster2-miniapp/safe-mailbox-restore-20261118.md`.
+
+`ffido-admin metadata-schema-check DB` выполняет ту же read-only проверку обязательных таблиц/столбцов схем 11/12 и integrity/FK, которую использует restore. Snapshot helper вызывает эту команду из того же комплекта, что `ffido-hpt-auth`: неполная схема не получает завершённый manifest. Проверка не вызывает Init, не создаёт отсутствующую БД и не повышает user_version.

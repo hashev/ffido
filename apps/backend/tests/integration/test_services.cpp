@@ -1,5 +1,6 @@
 #include <fcntl.h>
 #include <gtest/gtest.h>
+#include <sqlite3.h>
 #include <sys/file.h>
 #include <sys/resource.h>
 
@@ -24,6 +25,7 @@
 #include "service/message_service.hpp"
 #include "service/request_context.hpp"
 #include "service/uue_service.hpp"
+#include "storage/mailbox_restore.hpp"
 using namespace fidoback;
 namespace {
 class ServicesTest : public ::testing::Test {
@@ -63,6 +65,51 @@ protected:
     ASSERT_TRUE(metadata->Init());
     ASSERT_TRUE(metadata->SaveProfile("A", domain::Profile{"Алексей", "2:5015/1.1", "", "2026-01-01T00:00:00Z"}));
     ASSERT_TRUE(metadata->SaveProfile("B", domain::Profile{"Борис", "2:5015/1.2", "", "2026-01-01T00:00:00Z"}));
+    messages = std::make_unique<service::MessageService>(catalog, metadata, test::EchoAccess(*catalog, temp.path()));
+    conferences =
+        std::make_unique<service::ConferenceService>(catalog, metadata, test::EchoAccess(*catalog, temp.path()));
+  }
+  void RelocateVerifiedCatalog() {
+    std::vector<EchoAreaConfig> areas;
+    std::map<std::string, std::string> logical;
+    for (const auto& [id, area] : catalog->areas()) {
+      auto access =
+          storage::JamAccess::Open(*catalog, id, false, std::chrono::steady_clock::now() + std::chrono::seconds(2));
+      ASSERT_TRUE(access);
+      logical[area.relative_filename.string()] = (*access)->generation();
+      areas.push_back(area.config);
+    }
+    messages.reset();
+    conferences.reset();
+    catalog.reset();
+    for (const auto& [base, generation] : logical)
+      for (const auto* suffix : {".jhr", ".jdt", ".jdx"}) {
+        const auto name = (temp.path() / base).string() + suffix;
+        std::filesystem::copy_file(name, name + ".relocated");
+        std::filesystem::rename(name + ".relocated", name);
+      }
+    auto opened = storage::JamCatalog::Build(temp.path(), areas);
+    ASSERT_TRUE(opened);
+    catalog = std::shared_ptr<storage::JamCatalog>(std::move(*opened));
+    sqlite3* db = nullptr;
+    ASSERT_EQ(sqlite3_open((temp.path() / "metadata.db").c_str(), &db), SQLITE_OK);
+    ASSERT_EQ(sqlite3_exec(db,
+                           "CREATE TABLE restored_generations(base TEXT PRIMARY KEY,physical_generation TEXT,"
+                           "logical_generation TEXT)",
+                           nullptr, nullptr, nullptr),
+              SQLITE_OK);
+    for (const auto& [id, area] : catalog->areas()) {
+      auto access =
+          storage::JamAccess::Open(*catalog, id, false, std::chrono::steady_clock::now() + std::chrono::seconds(2));
+      ASSERT_TRUE(access);
+      const auto base = area.relative_filename.string();
+      EXPECT_NE((*access)->generation(), logical.at(base));
+      const auto sql = "INSERT INTO restored_generations VALUES('" + base + "','" + (*access)->generation() + "','" +
+                       logical.at(base) + "')";
+      ASSERT_EQ(sqlite3_exec(db, sql.c_str(), nullptr, nullptr, nullptr), SQLITE_OK);
+    }
+    sqlite3_close(db);
+    ASSERT_TRUE(storage::BindRestoredGenerations(*catalog, temp.path() / "metadata.db"));
     messages = std::make_unique<service::MessageService>(catalog, metadata, test::EchoAccess(*catalog, temp.path()));
     conferences =
         std::make_unique<service::ConferenceService>(catalog, metadata, test::EchoAccess(*catalog, temp.path()));
@@ -3641,4 +3688,54 @@ TEST_F(ServicesTest, UueChunkMeasurementFixture) {
   std::cout << "UUE_MEMORY " << report.dump() << '\n';
   if (parallel == 1)
     EXPECT_EQ(completed, samples);
+}
+
+TEST_F(ServicesTest, RestoredCrosspostRepeatsFrozenRequestAndPreservesPersonalState) {
+  const auto request = Request("restored-crosspost");
+  auto sent = messages->CreateCrosspost("echo.one", request, {"echo.two"}, "A");
+  ASSERT_TRUE(sent && sent->complete);
+  ASSERT_EQ(sent->saved.size(), 2u);
+  const auto first = sent->saved[0];
+  ASSERT_TRUE(messages->GetMessage(first.conference, first.id, "A"));
+  const auto history = metadata->GetHistory("A");
+  ASSERT_TRUE(history);
+  ASSERT_NO_FATAL_FAILURE(RelocateVerifiedCatalog());
+  auto retry = messages->CreateCrosspost("echo.one", request, {"echo.two"}, "A");
+  ASSERT_TRUE(retry && retry->complete);
+  ASSERT_EQ(retry->saved.size(), sent->saved.size());
+  for (size_t i = 0; i < sent->saved.size(); ++i)
+    EXPECT_EQ(retry->saved[i].id, sent->saved[i].id);
+  EXPECT_EQ(conferences->GetConference("echo.one", "A")->total_count, 1);
+  EXPECT_EQ(conferences->GetConference("echo.two", "A")->total_count, 1);
+  EXPECT_EQ(metadata->GetHistory("A")->size(), history->size());
+  EXPECT_EQ(metadata->GetHistory("B")->size(), 0u);
+  EXPECT_TRUE(messages->PeekMessage(first.conference, first.id, "A"));
+}
+
+TEST_F(ServicesTest, RestoredUueRepeatsFrozenMultipartReceiptWithoutDuplicates) {
+  const std::string bytes(50000, 'a');
+  const auto request = Request("restored-uue");
+  std::vector<std::string> receipt;
+  {
+    service::UueService uue(catalog, metadata, test::EchoAccess(*catalog, temp.path()));
+    ASSERT_TRUE(uue.Upload(request.operation_id, "fixture.bin", bytes.size(), UueHash(bytes), 0, bytes, "A"));
+    auto sent = uue.Commit("echo.one", request, "A");
+    ASSERT_TRUE(sent && sent->state == "completed");
+    receipt = sent->messages;
+    ASSERT_GT(receipt.size(), 1u);
+  }
+  ASSERT_NO_FATAL_FAILURE(RelocateVerifiedCatalog());
+  service::UueService uue(catalog, metadata, test::EchoAccess(*catalog, temp.path()));
+  auto retry = uue.Commit("echo.one", request, "A");
+  ASSERT_TRUE(retry && retry->state == "completed");
+  EXPECT_EQ(retry->messages, receipt);
+  EXPECT_EQ(conferences->GetConference("echo.one", "A")->total_count, receipt.size());
+  auto found = uue.Search("echo.one", "", 0, 100, "A");
+  ASSERT_TRUE(found);
+  std::vector<service::UueReference> sources;
+  for (const auto& part : found->parts)
+    sources.push_back(part.source);
+  auto assembled = uue.Assemble(sources, false, "A");
+  ASSERT_TRUE(assembled && assembled->state == service::UueState::kReady);
+  EXPECT_EQ(uue.Chunk(assembled->id, 0, 65536, "A")->bytes, bytes);
 }

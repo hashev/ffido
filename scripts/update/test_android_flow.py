@@ -300,7 +300,9 @@ def run(args):
             device('shell', 'am', 'force-stop', installer)
         # Do not silently replace a real device install: this emulator is explicit.
         device('uninstall', PACKAGE) if PACKAGE in device('shell', 'pm', 'list', 'packages', PACKAGE) else None
-        device('install', str(web/'A.apk'))
+        # Separate push/install avoids API 25's stalled streamed fixture install.
+        # The update under test still goes through Android's Package Installer.
+        device('install', '--no-streaming', str(web/'A.apk'))
         # Fresh A must not inherit restored data from another QA run.
         assert device('shell', 'pm', 'clear', PACKAGE).strip() == 'Success'
         device('logcat', '-b', 'main', '-c')

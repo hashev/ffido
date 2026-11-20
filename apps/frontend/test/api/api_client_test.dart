@@ -13,6 +13,59 @@ import 'package:fido/api/api_exceptions.dart';
 import 'package:fido/api/generated/ffido/v1/ffido.pbgrpc.dart' as wire;
 
 class TestService extends wire.FfidoServiceBase {
+  bool telegramEnabled = false;
+  grpc.GrpcError? capabilityFailure;
+  @override
+  Future<wire.ServerCapabilities> getServerCapabilities(
+    grpc.ServiceCall c,
+    Empty r,
+  ) async {
+    if (capabilityFailure != null) throw capabilityFailure!;
+    if (!telegramEnabled) throw const grpc.GrpcError.unimplemented();
+    return wire.ServerCapabilities(supportsTelegram: true);
+  }
+
+  @override
+  Future<wire.TelegramProfiles> listTelegramProfiles(
+    grpc.ServiceCall c,
+    wire.TelegramProof r,
+  ) async => wire.TelegramProfiles(
+    profiles: [wire.Profile(name: 'Point', address: '2:1/1.1')],
+  );
+  @override
+  Future<wire.LoginResponse> loginWithTelegram(
+    grpc.ServiceCall c,
+    wire.TelegramLoginRequest r,
+  ) async => wire.LoginResponse(
+    sessionSecret: 'b' * 64,
+    session: wire.SessionInfo(
+      profile: wire.Profile(userId: 'A', name: 'Point', address: r.address),
+    ),
+  );
+  @override
+  Future<wire.TelegramBinding> bindTelegram(
+    grpc.ServiceCall c,
+    wire.BindTelegramRequest r,
+  ) async {
+    await before(c);
+    return wire.TelegramBinding(bound: true);
+  }
+
+  @override
+  Future<wire.TelegramBinding> getTelegramBinding(
+    grpc.ServiceCall c,
+    Empty r,
+  ) async {
+    await before(c);
+    return wire.TelegramBinding(bound: true);
+  }
+
+  @override
+  Future<Empty> unbindTelegram(grpc.ServiceCall c, Empty r) async {
+    await before(c);
+    return Empty();
+  }
+
   @override
   Future<wire.SearchArchiveMessagesResponse> searchArchiveMessages(
     grpc.ServiceCall c,
@@ -390,6 +443,66 @@ void main() {
     await client.dispose();
     await server.shutdown();
   });
+  test('Telegram capabilities fall back only on legacy absence', () async {
+    final endpoint = client.endpoint.toString();
+    expect(await client.supportsTelegram(endpoint), isFalse);
+    service.telegramEnabled = true;
+    expect(await client.supportsTelegram(endpoint), isTrue);
+    service.capabilityFailure = const grpc.GrpcError.unavailable();
+    await expectLater(
+      client.supportsTelegram(endpoint),
+      throwsA(isA<NetworkException>()),
+    );
+  });
+  test(
+    'directory policy prevents public and protected calls before transport',
+    () async {
+      client.endpointPolicy = (_) => false;
+      await expectLater(
+        client.supportsTelegram(client.endpoint.toString()),
+        throwsA(isA<ValidationException>()),
+      );
+      await expectLater(
+        client.getProfile(),
+        throwsA(isA<ValidationException>()),
+      );
+      await expectLater(
+        client.login(
+          endpoint: client.endpoint.toString(),
+          name: 'Point',
+          address: '2:1/1.1',
+          password: 'fixture',
+        ),
+        throwsA(isA<ValidationException>()),
+      );
+      expect(service.calls, 0);
+    },
+  );
+  test(
+    'Telegram typed calls establish session and authorize binding management',
+    () async {
+      final endpoint = client.endpoint.toString();
+      await client.clearAuthToken();
+      final profiles = await client.telegramProfiles(endpoint, 'fixture');
+      expect(profiles.profiles.single.address, '2:1/1.1');
+      await client.loginWithTelegram(
+        endpoint: endpoint,
+        initData: 'fixture',
+        address: '2:1/1.1',
+      );
+      expect(client.session!.profile.address, '2:1/1.1');
+      expect((await client.getTelegramBinding()).bound, isTrue);
+      expect(service.authorization, 'Bearer ${'b' * 64}');
+      expect(
+        (await client.bindTelegram(
+          initData: 'fixture',
+          password: 'fixture',
+        )).bound,
+        isTrue,
+      );
+      await client.unbindTelegram();
+    },
+  );
   test('slow server revocation does not clear a newer login', () async {
     service.logoutEntered = Completer<void>();
     service.logoutBarrier = Completer<void>();

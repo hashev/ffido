@@ -9,7 +9,7 @@ COMPATIBILITY = {
     'protocol_major': 1,
     'client_protocol_min': 1, 'client_protocol_max': 1,
     'server_protocol_min': 1, 'server_protocol_max': 1,
-    'state_schema_min': 9, 'state_schema_max': 11,
+    'state_schema_min': 9, 'state_schema_max': 12,
     'config_format': 1, 'jam_format': 'JAM-1',
 }
 

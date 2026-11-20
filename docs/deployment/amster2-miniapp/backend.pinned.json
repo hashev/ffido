@@ -1,0 +1,12 @@
+{
+  "services": {
+    "ffido": {
+      "image": "sha256:4339f8b44b076d8dcbea0cfde2532c0607dd8bd61fb561ec85380b1b713c4b9a",
+      "pull_policy": "never"
+    },
+    "ffido-tosser": {
+      "image": "sha256:0e9232a9b70026003920559293cdf7bff91c2dfcdd0f3d87effdd21c1408fcfb",
+      "pull_policy": "never"
+    }
+  }
+}

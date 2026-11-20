@@ -264,7 +264,7 @@ TEST_F(SQLiteStoreTest, ReinitializationPreservesDataAndVersion) {
   ASSERT_TRUE(store_->Init());
   EXPECT_TRUE(store_->GetProfile("user"));
   RawDb other(db_path_);
-  EXPECT_EQ(other.Scalar("PRAGMA user_version"), 11);
+  EXPECT_EQ(other.Scalar("PRAGMA user_version"), 12);
   EXPECT_EQ(other.Scalar("SELECT COUNT(*) FROM users"), 1);
 }
 
@@ -383,7 +383,7 @@ TEST(SQLiteMigration, BacksUpEveryLegacyReadWithoutReassigningNumbers) {
             1);
   EXPECT_EQ(db.Scalar("SELECT COUNT(*) FROM read_status_legacy_backup WHERE user_id='missing-user'"), 1);
   EXPECT_EQ(db.Scalar("SELECT COUNT(*) FROM read_status"), 1);
-  EXPECT_EQ(db.Scalar("PRAGMA user_version"), 11);
+  EXPECT_EQ(db.Scalar("PRAGMA user_version"), 12);
 }
 
 TEST(SQLiteMigration, BackupCollisionRollsBackWholeMigration) {
@@ -737,7 +737,7 @@ TEST(SQLiteFaults, AllocationFailuresDuringInitializationAllowCleanRetry) {
     ASSERT_TRUE(store->Init());
     ASSERT_TRUE(store->SaveProfile("A", {}));
     RawDb db(path);
-    EXPECT_EQ(db.Scalar("PRAGMA user_version"), 11);
+    EXPECT_EQ(db.Scalar("PRAGMA user_version"), 12);
     EXPECT_EQ(db.Scalar("SELECT COUNT(*) FROM users"), 1);
     EXPECT_EQ(db.Scalar("SELECT COUNT(*) FROM read_status"), 0);
   }
@@ -755,7 +755,8 @@ TEST(SQLiteMigration, CanonicalAddressConflictRollsBackVersionFiveAndCanRetry) {
   }
   {
     RawDb db(path);
-    db.Exec("DROP TABLE personal_filter_mutations; DROP TABLE personal_filters; DROP TABLE crosspost_groups; DROP "
+    db.Exec("DROP TABLE telegram_bindings; ALTER TABLE tokens DROP COLUMN telegram_revision; "
+            "DROP TABLE personal_filter_mutations; DROP TABLE personal_filters; DROP TABLE crosspost_groups; DROP "
             "TABLE uue_uploads; DROP TABLE bulk_read_operations; DROP TABLE "
             "mail_export_log; DROP TABLE "
             "reading_positions; DROP TABLE "
@@ -913,6 +914,7 @@ TEST_F(SQLiteStoreTest, BulkReadMigratesSevenWithoutLosingExistingData) {
   ASSERT_EQ(sqlite3_open(db_path_.c_str(), &db), SQLITE_OK);
   ASSERT_EQ(
       sqlite3_exec(db,
+                   "DROP TABLE telegram_bindings; ALTER TABLE tokens DROP COLUMN telegram_revision; "
                    "DROP TABLE personal_filter_mutations; DROP TABLE personal_filters; DROP TABLE crosspost_groups; "
                    "DROP TABLE uue_uploads; DROP TABLE bulk_read_operations; PRAGMA user_version=7",
                    nullptr, nullptr, nullptr),
@@ -974,6 +976,7 @@ TEST_F(SQLiteStoreTest, UueMigrationFromEightPreservesReadingAndProfile) {
   sqlite3* db = nullptr;
   ASSERT_EQ(sqlite3_open(db_path_.c_str(), &db), SQLITE_OK);
   ASSERT_EQ(sqlite3_exec(db,
+                         "DROP TABLE telegram_bindings; ALTER TABLE tokens DROP COLUMN telegram_revision; "
                          "DROP TABLE personal_filter_mutations; DROP TABLE personal_filters; DROP TABLE "
                          "crosspost_groups; DROP TABLE uue_uploads; PRAGMA user_version=8",
                          nullptr, nullptr, nullptr),

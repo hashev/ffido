@@ -19,22 +19,27 @@ class PlatformUueFiles implements UueFiles {
   static Future<void> _write(String path, Uint8List bytes) =>
       XFile.fromData(bytes, mimeType: 'application/octet-stream').saveTo(path);
   @override
+  bool get requiresSaveGesture => false;
+
+  @override
   Future<SelectedUueFile?> pick(int maxBytes) => pickUueFile(maxBytes);
   @override
-  Future<bool> save(String name, Uint8List bytes) async {
+  Future<UueSaveResult> save(String name, Uint8List bytes) async {
     name = safeUueName(name);
     if (bytes.length > 16 * 1024 * 1024) throw uueFileLimit();
     if (defaultTargetPlatform == TargetPlatform.android ||
         defaultTargetPlatform == TargetPlatform.iOS) {
-      return await channel.invokeMethod<bool>('saveUue', {
+      final saved =
+          await channel.invokeMethod<bool>('saveUue', {
             'name': name,
             'bytes': bytes,
           }) ??
           false;
+      return saved ? UueSaveResult.saved : UueSaveResult.cancelled;
     }
     final path = await chooseSave(name);
-    if (path == null) return false;
+    if (path == null) return UueSaveResult.cancelled;
     await write(path, bytes);
-    return true;
+    return UueSaveResult.saved;
   }
 }

@@ -27,7 +27,8 @@ wire.Conference echo(String id, {bool post = true}) => wire.Conference(
 
 class _CrosspostFiles extends UueFiles {
   @override
-  Future<bool> save(String filename, Uint8List bytes) async => false;
+  Future<UueSaveResult> save(String filename, Uint8List bytes) async =>
+      UueSaveResult.cancelled;
   @override
   Future<SelectedUueFile?> pick(int limit) async =>
       SelectedUueFile('test.bin', Uint8List.fromList([0, 1, 2]));

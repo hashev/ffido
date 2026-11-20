@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <sqlite3.h>
 
 #include <fstream>
 
@@ -6,6 +7,7 @@
 #include "../support/temp_directory.hpp"
 #include "service/message_service.hpp"
 #include "storage/jam_writer.hpp"
+#include "storage/mailbox_restore.hpp"
 using namespace fidoback;
 using namespace fidoback::storage;
 namespace {
@@ -724,4 +726,47 @@ TEST_F(JamRecoveryTest, CrosspostDerivesProgressFromDurableChildrenAndHonorsQuar
   EXPECT_FALSE(quarantined->complete);
   EXPECT_EQ(quarantined->pending_code, 9);
   EXPECT_EQ(Contents(temp.path() / "copy.jdt"), before);
+}
+
+TEST_F(JamRecoveryTest, RestoredLogicalGenerationSurvivesRestartAndRecovery) {
+  auto access = JamAccess::Open(*catalog, "echo", true, Deadline());
+  ASSERT_TRUE(access);
+  const auto physical = (*access)->generation();
+  access->reset();
+  sqlite3* db = nullptr;
+  ASSERT_EQ(sqlite3_open((temp.path() / "metadata.db").c_str(), &db), SQLITE_OK);
+  const std::string sql = "CREATE TABLE restored_generations(base TEXT PRIMARY KEY,physical_generation TEXT,"
+                          "logical_generation TEXT); INSERT INTO restored_generations VALUES('base','" +
+                          physical + "','1:2:123:42');";
+  const int result = sqlite3_exec(db, sql.c_str(), nullptr, nullptr, nullptr);
+  sqlite3_close(db);
+  ASSERT_EQ(result, SQLITE_OK);
+  ASSERT_TRUE(BindRestoredGenerations(*catalog, temp.path() / "metadata.db"));
+  access = JamAccess::Open(*catalog, "echo", true, Deadline());
+  ASSERT_TRUE(access);
+  EXPECT_EQ((*access)->generation(), "1:2:123:42");
+  const auto operation = Plan(**access);
+  auto io = std::make_shared<FaultIo>();
+  io->fail_sync = 4;  // All bytes written, commit not recorded: restart must recognize logical identity.
+  JamWriter writer(metadata, io);
+  EXPECT_FALSE(writer.Append(**access, operation));
+  access->reset();
+  RestartCatalog();
+  ASSERT_TRUE(BindRestoredGenerations(*catalog, temp.path() / "metadata.db"));
+  JamWriter recovered(metadata);
+  ASSERT_TRUE(recovered.RecoverAll(*catalog, Deadline()));
+  ConfirmOldAndState(OperationState::kCommitted);
+  auto receipt = metadata->FindOperation("A", "operation");
+  ASSERT_TRUE(receipt && *receipt);
+  EXPECT_EQ((*receipt)->generation, "1:2:123:42");
+  EXPECT_EQ((*receipt)->payload_hash, operation.payload_hash);
+  // Same inode, different JAM incarnation must never inherit the logical identity.
+  {
+    std::fstream header(base.string() + ".jhr", std::ios::in | std::ios::out | std::ios::binary);
+    header.seekp(4);
+    header.put('z');
+  }
+  EXPECT_FALSE(JamAccess::Open(*catalog, "echo", false, Deadline()));
+  RestartCatalog();
+  EXPECT_FALSE(BindRestoredGenerations(*catalog, temp.path() / "metadata.db"));
 }

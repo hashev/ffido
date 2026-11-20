@@ -1,6 +1,7 @@
 import '../api/message_footer_snapshot.dart';
 
 import 'dart:math';
+import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
@@ -12,6 +13,7 @@ import '../api/uue_capabilities.dart';
 import '../api/generated/ffido/v1/ffido.pb.dart' as wire;
 import '../files/uue_file_types.dart';
 import '../models/uue.dart';
+import 'web_draft_store.dart';
 
 class UueDraft {
   final String conference, operation, subject, body, toName, toAddress, reply;
@@ -232,6 +234,42 @@ class UueRepository {
     if (draft.file.bytes.length > limits.fileBytes) throw uueFileLimit();
     var upload = true;
     final hash = sha256.convert(draft.file.bytes).toString();
+    var commit = wire.CommitUueRequest(
+      message: wire.CreateMessageRequest(
+        conferenceId: draft.conference,
+        operationId: draft.operation,
+        footer: footer,
+        toName: draft.toName,
+        toAddress: draft.toAddress,
+        subject: draft.subject,
+        body: draft.body,
+        inReplyTo: draft.reply,
+      ),
+    );
+    final store = WebDraftStore.active;
+    final scope = store?.scope;
+    if (store != null && scope != null) {
+      commit = wire.CommitUueRequest.fromBuffer(
+        await store.freeze(
+          scope,
+          draft.operation,
+          'CommitUue',
+          commit.writeToBuffer(),
+          jsonEncode([
+            draft.conference,
+            draft.toName,
+            draft.toAddress,
+            draft.subject,
+            draft.body,
+            draft.reply,
+            draft.file.name,
+            draft.file.bytes.length,
+            hash,
+          ]),
+        ),
+      );
+    }
+    _check(before, cancellation);
     try {
       final status = await api.getUueSendStatus(
         wire.UueOperationReference(operationId: draft.operation),
@@ -279,23 +317,12 @@ class UueRepository {
         if (offset == draft.file.bytes.length) break;
       } while (true);
     }
-    final response = await api.commitUue(
-      wire.CommitUueRequest(
-        message: wire.CreateMessageRequest(
-          conferenceId: draft.conference,
-          operationId: draft.operation,
-          footer: footer,
-          toName: draft.toName,
-          toAddress: draft.toAddress,
-          subject: draft.subject,
-          body: draft.body,
-          inReplyTo: draft.reply,
-        ),
-      ),
-      cancellation: cancellation,
-    );
+    final response = await api.commitUue(commit, cancellation: cancellation);
     _check(before, cancellation);
     final transfer = UueTransfer.fromWire(response);
+    if (transfer.complete && store != null && scope != null) {
+      await store.complete(scope, draft.operation);
+    }
     if (transfer.saved > 0 || transfer.complete) {
       onChanged?.call(draft.conference);
     }

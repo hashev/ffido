@@ -182,6 +182,19 @@ std::expected<AppConfig, ConfigError> ParseAppConfig(const nlohmann::json& j) {
       }
       cfg.auth.hpt_config_path = ReadString(auth, "hpt_config_path", "");
       cfg.auth.session_key_path = ReadString(auth, "session_key_path", "");
+      if (auth.contains("telegram")) {
+        const auto& telegram = auth.at("telegram");
+        if (!telegram.is_object())
+          return std::unexpected(ConfigError::kInvalidValue);
+        auto& config = cfg.auth.telegram;
+        config.bot_id = ReadNumber<int64_t>(telegram, "bot_id", 0);
+        config.test_environment = telegram.value("test_environment", false);
+        config.max_age_seconds = ReadNumber<int64_t>(telegram, "max_age_seconds", 300);
+        config.clock_skew_seconds = ReadNumber<int64_t>(telegram, "clock_skew_seconds", 30);
+        if (config.bot_id < 0 || config.max_age_seconds < 1 || config.max_age_seconds > 3600 ||
+            config.clock_skew_seconds < 0 || config.clock_skew_seconds > 300)
+          return std::unexpected(ConfigError::kInvalidValue);
+      }
       for (const auto& path : {cfg.auth.hpt_config_path, cfg.auth.session_key_path})
         if (path.empty() || path.string().find('\0') != std::string::npos)
           return std::unexpected(ConfigError::kInvalidValue);

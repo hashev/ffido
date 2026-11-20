@@ -42,8 +42,13 @@ def scan(content, path=None):
     if path is not None and path.suffix in {'.json', '.yaml', '.yml', '.toml', '.cfg', '.conf', '.ini', '.properties'}:
         fixture = 'tests' in path.parts or 'test' in path.parts or 'example' in path.name
         if not fixture:
+            structured = text
+            if path.parts[:2] == ('.github', 'workflows') and path.suffix in {'.yaml', '.yml'}:
+                # GitHub's OIDC permission is a capability, not a token value.
+                # Keep literal credentials and the raw signature scan above intact.
+                structured = re.sub(r'(?m)^[ \t]*id-token:[ \t]*(?:read|write|none)[ \t]*$', '', text)
             pattern = r"(?i)\b(?:password|token|access_token|api_key|client_secret)[\"']?\s*[:=]\s*[\"']?([^\s\"',}]+)"
-            values = re.findall(pattern, text)
+            values = re.findall(pattern, structured)
             if path.suffix == '.cfg':
                 values += re.findall(r'(?im)^\s*Password\s+(\S+)', text)
             found |= any(value.lower() not in {'null', 'none', 'false'} and not value.startswith('$') for value in values)

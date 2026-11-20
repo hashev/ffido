@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "ftn/path_mapping.hpp"
+#include "service/telegram_auth.hpp"
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Структуры конфигурации
@@ -49,6 +50,7 @@ struct LoggingConfig {
 };
 
 struct AuthConfig {
+  fidoback::service::TelegramConfig telegram;
   std::vector<std::string> owner_addresses;
   std::filesystem::path hpt_config_path;
   std::filesystem::path session_key_path;

@@ -7,6 +7,7 @@ import functools
 import hashlib
 import http.server
 import json
+import os
 import pathlib
 import signal
 import secrets
@@ -72,6 +73,15 @@ def main():
     if not args.native_only and (not args.envoy or not args.chrome):
         parser.error('--envoy and --chrome are required unless --native-only is selected')
     build = args.build_dir.resolve()
+    if not args.native_only and not args.server and not args.container:
+        fixture = build / 'apps/backend/fidoback_tests'
+        if not fixture.is_file():
+            raise RuntimeError('Build fidoback_tests for synthetic Telegram acceptance')
+        result = run([str(fixture), '--gtest_filter=GrpcTest.TelegramBindingLifecycle'],
+                     env=dict(os.environ, FFIDO_TEST_ENVOY=args.envoy))
+        if '[  PASSED  ] 1 test.' not in result.stdout:
+            raise RuntimeError('Synthetic Telegram fixture did not execute')
+        print('PASS: signed synthetic Telegram bind/replace/unbind and session isolation through TLS gRPC and gRPC-Web')
     with tempfile.TemporaryDirectory(prefix='ffido-acceptance-') as directory, contextlib.ExitStack() as cleanup:
         root = pathlib.Path(directory).resolve()
         cert, key = root/'certificate.pem', root/'key.pem'

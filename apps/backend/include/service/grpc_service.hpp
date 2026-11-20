@@ -28,9 +28,21 @@ public:
   std::expected<void, domain::ApiError> ConfigureAuth(HptCredentials credentials, std::string_view key) {
     return auth_.Configure(std::move(credentials), key);
   }
+  void ConfigureTelegram(TelegramConfig config) {
+    auth_.ConfigureTelegram(config);
+  }
+  void SetTelegramKeyForTesting(TelegramPublicKey key) {
+    auth_.SetTelegramKeyForTesting(key);
+  }
 #define FFIDO_RPC(name, request, response) \
   grpc::Status name(grpc::ServerContext* context, const request* input, response* output) override;
   FFIDO_RPC(Login, ffido::v1::LoginRequest, ffido::v1::LoginResponse)
+  FFIDO_RPC(GetServerCapabilities, google::protobuf::Empty, ffido::v1::ServerCapabilities)
+  FFIDO_RPC(ListTelegramProfiles, ffido::v1::TelegramProof, ffido::v1::TelegramProfiles)
+  FFIDO_RPC(LoginWithTelegram, ffido::v1::TelegramLoginRequest, ffido::v1::LoginResponse)
+  FFIDO_RPC(BindTelegram, ffido::v1::BindTelegramRequest, ffido::v1::TelegramBinding)
+  FFIDO_RPC(GetTelegramBinding, google::protobuf::Empty, ffido::v1::TelegramBinding)
+  FFIDO_RPC(UnbindTelegram, google::protobuf::Empty, google::protobuf::Empty)
   FFIDO_RPC(RestoreSession, google::protobuf::Empty, ffido::v1::SessionInfo)
   FFIDO_RPC(Logout, google::protobuf::Empty, google::protobuf::Empty)
   FFIDO_RPC(ListConferences, ffido::v1::ListConferencesRequest, ffido::v1::ListConferencesResponse)
@@ -68,6 +80,9 @@ public:
   FFIDO_RPC(GetUueSendStatus, ffido::v1::UueOperationReference, ffido::v1::UueSendStatus)
 #undef FFIDO_RPC
 private:
+  grpc::Status PublicDispatch(grpc::ServerContext* context, const google::protobuf::MessageLite& request,
+                              google::protobuf::MessageLite* response,
+                              const std::function<std::expected<void, domain::ApiError>()>& operation);
   grpc::Status Dispatch(
       grpc::ServerContext* context, google::protobuf::MessageLite* response,
       const std::function<std::expected<void, domain::ApiError>(const storage::AuthenticatedUser&)>& operation);
@@ -79,7 +94,7 @@ private:
   };
   std::mutex login_mutex_;
   std::map<std::string, Attempts> login_attempts_;
-  bool AllowLogin(std::string_view address, std::string peer);
+  bool AllowLogin(std::string_view address, std::string peer, unsigned max_attempts = 10);
   ConferenceService conferences_;
   MessageService messages_;
   UueService uue_;

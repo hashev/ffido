@@ -24,6 +24,10 @@ import '../support/message_identity.dart';
 class Files extends UueFiles {
   SelectedUueFile? selected;
   bool cancel = false, fail = false, failPick = false, failRead = false;
+  bool gesture = false;
+  @override
+  bool get requiresSaveGesture => gesture;
+  UueSaveResult saveResult = UueSaveResult.saved;
   Uint8List? saved;
   String? name;
   @override
@@ -34,12 +38,12 @@ class Files extends UueFiles {
   }
 
   @override
-  Future<bool> save(String filename, Uint8List bytes) async {
+  Future<UueSaveResult> save(String filename, Uint8List bytes) async {
     if (fail) throw StateError('write');
-    if (cancel) return false;
+    if (cancel) return UueSaveResult.cancelled;
     saved = bytes;
     name = filename;
-    return true;
+    return saveResult;
   }
 }
 
@@ -93,6 +97,82 @@ Future<void> tap(WidgetTester tester, String text) async {
 }
 
 void main() {
+  testWidgets(
+    'Telegram export waits for fresh confirmation and cancels without handoff',
+    (tester) async {
+      final api = FakeTransport();
+      final bytes = Uint8List.fromList([0, 255, 65]);
+      ready(api, bytes);
+      api.searchUuePartsHandler = (_) async => wire.SearchUuePartsResponse(
+        generation: 'g',
+        parts: [part(1), part(2)],
+      );
+      final files = Files()
+        ..gesture = true
+        ..saveResult = UueSaveResult.shared;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: UueAttachmentCard(
+              repository: UueRepository(api),
+              part: UuePart.fromWire(part(1)),
+              files: files,
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tap(tester, 'Сохранить файл');
+      expect(find.text('Вложение готово'), findsOneWidget);
+      expect(files.saved, isNull);
+      await tap(tester, 'Отмена');
+      expect(files.saved, isNull);
+      expect(find.byType(SnackBar), findsNothing);
+      await tap(tester, 'Сохранить файл');
+      await tap(tester, 'Сохранить или передать файл');
+      expect(files.saved, bytes);
+      expect(find.text(UueSaveResult.shared.message!), findsOneWidget);
+    },
+  );
+
+  for (final result in UueSaveResult.values) {
+    testWidgets('save feedback reflects $result without a false success', (
+      tester,
+    ) async {
+      final api = FakeTransport();
+      final bytes = Uint8List.fromList([0, 255, 65]);
+      ready(api, bytes);
+      api.searchUuePartsHandler = (_) async => wire.SearchUuePartsResponse(
+        generation: 'g',
+        parts: [part(1), part(2)],
+      );
+      final files = Files()..saveResult = result;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: UueAttachmentCard(
+              repository: UueRepository(api),
+              part: UuePart.fromWire(part(1)),
+              files: files,
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tap(tester, 'Сохранить файл');
+      expect(files.saved, bytes);
+      expect(find.text('Файл передан для сохранения'), findsNothing);
+      if (result.message case final message?) {
+        expect(find.text(message), findsOneWidget);
+      } else {
+        expect(find.byType(SnackBar), findsNothing);
+      }
+      if (result != UueSaveResult.saved) {
+        expect(find.text('Файл сохранён'), findsNothing);
+      }
+    });
+  }
+
   setUp(mockMessageIdentity);
   late FakeTransport api;
   late UueFiles oldFiles;

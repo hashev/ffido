@@ -1,0 +1,61 @@
+name: Prepare FFIDO Web Pages
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish the reviewed build to GitHub Pages
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: ffido-web-pages
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - id: dependency-lock
+        run: python3 scripts/release/dependency_lock.py --github-output
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
+        with:
+          flutter-version: ${{ steps.dependency-lock.outputs.flutter }}
+          channel: stable
+      - working-directory: apps/frontend
+        run: |
+          flutter pub get --enforce-lockfile
+          flutter analyze --no-pub
+          flutter test --no-pub \
+            test/repositories/backend_directory_test.dart \
+            test/repositories/web_workspace_test.dart \
+            test/repositories/web_draft_store_test.dart \
+            test/repositories/web_pending_operations_test.dart \
+            test/api/contract_test.dart
+          CHROME_EXECUTABLE="$(command -v google-chrome)"
+          export CHROME_EXECUTABLE
+          flutter test --no-pub --platform chrome \
+            test/api/uue_files_browser_test.dart \
+            test/widgets/web_draft_browser_test.dart \
+            test/widgets/web_mailbox_network_browser_test.dart \
+            test/platform/telegram_host_browser_test.dart
+          flutter build web --release --no-pub --base-href /ffido/
+      - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa
+        with:
+          path: apps/frontend/build/web
+          retention-days: 1
+  deploy:
+    if: ${{ inputs.publish }}
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e

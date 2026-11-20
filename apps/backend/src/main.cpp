@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "ffido/v1/ffido.grpc.pb.h"
+#include "storage/mailbox_restore.hpp"
 #ifdef __APPLE__
 #include <mach-o/dyld.h>
 #endif
@@ -173,6 +174,10 @@ int RunBackend(int argc, char** argv) {
     spdlog::error("JAM catalog unavailable");
     return 1;
   }
+  if (!fidoback::storage::BindRestoredGenerations(**opened, config->database.metadata_path)) {
+    spdlog::error("Restored JAM identity verification failed");
+    return 1;
+  }
   if (corrections) {
     auto bound = (*opened)->BindEncodingCorrections(std::move(*corrections));
     if (!bound) {
@@ -198,6 +203,7 @@ int RunBackend(int argc, char** argv) {
     spdlog::error("Authentication initialization failed");
     return 1;
   }
+  service.ConfigureTelegram(config->auth.telegram);
   grpc::SslServerCredentialsOptions tls;
   tls.pem_key_cert_pairs.push_back({*key, *certificate});
   grpc::ServerBuilder builder;

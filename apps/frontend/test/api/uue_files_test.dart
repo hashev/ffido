@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:fido/files/uue_files_native.dart';
+import 'package:fido/files/uue_file_types.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -20,7 +21,10 @@ void main() {
           writes++;
         },
       );
-      expect(await cancelled.save('a.bin', Uint8List(1)), isFalse);
+      expect(
+        await cancelled.save('a.bin', Uint8List(1)),
+        UueSaveResult.cancelled,
+      );
       expect(writes, 0);
       final failed = PlatformUueFiles(
         chooseSave: (_) async => '/chosen/file',
@@ -40,7 +44,7 @@ void main() {
       );
       expect(
         await saved.save('../safe.bin', Uint8List.fromList([0, 255, 1])),
-        isTrue,
+        UueSaveResult.saved,
       );
       expect(writes, 1);
     },
@@ -60,7 +64,7 @@ void main() {
             });
         expect(
           await PlatformUueFiles().save('a.bin', Uint8List.fromList([0, 255])),
-          isFalse,
+          UueSaveResult.cancelled,
         );
       }
     },

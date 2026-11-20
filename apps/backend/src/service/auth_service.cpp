@@ -172,6 +172,59 @@ std::expected<void, domain::ApiError> AuthService::Revoke(std::string_view token
     return std::unexpected(digest.error());
   return metadata_->RevokeToken(*digest);
 }
+std::expected<int64_t, domain::ApiError> AuthService::TelegramUser(std::string_view data) const {
+  return VerifyTelegramProof(data, telegram_, CurrentTime(),
+                             telegram_test_key_.value_or(TelegramKey(telegram_.test_environment)));
+}
+std::expected<std::vector<storage::AuthenticatedUser>, domain::ApiError> AuthService::TelegramProfiles(
+    std::string_view data) {
+  auto id = TelegramUser(data);
+  if (!id)
+    return std::unexpected(id.error());
+  return metadata_->TelegramProfiles(telegram_.bot_id, *id);
+}
+std::expected<LoginResult, domain::ApiError> AuthService::TelegramLogin(std::string_view data,
+                                                                        std::string_view address) {
+  auto id = TelegramUser(data);
+  if (!id)
+    return std::unexpected(id.error());
+  auto canonical = domain::CanonicalFtnAddress(address);
+  if (!canonical)
+    return std::unexpected(domain::ApiError::Unauthorized("Invalid credentials"));
+  std::array<unsigned char, 32> bytes{};
+  if (RAND_bytes(bytes.data(), bytes.size()) != 1)
+    return std::unexpected(domain::ApiError::Server("Session generation failed"));
+  constexpr char hex[] = "0123456789abcdef";
+  std::string token;
+  for (const auto byte : bytes) {
+    token += hex[byte >> 4];
+    token += hex[byte & 15];
+  }
+  auto digest = Digest(token);
+  if (!digest)
+    return std::unexpected(digest.error());
+  auto user =
+      metadata_->CreateTelegramSession(telegram_.bot_id, *id, *canonical, *digest, CurrentTime() + 30 * 24 * 3600);
+  if (!user)
+    return std::unexpected(user.error());
+  return LoginResult{std::move(token), *user};
+}
+std::expected<void, domain::ApiError> AuthService::BindTelegram(const storage::AuthenticatedUser& user,
+                                                                std::string_view data, std::string_view password,
+                                                                bool replace) {
+  auto id = TelegramUser(data);
+  if (!id)
+    return std::unexpected(id.error());
+  const auto entry = credentials_.find(user.profile.address);
+  const auto given = Sha256(password);
+  const auto expected = Sha256(entry == credentials_.end() ? "" : entry->second);
+  if (!given || !expected)
+    return std::unexpected(domain::ApiError::Server("Credential verification failed"));
+  if (entry == credentials_.end() || entry->second.empty() || password.empty() || password.size() > 4096 ||
+      CRYPTO_memcmp(given->data(), expected->data(), given->size()) != 0)
+    return std::unexpected(domain::ApiError::Unauthorized("Invalid credentials"));
+  return metadata_->BindTelegram(user.id, telegram_.bot_id, *id, fingerprints_.at(user.profile.address), replace);
+}
 std::expected<std::string, domain::ApiError> AuthService::ExtractBearerToken(std::string_view header) {
   constexpr std::string_view prefix = "Bearer ";
   if (!header.starts_with(prefix) || !TokenFormat(header.substr(prefix.size())))

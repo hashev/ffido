@@ -82,6 +82,41 @@ class SignatureTest(unittest.TestCase):
 
 
 class VersionTest(unittest.TestCase):
+    def test_registered_local_pair_does_not_relax_release_identity(self):
+        local = identity(number=2026111804, stable=False)
+        local['tag'] = 'safe-mailbox-restore-candidate-20261118'
+        with self.assertRaises(ValueError):
+            common.version_key(local)
+        with tempfile.TemporaryDirectory() as directory:
+            config = pathlib.Path(directory)/'compose.json'
+            config.write_bytes(b'operator configuration')
+            source = {role: {'image_id': 'sha256:'+character*64, 'build': local,
+                             'platform': 'linux/amd64'}
+                      for role, character in [('backend', 'a'), ('tosser', 'b')]}
+            raw = json.dumps({'version': 1, 'source': source,
+                              'files': {str(config): hashlib.sha256(config.read_bytes()).hexdigest()}}).encode()
+            plan = common.local_pair(raw, hashlib.sha256(raw).hexdigest())
+            common.verify_local_pair(plan, source)
+            mixed = json.loads(raw)
+            mixed['source']['tosser']['build']['sha'] = 'c'*40
+            mixed_raw = json.dumps(mixed).encode()
+            with self.assertRaisesRegex(ValueError, 'distributions differ'):
+                common.local_pair(mixed_raw, hashlib.sha256(mixed_raw).hexdigest())
+            with self.assertRaises(ValueError):
+                common.local_pair(raw+b' ', hashlib.sha256(raw).hexdigest())
+            for role in source:
+                changed = copy.deepcopy(source)
+                changed[role]['image_id'] = 'sha256:'+'c'*64
+                with self.subTest(role=role), self.assertRaises(ValueError):
+                    common.verify_local_pair(plan, changed)
+                changed = copy.deepcopy(source)
+                changed[role]['build']['tag'] = 'another-local-build'
+                with self.assertRaises(ValueError):
+                    common.verify_local_pair(plan, changed)
+            config.write_bytes(b'changed')
+            with self.assertRaises(ValueError):
+                common.verify_local_pair(plan, source)
+
     def test_semver_channels_builds_and_android(self):
         self.assertTrue(common.newer(identity('1.10.0'), identity('1.9.0'), 'stable'))
         self.assertFalse(common.newer(identity('1.9.0'), identity('1.10.0'), 'stable'))

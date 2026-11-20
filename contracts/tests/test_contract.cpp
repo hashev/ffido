@@ -5,6 +5,38 @@
 
 namespace {
 
+TEST(Contract, TelegramIsAdditiveAndDoesNotOverrideSessionIdentity) {
+  using namespace ffido::v1;
+  const auto* service =
+      google::protobuf::DescriptorPool::generated_pool()->FindServiceByName("ffido.v1.Ffido");
+  ASSERT_NE(service, nullptr);
+  EXPECT_EQ(service->FindMethodByName("GetServerCapabilities")->input_type()->full_name(),
+            "google.protobuf.Empty");
+  EXPECT_EQ(service->FindMethodByName("LoginWithTelegram")->output_type(),
+            LoginResponse::descriptor());
+  EXPECT_EQ(service->FindMethodByName("ListTelegramProfiles")->input_type(),
+            TelegramProof::descriptor());
+  EXPECT_EQ(service->FindMethodByName("BindTelegram")->input_type(),
+            BindTelegramRequest::descriptor());
+  EXPECT_EQ(service->FindMethodByName("GetTelegramBinding")->output_type(),
+            TelegramBinding::descriptor());
+  EXPECT_EQ(service->FindMethodByName("UnbindTelegram")->input_type()->full_name(),
+            "google.protobuf.Empty");
+  EXPECT_EQ(BindTelegramRequest::descriptor()->FindFieldByName("address"), nullptr);
+  EXPECT_EQ(BindTelegramRequest::descriptor()->FindFieldByName("user_id"), nullptr);
+  EXPECT_EQ(LoginRequest::descriptor()->FindFieldByName("name")->number(), 1);
+  EXPECT_EQ(LoginRequest::descriptor()->FindFieldByName("address")->number(), 2);
+  EXPECT_EQ(LoginRequest::descriptor()->FindFieldByName("password")->number(), 3);
+  EXPECT_FALSE(ServerCapabilities{}.supports_telegram());
+  TelegramLoginRequest request;
+  request.set_init_data("user=%7B%22id%22%3A123%7D&auth_date=100");
+  request.set_address("2:5015/1.2");
+  TelegramLoginRequest decoded;
+  ASSERT_TRUE(decoded.ParseFromString(request.SerializeAsString()));
+  EXPECT_EQ(decoded.init_data(), request.init_data());
+  EXPECT_EQ(decoded.address(), request.address());
+}
+
 TEST(Contract, UnicodeAndTimestampRoundTrip) {
   ffido::v1::Message message;
   message.set_id("generation:42");
@@ -94,7 +126,7 @@ TEST(Contract, RpcSurfaceAndTrustedIdentity) {
   const auto* service =
       google::protobuf::DescriptorPool::generated_pool()->FindServiceByName("ffido.v1.Ffido");
   ASSERT_NE(service, nullptr);
-  EXPECT_EQ(service->method_count(), 35);
+  EXPECT_EQ(service->method_count(), 41);
   ASSERT_NE(service->FindMethodByName("FindMessage"), nullptr);
   EXPECT_EQ(service->FindMethodByName("FindMessage")->input_type(),
             ffido::v1::FindMessageRequest::descriptor());
@@ -241,7 +273,8 @@ TEST(Contract, ArchiveMessagesPreserveUnicodeOffsetsAndReferences) {
   EXPECT_EQ(restored.SerializeAsString(), search.SerializeAsString());
   EXPECT_TRUE(restored.has_from());
   EXPECT_EQ(restored.from().seconds(), -1);
-  const auto* service = google::protobuf::DescriptorPool::generated_pool()->FindServiceByName("ffido.v1.Ffido");
+  const auto* service =
+      google::protobuf::DescriptorPool::generated_pool()->FindServiceByName("ffido.v1.Ffido");
   for (const auto* name : {"SearchArchiveMessages", "ReadArchiveMessage", "GetArchiveThread"}) {
     const auto* method = service->FindMethodByName(name);
     ASSERT_NE(method, nullptr);
@@ -255,14 +288,19 @@ TEST(Contract, ArchiveMessagesPreserveUnicodeOffsetsAndReferences) {
 TEST(Contract, PublicationPreviewIsAdditiveAndOldRequestsRemainValid) {
   using namespace ffido::v1;
   CreateMessageRequest old;
-  old.set_conference_id("RU.TEST"); old.set_operation_id("old"); old.set_body("Текст");
+  old.set_conference_id("RU.TEST");
+  old.set_operation_id("old");
+  old.set_body("Текст");
   CreateMessageRequest restored;
   ASSERT_TRUE(restored.ParseFromString(old.SerializeAsString()));
   EXPECT_FALSE(restored.has_expected_preview_digest());
   EXPECT_EQ(CreateMessageRequest::descriptor()->FindFieldByName("footer")->number(), 8);
-  EXPECT_EQ(CreateMessageRequest::descriptor()->FindFieldByName("expected_preview_digest")->number(), 9);
+  EXPECT_EQ(
+      CreateMessageRequest::descriptor()->FindFieldByName("expected_preview_digest")->number(), 9);
   MessagePreview preview;
-  preview.set_body("Итоговый текст"); preview.set_preview_digest("digest"); preview.set_public_message(true);
+  preview.set_body("Итоговый текст");
+  preview.set_preview_digest("digest");
+  preview.set_public_message(true);
   MessagePreview decoded;
   ASSERT_TRUE(decoded.ParseFromString(preview.SerializeAsString()));
   EXPECT_EQ(decoded.SerializeAsString(), preview.SerializeAsString());

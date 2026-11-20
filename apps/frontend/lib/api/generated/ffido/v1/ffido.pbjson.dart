@@ -901,6 +901,99 @@ final $typed_data.Uint8List loginRequestDescriptor = $convert.base64Decode(
     'CgxMb2dpblJlcXVlc3QSEgoEbmFtZRgBIAEoCVIEbmFtZRIYCgdhZGRyZXNzGAIgASgJUgdhZG'
     'RyZXNzEhoKCHBhc3N3b3JkGAMgASgJUghwYXNzd29yZA==');
 
+@$core.Deprecated('Use serverCapabilitiesDescriptor instead')
+const ServerCapabilities$json = {
+  '1': 'ServerCapabilities',
+  '2': [
+    {
+      '1': 'supports_telegram',
+      '3': 1,
+      '4': 1,
+      '5': 8,
+      '10': 'supportsTelegram'
+    },
+  ],
+};
+
+/// Descriptor for `ServerCapabilities`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List serverCapabilitiesDescriptor = $convert.base64Decode(
+    'ChJTZXJ2ZXJDYXBhYmlsaXRpZXMSKwoRc3VwcG9ydHNfdGVsZWdyYW0YASABKAhSEHN1cHBvcn'
+    'RzVGVsZWdyYW0=');
+
+@$core.Deprecated('Use telegramProofDescriptor instead')
+const TelegramProof$json = {
+  '1': 'TelegramProof',
+  '2': [
+    {'1': 'init_data', '3': 1, '4': 1, '5': 9, '10': 'initData'},
+  ],
+};
+
+/// Descriptor for `TelegramProof`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List telegramProofDescriptor = $convert.base64Decode(
+    'Cg1UZWxlZ3JhbVByb29mEhsKCWluaXRfZGF0YRgBIAEoCVIIaW5pdERhdGE=');
+
+@$core.Deprecated('Use telegramProfilesDescriptor instead')
+const TelegramProfiles$json = {
+  '1': 'TelegramProfiles',
+  '2': [
+    {
+      '1': 'profiles',
+      '3': 1,
+      '4': 3,
+      '5': 11,
+      '6': '.ffido.v1.Profile',
+      '10': 'profiles'
+    },
+  ],
+};
+
+/// Descriptor for `TelegramProfiles`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List telegramProfilesDescriptor = $convert.base64Decode(
+    'ChBUZWxlZ3JhbVByb2ZpbGVzEi0KCHByb2ZpbGVzGAEgAygLMhEuZmZpZG8udjEuUHJvZmlsZV'
+    'IIcHJvZmlsZXM=');
+
+@$core.Deprecated('Use telegramLoginRequestDescriptor instead')
+const TelegramLoginRequest$json = {
+  '1': 'TelegramLoginRequest',
+  '2': [
+    {'1': 'init_data', '3': 1, '4': 1, '5': 9, '10': 'initData'},
+    {'1': 'address', '3': 2, '4': 1, '5': 9, '10': 'address'},
+  ],
+};
+
+/// Descriptor for `TelegramLoginRequest`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List telegramLoginRequestDescriptor = $convert.base64Decode(
+    'ChRUZWxlZ3JhbUxvZ2luUmVxdWVzdBIbCglpbml0X2RhdGEYASABKAlSCGluaXREYXRhEhgKB2'
+    'FkZHJlc3MYAiABKAlSB2FkZHJlc3M=');
+
+@$core.Deprecated('Use bindTelegramRequestDescriptor instead')
+const BindTelegramRequest$json = {
+  '1': 'BindTelegramRequest',
+  '2': [
+    {'1': 'init_data', '3': 1, '4': 1, '5': 9, '10': 'initData'},
+    {'1': 'password', '3': 2, '4': 1, '5': 9, '10': 'password'},
+    {'1': 'replace_existing', '3': 3, '4': 1, '5': 8, '10': 'replaceExisting'},
+  ],
+};
+
+/// Descriptor for `BindTelegramRequest`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List bindTelegramRequestDescriptor = $convert.base64Decode(
+    'ChNCaW5kVGVsZWdyYW1SZXF1ZXN0EhsKCWluaXRfZGF0YRgBIAEoCVIIaW5pdERhdGESGgoIcG'
+    'Fzc3dvcmQYAiABKAlSCHBhc3N3b3JkEikKEHJlcGxhY2VfZXhpc3RpbmcYAyABKAhSD3JlcGxh'
+    'Y2VFeGlzdGluZw==');
+
+@$core.Deprecated('Use telegramBindingDescriptor instead')
+const TelegramBinding$json = {
+  '1': 'TelegramBinding',
+  '2': [
+    {'1': 'bound', '3': 1, '4': 1, '5': 8, '10': 'bound'},
+  ],
+};
+
+/// Descriptor for `TelegramBinding`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List telegramBindingDescriptor = $convert
+    .base64Decode('Cg9UZWxlZ3JhbUJpbmRpbmcSFAoFYm91bmQYASABKAhSBWJvdW5k');
+
 @$core.Deprecated('Use sessionInfoDescriptor instead')
 const SessionInfo$json = {
   '1': 'SessionInfo',

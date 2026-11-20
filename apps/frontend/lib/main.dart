@@ -1,4 +1,11 @@
 import 'dart:async';
+import 'dart:math' as math;
+
+import 'platform/directory_fetch.dart';
+import 'platform/telegram_host.dart';
+import 'repositories/backend_directory.dart';
+import 'repositories/web_workspace.dart';
+import 'pages/web_settings.dart';
 
 import 'files/image_actions.dart';
 
@@ -31,6 +38,9 @@ final applicationUptime = Stopwatch();
 
 // Глобальные экземпляры API клиента и репозиториев
 final ApiClient apiClient = ApiClient();
+WebWorkspace? webWorkspace;
+final readerNavigator = GlobalKey<NavigatorState>();
+final telegramNavigation = _TelegramNavigation();
 late ConferenceRepository conferenceRepository;
 late MessageRepository messageRepository;
 final AccountRepository accountRepository = AccountRepository(apiClient);
@@ -45,7 +55,7 @@ Future<void> initializeApp() async {
   // Инициализация репозиториев
   final prefs = await SharedPreferences.getInstance();
   final savedEndpoint = prefs.getString('ffido_endpoint_v1');
-  if (savedEndpoint != null) {
+  if (!kIsWeb && savedEndpoint != null) {
     try {
       await apiClient.configure(endpoint: savedEndpoint);
     } catch (_) {
@@ -59,7 +69,18 @@ Future<void> initializeApp() async {
   messageRepository = MessageRepository(apiClient);
   await conferenceRepository.clearCache();
   try {
-    await SessionManager(apiClient, prefs).restore();
+    if (kIsWeb) {
+      webWorkspace = WebWorkspace(
+        apiClient,
+        prefs,
+        BackendDirectoryRepository(prefs, fetchBackendDirectory),
+        telegramHost,
+      );
+      await webWorkspace!.restore();
+      WidgetsBinding.instance.addPostFrameCallback((_) => telegramHost.ready());
+    } else {
+      await SessionManager(apiClient, prefs).restore();
+    }
   } on UnauthorizedException {
     startupMessage =
         'Срок входа истёк или доступ изменён. Введите пароль снова.';
@@ -111,18 +132,65 @@ class ReaderApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'FFIDO',
-      builder: (context, child) => UpdateShell(child: child!),
-      theme: readerTheme(),
-      initialRoute: '/',
-      routes: {
-        '/': (context) => apiClient.hasToken
-            ? const MainScreen()
-            : SettingsWidget(initialMessage: startupMessage),
-        '/settings': (context) => const SettingsWidget(),
-        '/loading': (context) => const LoadingWidget(),
-      },
+    return ListenableBuilder(
+      listenable: telegramHost,
+      builder: (context, _) => MaterialApp(
+        title: 'FFIDO',
+        navigatorKey: readerNavigator,
+        navigatorObservers: [telegramNavigation],
+        builder: (context, child) {
+          Widget content = UpdateShell(child: child!);
+          if (kIsWeb && telegramHost.initData.isNotEmpty) {
+            final height = telegramHost.viewportHeight;
+            content = Padding(padding: telegramHost.insets, child: content);
+            if (height != null) {
+              content = Align(
+                alignment: Alignment.topCenter,
+                child: SizedBox(
+                  height: math.min(height, MediaQuery.sizeOf(context).height),
+                  child: content,
+                ),
+              );
+            }
+          }
+          return content;
+        },
+        theme: readerTheme(
+          brightness: telegramHost.dark ? Brightness.dark : Brightness.light,
+        ),
+        initialRoute: '/',
+        routes: {
+          '/': (context) => apiClient.hasToken
+              ? const MainScreen()
+              : kIsWeb
+              ? WebSettings(workspace: webWorkspace!)
+              : SettingsWidget(initialMessage: startupMessage),
+          '/settings': (context) => kIsWeb
+              ? WebSettings(workspace: webWorkspace!)
+              : const SettingsWidget(),
+          '/loading': (context) => const LoadingWidget(),
+        },
+      ),
     );
   }
+}
+
+class _TelegramNavigation extends NavigatorObserver {
+  void sync() => WidgetsBinding.instance.addPostFrameCallback((_) {
+    telegramHost.navigation(
+      readerNavigator.currentState?.canPop() ?? false,
+      () {
+        unawaited(readerNavigator.currentState?.maybePop());
+      },
+    );
+  });
+  @override
+  void didPush(Route<dynamic> route, Route<dynamic>? previousRoute) => sync();
+  @override
+  void didPop(Route<dynamic> route, Route<dynamic>? previousRoute) => sync();
+  @override
+  void didRemove(Route<dynamic> route, Route<dynamic>? previousRoute) => sync();
+  @override
+  void didReplace({Route<dynamic>? newRoute, Route<dynamic>? oldRoute}) =>
+      sync();
 }
